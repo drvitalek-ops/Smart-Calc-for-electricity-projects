@@ -1,0 +1,52 @@
+name: smart-home-calc
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: smart_home_calc_dev
+      POSTGRES_USER: smart_calc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smart_calc_dev}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smart_calc -d smart_home_calc_dev"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://smart_calc:smart_calc_dev@db:5432/smart_home_calc_dev}
+      STORAGE_DIR: /data/storage
+      PDF_FONT_PATH: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+    volumes:
+      - project_files:/data/storage
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  project_files:

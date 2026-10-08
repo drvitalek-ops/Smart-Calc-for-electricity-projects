@@ -17,6 +17,23 @@ from .catalog import LAYERS, seed
 STORAGE = Path(os.getenv('STORAGE_DIR', 'storage')).resolve()
 STORAGE.mkdir(parents=True, exist_ok=True)
 
+PDF_FONT_CANDIDATES = [
+    os.getenv('PDF_FONT_PATH'),
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    '/usr/share/fonts/dejavu/DejaVuSans.ttf',
+    'C:/Windows/Fonts/arial.ttf',
+    '/Library/Fonts/Arial Unicode.ttf',
+]
+
+def pdf_font_path():
+    for candidate in PDF_FONT_CANDIDATES:
+        if candidate and Path(candidate).is_file():
+            return Path(candidate)
+    raise HTTPException(
+        500,
+        'Не найден шрифт с поддержкой кириллицы. Укажите PDF_FONT_PATH.',
+    )
+
 @asynccontextmanager
 async def lifespan(app):
     with Session() as db:
@@ -246,7 +263,7 @@ def export(pid: int, format: str, db: DbSession = Depends(session)):
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
         from reportlab.lib.styles import ParagraphStyle
         from xml.sax.saxutils import escape
-        font=Path('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf')
+        font=pdf_font_path()
         pdfmetrics.registerFont(TTFont('Calc',str(font)))
         style=ParagraphStyle('Calc',fontName='Calc',fontSize=9,leading=14)
         story=[Paragraph(escape(require(db,Project,pid).name),style),Spacer(1,15)]

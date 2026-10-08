@@ -36,9 +36,35 @@ npm run dev -- --port 5173
 
 Frontend обращается к `/api` через proxy Vite на backend порта 8000. API-документация доступна на пути `/docs` backend; проверка состояния — `/api/health`. Процессы запускаются заново после восстановления среды. PostgreSQL — отдельный кластер локальной разработки с Unix-сокетом, не публичный сервер.
 
-## Запуск вне облачной среды
+## Запуск на своём компьютере через Docker
 
-Нужны Node.js 22.12+ (или 24), Python 3.12+, PostgreSQL 17 и шрифт DejaVu Sans для кириллицы в PDF. В Debian шрифт устанавливается пакетом `fonts-dejavu-core`.
+Это основной способ локального тестирования на Windows, macOS и Linux. Установите Docker Desktop, скачайте репозиторий через **Code → Download ZIP**, распакуйте его и откройте терминал в папке проекта.
+
+```bash
+docker compose up --build
+```
+
+Когда контейнеры перейдут в состояние `healthy`, откройте <http://localhost:5173>. Документация API доступна на <http://localhost:8000/docs>.
+
+Остановка без удаления данных:
+
+```bash
+docker compose down
+```
+
+Повторный запуск использует те же проекты, PDF и базу данных:
+
+```bash
+docker compose up
+```
+
+Данные находятся в именованных Docker volumes `smart-home-calc_postgres_data` и `smart-home-calc_project_files`. Команда `docker compose down -v` удалит оба хранилища без возможности восстановления, поэтому не используйте флаг `-v` для обычной остановки.
+
+Локальные значения предназначены только для тестового компьютера. Чтобы изменить пароль, скопируйте `.env.docker.example` в `.env`, измените `POSTGRES_PASSWORD` и пароль внутри `DATABASE_URL` до первого запуска. Не добавляйте `.env` в Git.
+
+## Ручной запуск вне облачной среды
+
+Нужны Node.js 22.12+ (или 24), Python 3.12+, PostgreSQL 17 и шрифт с кириллицей. Путь к шрифту задаётся через `PDF_FONT_PATH`; приложение также ищет DejaVu Sans в Linux и Arial в Windows. Docker-образ уже содержит нужный шрифт.
 
 ```bash
 python3 -m venv .venv
@@ -46,6 +72,7 @@ source .venv/bin/activate
 pip install -r backend/requirements.txt
 # Создайте отдельную PostgreSQL БД и установите строку подключения.
 export DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST:5432/DATABASE'
+export PDF_FONT_PATH='/path/to/DejaVuSans.ttf'
 cd backend
 alembic upgrade head
 uvicorn app.main:app --port 8000
@@ -75,6 +102,7 @@ STORAGE_DIR=/tmp/smart-calc-test-files PYTHONPATH=. pytest -q
 - `backend/app/main.py`: API проектов, PDF, редактора и ведомостей.
 - `frontend/src/App.tsx`: редактор и ведомость, `style.css`: адаптивный интерфейс.
 - `backend/tests/test_workflow.py`: интеграционный сценарий и ограничения.
+- `compose.yaml`: локальный PostgreSQL, backend и готовый frontend через Nginx.
 
 ## Границы текущей версии
 

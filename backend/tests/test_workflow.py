@@ -121,3 +121,37 @@ def test_geometry_requires_calibration(client):
     response=client.post(f'/api/projects/{pid}/elements',json=body)
     assert response.status_code==422
     assert 'масштаб' in response.json()['detail']
+
+def test_catalog_csv_import_create_and_update(client):
+    template=client.get('/api/catalog/import-template.csv')
+    assert template.status_code==200 and template.content.startswith(b'\xef\xbb\xbf')
+    content=(
+        'name;sku;type;manufacturer;supplier;price;currency;active\n'
+        'Розетка белая;R-01;Розетка одинарная;Фабрика;Склад;1250,50;RUB;true\n'
+    ).encode()
+    created=client.post('/api/catalog/import',files={'file':('price.csv',content,'text/csv')})
+    assert created.status_code==201
+    assert created.json()=={'created':1,'updated':0,'total':1}
+    product=client.get('/api/catalog').json()['products'][0]
+    assert product['price']==1250.5 and product['supplier']=='Склад'
+    assert client.put(f"/api/manufacturers/{product['manufacturer_id']}",json={'name':'Новая фабрика'}).status_code==200
+    assert client.put(f"/api/suppliers/{product['supplier_id']}",json={'name':'Новый склад','contact':'mail@example.com'}).status_code==200
+    product=client.get('/api/catalog').json()['products'][0]
+    assert product['manufacturer']=='Новая фабрика' and product['supplier']=='Новый склад'
+    content=content.replace('Фабрика'.encode(),'Новая фабрика'.encode())
+    content=content.replace(b'1250,50',b'1400')
+    updated=client.post('/api/catalog/import',files={'file':('price.csv',content,'text/csv')})
+    assert updated.status_code==201
+    assert updated.json()=={'created':0,'updated':1,'total':1}
+    assert client.get('/api/catalog').json()['products'][0]['price']==1400
+
+def test_catalog_csv_import_is_atomic(client):
+    content=(
+        'name;sku;type;manufacturer;price\n'
+        'Розетка;R-01;Розетка одинарная;Фабрика;100\n'
+        'Ошибка;X-01;Несуществующий тип;Фабрика;200\n'
+    ).encode()
+    response=client.post('/api/catalog/import',files={'file':('price.csv',content,'text/csv')})
+    assert response.status_code==422 and 'строка 3' in response.json()['detail']
+    catalog=client.get('/api/catalog').json()
+    assert catalog['products']==[] and catalog['manufacturers']==[]

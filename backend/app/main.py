@@ -1,4 +1,5 @@
 import io
+import csv
 import json
 import math
 import os
@@ -113,6 +114,12 @@ class ProductInput(NameInput):
     active: bool = True
     parameters: dict = Field(default_factory=dict)
 
+def catalog_product(db, product):
+    row=data(product)
+    row['manufacturer']=db.get(Manufacturer,product.manufacturer_id).name
+    row['supplier']=db.get(Supplier,product.supplier_id).name if product.supplier_id else ''
+    return row
+
 def geometry_points(geometry):
     points = geometry.get('points', []) if isinstance(geometry, dict) else []
     if not isinstance(points, list) or len(points) > 1000:
@@ -208,19 +215,26 @@ def catalog(db: DbSession = Depends(session)):
     suppliers=[data(item) for item in db.scalars(select(Supplier).order_by(Supplier.name))]
     products=[]
     for product in db.scalars(select(Product).order_by(Product.name)):
-        row=data(product)
-        row['manufacturer']=db.get(Manufacturer,product.manufacturer_id).name
-        row['supplier']=db.get(Supplier,product.supplier_id).name if product.supplier_id else ''
-        products.append(row)
+        products.append(catalog_product(db,product))
     return {'manufacturers':manufacturers,'suppliers':suppliers,'products':products}
 
 @app.post('/api/manufacturers',status_code=201)
 def add_manufacturer(body: ManufacturerInput, db: DbSession = Depends(session)):
     item=Manufacturer(name=body.name); db.add(item); db.commit(); return data(item)
 
+@app.put('/api/manufacturers/{item_id}')
+def edit_manufacturer(item_id: int, body: ManufacturerInput, db: DbSession = Depends(session)):
+    item=require(db,Manufacturer,item_id); item.name=body.name; db.commit(); return data(item)
+
 @app.post('/api/suppliers',status_code=201)
 def add_supplier(body: SupplierInput, db: DbSession = Depends(session)):
     item=Supplier(**body.model_dump()); db.add(item); db.commit(); return data(item)
+
+@app.put('/api/suppliers/{item_id}')
+def edit_supplier(item_id: int, body: SupplierInput, db: DbSession = Depends(session)):
+    item=require(db,Supplier,item_id)
+    for key,value in body.model_dump().items(): setattr(item,key,value)
+    db.commit(); return data(item)
 
 @app.post('/api/products',status_code=201)
 def add_product(body: ProductInput, db: DbSession = Depends(session)):
@@ -228,7 +242,7 @@ def add_product(body: ProductInput, db: DbSession = Depends(session)):
     typ=require(db,ElementType,body.type_id)
     if body.unit != typ.unit: raise HTTPException(422,'Единица товара должна совпадать с типом элемента')
     if body.supplier_id is not None: require(db,Supplier,body.supplier_id)
-    item=Product(**body.model_dump()); db.add(item); db.commit(); return data(item)
+    item=Product(**body.model_dump()); db.add(item); db.commit(); return catalog_product(db,item)
 
 @app.put('/api/products/{product_id}')
 def edit_product(product_id: int, body: ProductInput, db: DbSession = Depends(session)):
@@ -238,7 +252,93 @@ def edit_product(product_id: int, body: ProductInput, db: DbSession = Depends(se
     if body.unit != typ.unit: raise HTTPException(422,'Единица товара должна совпадать с типом элемента')
     if body.supplier_id is not None: require(db,Supplier,body.supplier_id)
     for key,value in body.model_dump().items(): setattr(item,key,value)
-    db.commit(); return data(item)
+    db.commit(); return catalog_product(db,item)
+
+@app.get('/api/catalog/import-template.csv')
+def catalog_import_template():
+    content=(
+        '\ufeffname;sku;type;manufacturer;supplier;price;currency;active\n'
+        'Розетка demo;DEMO-01;Розетка одинарная;Demo Factory;Demo Supply;1250.00;RUB;true\n'
+    )
+    return StreamingResponse(
+        io.BytesIO(content.encode('utf-8')),media_type='text/csv; charset=utf-8',
+        headers={'Content-Disposition':'attachment; filename="smart-calc-price-template.csv"'},
+    )
+
+@app.post('/api/catalog/import',status_code=201)
+async def import_catalog(file: UploadFile, db: DbSession = Depends(session)):
+    raw=await file.read(2_000_001)
+    if len(raw)>2_000_000:
+        raise HTTPException(413,'Прайс-лист больше 2 МБ')
+    try:
+        text=raw.decode('utf-8-sig')
+    except UnicodeDecodeError:
+        raise HTTPException(422,'CSV должен быть сохранён в UTF-8')
+    try:
+        dialect=csv.Sniffer().sniff(text[:4096],delimiters=',;\t')
+        rows=list(csv.DictReader(io.StringIO(text),dialect=dialect))
+    except csv.Error:
+        raise HTTPException(422,'Не удалось распознать CSV')
+    if not rows or len(rows)>5000:
+        raise HTTPException(422,'CSV должен содержать от 1 до 5000 товаров')
+    headers={str(header).strip().lower() for header in (rows[0].keys() if rows else []) if header}
+    required={'name','type','manufacturer','price'}
+    if not required.issubset(headers):
+        raise HTTPException(422,'Обязательные столбцы: name, type, manufacturer, price')
+    types_by_name={item.name.strip().casefold():item for item in db.scalars(select(ElementType))}
+    manufacturers={item.name.strip().casefold():item for item in db.scalars(select(Manufacturer))}
+    suppliers={item.name.strip().casefold():item for item in db.scalars(select(Supplier))}
+    created=updated=0
+    try:
+        for index,source in enumerate(rows,2):
+            row={str(key).strip().lower():str(value or '').strip() for key,value in source.items() if key}
+            name=row.get('name',''); type_name=row.get('type',''); manufacturer_name=row.get('manufacturer','')
+            if not name or not type_name or not manufacturer_name:
+                raise ValueError(f'строка {index}: пустое обязательное поле')
+            typ=types_by_name.get(type_name.casefold())
+            if typ is None:
+                raise ValueError(f'строка {index}: неизвестный тип «{type_name}»')
+            manufacturer=manufacturers.get(manufacturer_name.casefold())
+            if manufacturer is None:
+                manufacturer=Manufacturer(name=manufacturer_name); db.add(manufacturer); db.flush()
+                manufacturers[manufacturer_name.casefold()]=manufacturer
+            supplier=None; supplier_name=row.get('supplier','')
+            if supplier_name:
+                supplier=suppliers.get(supplier_name.casefold())
+                if supplier is None:
+                    supplier=Supplier(name=supplier_name,contact=''); db.add(supplier); db.flush()
+                    suppliers[supplier_name.casefold()]=supplier
+            try:
+                price=float(row.get('price','').replace(' ','').replace(',','.'))
+            except ValueError:
+                raise ValueError(f'строка {index}: некорректная цена')
+            if not 0<=price<=1_000_000_000:
+                raise ValueError(f'строка {index}: цена вне допустимого диапазона')
+            currency=(row.get('currency') or 'RUB').upper()
+            if len(currency)!=3 or not currency.isalpha():
+                raise ValueError(f'строка {index}: валюта должна состоять из трёх букв')
+            active_value=(row.get('active') or 'true').casefold()
+            if active_value not in {'true','false','1','0','да','нет','yes','no'}:
+                raise ValueError(f'строка {index}: active должен быть true или false')
+            active=active_value in {'true','1','да','yes'}
+            sku=row.get('sku','')
+            query=select(Product).where(Product.manufacturer_id==manufacturer.id)
+            query=query.where(Product.sku==sku) if sku else query.where(Product.type_id==typ.id,Product.name==name)
+            product=db.scalar(query)
+            values=dict(
+                name=name,sku=sku,type_id=typ.id,manufacturer_id=manufacturer.id,
+                supplier_id=supplier.id if supplier else None,unit=typ.unit,price=price,
+                currency=currency,active=active,
+            )
+            if product:
+                for key,value in values.items(): setattr(product,key,value)
+                updated+=1
+            else:
+                db.add(Product(**values,parameters={})); created+=1
+        db.commit()
+    except ValueError as exc:
+        db.rollback(); raise HTTPException(422,str(exc))
+    return {'created':created,'updated':updated,'total':created+updated}
 
 @app.get('/api/projects/{pid}')
 def project(pid: int, db: DbSession = Depends(session)):

@@ -1,4 +1,6 @@
 import io
+import json
+import math
 import os
 import uuid
 from pathlib import Path
@@ -11,7 +13,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 from .db import session, Session
-from .models import Project, Page, Room, Layer, Element, ElementType, Report
+from .models import (
+    Project, Page, Room, Layer, Element, ElementType, Manufacturer, Supplier,
+    Product, Report,
+)
 from .catalog import LAYERS, seed
 
 STORAGE = Path(os.getenv('STORAGE_DIR', 'storage')).resolve()
@@ -62,6 +67,16 @@ class LayerInput(BaseModel):
     locked: bool | None = None
     export: bool | None = None
 
+class PageInput(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+
+class CalibrationInput(BaseModel):
+    x1: float = Field(ge=0, le=1)
+    y1: float = Field(ge=0, le=1)
+    x2: float = Field(ge=0, le=1)
+    y2: float = Field(ge=0, le=1)
+    real_length_m: float = Field(gt=0, le=10000)
+
 class TypeInput(NameInput):
     category: str = Field(min_length=1, max_length=200)
     unit: str = Field(default='шт', pattern='^(шт|м)$')
@@ -73,11 +88,47 @@ class ElementInput(BaseModel):
     page_id: int
     layer_id: int
     type_id: int
+    product_id: int | None = None
     room_id: int | None = None
     x: float = Field(ge=0, le=1)
     y: float = Field(ge=0, le=1)
     parameters: dict = Field(default_factory=dict)
+    geometry: dict = Field(default_factory=dict)
     comment: str = Field(default='', max_length=2000)
+
+class ManufacturerInput(NameInput):
+    pass
+
+class SupplierInput(NameInput):
+    contact: str = Field(default='', max_length=500)
+
+class ProductInput(NameInput):
+    manufacturer_id: int
+    supplier_id: int | None = None
+    type_id: int
+    sku: str = Field(default='', max_length=200)
+    unit: str = Field(default='шт', pattern='^(шт|м)$')
+    price: float = Field(default=0, ge=0, le=1000000000)
+    currency: str = Field(default='RUB', pattern='^[A-Z]{3}$')
+    active: bool = True
+    parameters: dict = Field(default_factory=dict)
+
+def geometry_points(geometry):
+    points = geometry.get('points', []) if isinstance(geometry, dict) else []
+    if not isinstance(points, list) or len(points) > 1000:
+        raise HTTPException(422, 'Некорректная геометрия')
+    result=[]
+    for point in points:
+        if not isinstance(point, dict):
+            raise HTTPException(422, 'Некорректная геометрия')
+        try:
+            x=float(point['x']); y=float(point['y'])
+        except (KeyError,TypeError,ValueError):
+            raise HTTPException(422, 'Некорректная геометрия')
+        if not 0 <= x <= 1 or not 0 <= y <= 1:
+            raise HTTPException(422, 'Координаты линии выходят за границы листа')
+        result.append({'x':x,'y':y})
+    return result
 
 def validate_element(db, project_id, body):
     for model, id in [(Page,body.page_id),(Layer,body.layer_id),(Room,body.room_id)]:
@@ -89,7 +140,25 @@ def validate_element(db, project_id, body):
     if layer.locked:
         raise HTTPException(409, 'Слой заблокирован')
     typ = require(db,ElementType,body.type_id)
+    if body.product_id is not None:
+        product=require(db,Product,body.product_id)
+        if product.type_id != typ.id or not product.active:
+            raise HTTPException(422, 'Товар не соответствует типу элемента')
     parameters = {**typ.defaults, **body.parameters}
+    points=geometry_points(body.geometry)
+    if points:
+        if len(points)<2:
+            raise HTTPException(422, 'Для линии нужны минимум две точки')
+        page=require(db,Page,body.page_id)
+        if not page.meters_per_point:
+            raise HTTPException(422, 'Сначала откалибруйте масштаб листа')
+        length=0.0
+        for first,second in zip(points,points[1:]):
+            length += math.hypot(
+                (second['x']-first['x'])*page.width,
+                (second['y']-first['y'])*page.height,
+            )*page.meters_per_point
+        parameters['length']=round(length,3)
     for key in ('length','quantity','connectors','end_caps'):
         if key in parameters:
             try:
@@ -133,6 +202,44 @@ def add_type(body: TypeInput, db: DbSession = Depends(session)):
     t=ElementType(**body.model_dump()); db.add(t); db.commit()
     return data(t)
 
+@app.get('/api/catalog')
+def catalog(db: DbSession = Depends(session)):
+    manufacturers=[data(item) for item in db.scalars(select(Manufacturer).order_by(Manufacturer.name))]
+    suppliers=[data(item) for item in db.scalars(select(Supplier).order_by(Supplier.name))]
+    products=[]
+    for product in db.scalars(select(Product).order_by(Product.name)):
+        row=data(product)
+        row['manufacturer']=db.get(Manufacturer,product.manufacturer_id).name
+        row['supplier']=db.get(Supplier,product.supplier_id).name if product.supplier_id else ''
+        products.append(row)
+    return {'manufacturers':manufacturers,'suppliers':suppliers,'products':products}
+
+@app.post('/api/manufacturers',status_code=201)
+def add_manufacturer(body: ManufacturerInput, db: DbSession = Depends(session)):
+    item=Manufacturer(name=body.name); db.add(item); db.commit(); return data(item)
+
+@app.post('/api/suppliers',status_code=201)
+def add_supplier(body: SupplierInput, db: DbSession = Depends(session)):
+    item=Supplier(**body.model_dump()); db.add(item); db.commit(); return data(item)
+
+@app.post('/api/products',status_code=201)
+def add_product(body: ProductInput, db: DbSession = Depends(session)):
+    require(db,Manufacturer,body.manufacturer_id)
+    typ=require(db,ElementType,body.type_id)
+    if body.unit != typ.unit: raise HTTPException(422,'Единица товара должна совпадать с типом элемента')
+    if body.supplier_id is not None: require(db,Supplier,body.supplier_id)
+    item=Product(**body.model_dump()); db.add(item); db.commit(); return data(item)
+
+@app.put('/api/products/{product_id}')
+def edit_product(product_id: int, body: ProductInput, db: DbSession = Depends(session)):
+    item=require(db,Product,product_id)
+    require(db,Manufacturer,body.manufacturer_id)
+    typ=require(db,ElementType,body.type_id)
+    if body.unit != typ.unit: raise HTTPException(422,'Единица товара должна совпадать с типом элемента')
+    if body.supplier_id is not None: require(db,Supplier,body.supplier_id)
+    for key,value in body.model_dump().items(): setattr(item,key,value)
+    db.commit(); return data(item)
+
 @app.get('/api/projects/{pid}')
 def project(pid: int, db: DbSession = Depends(session)):
     p = data(require(db,Project,pid))
@@ -159,6 +266,24 @@ def edit_layer(lid: int, body: LayerInput, db: DbSession = Depends(session)):
         setattr(layer,key,value)
     db.commit(); return data(layer)
 
+@app.patch('/api/pages/{page_id}')
+def edit_page(page_id: int, body: PageInput, db: DbSession = Depends(session)):
+    page=require(db,Page,page_id)
+    page.name=body.name.strip() if body.name and body.name.strip() else None
+    db.commit(); return data(page)
+
+@app.post('/api/pages/{page_id}/calibrate')
+def calibrate_page(page_id: int, body: CalibrationInput, db: DbSession = Depends(session)):
+    page=require(db,Page,page_id)
+    distance=math.hypot((body.x2-body.x1)*page.width,(body.y2-body.y1)*page.height)
+    if distance < 1:
+        raise HTTPException(422,'Точки калибровки расположены слишком близко')
+    page.meters_per_point=body.real_length_m/distance
+    db.commit()
+    result=data(page)
+    result['calibration_length_m']=body.real_length_m
+    return result
+
 @app.post('/api/projects/{pid}/pdf',status_code=201)
 async def upload(pid: int, file: UploadFile, db: DbSession = Depends(session)):
     require(db,Project,pid)
@@ -178,7 +303,11 @@ async def upload(pid: int, file: UploadFile, db: DbSession = Depends(session)):
             scale=min(1.5,2000/max(page.rect.width,page.rect.height))
             image=STORAGE/f'{token}-{i}.png'
             page.get_pixmap(matrix=pymupdf.Matrix(scale,scale)).save(image); paths.append(image)
-            obj=Page(project_id=pid,number=number+i+1,width=page.rect.width,height=page.rect.height,pdf_path=str(pdf),image_path=str(image))
+            obj=Page(
+                project_id=pid,number=number+i+1,name=None,source_index=i,
+                meters_per_point=None,width=page.rect.width,height=page.rect.height,
+                pdf_path=str(pdf),image_path=str(image),
+            )
             db.add(obj); db.flush(); pages.append(data(obj))
         doc.close(); db.commit(); return pages
     except Exception as exc:
@@ -220,41 +349,102 @@ def report_rows(db,pid):
     for e,t,l in db.execute(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id).join(Layer,Element.layer_id==Layer.id).where(Element.project_id==pid)):
         if not l.export: continue
         room=db.get(Room,e.room_id) if e.room_id else None
-        # Parameters remain part of the grouping: different equipment must not merge.
-        import json
-        key=(room.name if room else 'Без помещения',t.category,t.name,t.unit,json.dumps(e.parameters,ensure_ascii=False,sort_keys=True))
+        product=db.get(Product,e.product_id) if e.product_id else None
+        manufacturer=db.get(Manufacturer,product.manufacturer_id) if product else None
+        supplier=db.get(Supplier,product.supplier_id) if product and product.supplier_id else None
+        group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity')}
+        key=(
+            room.name if room else 'Без помещения',t.category,t.name,t.unit,
+            json.dumps(group_parameters,ensure_ascii=False,sort_keys=True),
+            product.id if product else None,
+            product.name if product else '', product.sku if product else '',
+            manufacturer.name if manufacturer else '', supplier.name if supplier else '',
+            float(product.price) if product else 0, product.currency if product else 'RUB',
+        )
         groups[key]+=float(e.parameters.get('length',0) if t.unit=='м' else e.parameters.get('quantity',1))
         if room and room.wet and t.wet_min_ip and int(e.parameters.get('ip',0))<t.wet_min_ip:
             warnings.append(f'{room.name}: {t.name} №{e.id} — рекомендуется IP{t.wet_min_ip} или выше')
-    rows=[dict(room=k[0],category=k[1],name=k[2],unit=k[3],parameters=k[4],quantity=round(v,3)) for k,v in sorted(groups.items())]
-    return {'rows':rows,'warnings':warnings}
+    rows=[]
+    for key,value in sorted(groups.items(),key=lambda item:(item[0][0],item[0][1],item[0][2],item[0][6])):
+        quantity=round(value,3); price=key[10]
+        rows.append(dict(
+            room=key[0],category=key[1],name=key[2],unit=key[3],
+            parameters=key[4],product_id=key[5],product=key[6],sku=key[7],
+            manufacturer=key[8],supplier=key[9],unit_price=price,
+            currency=key[11],quantity=quantity,total=round(quantity*price,2),
+        ))
+    totals=defaultdict(float)
+    for row in rows: totals[row['currency']]+=row['total']
+    return {'rows':rows,'warnings':warnings,'totals':dict(totals)}
 
 @app.get('/api/projects/{pid}/report')
 def report(pid: int, db: DbSession = Depends(session)):
     return report_rows(db,pid)
+
+@app.get('/api/projects/{pid}/pages/{page_id}/export.pdf')
+def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
+    page=require(db,Page,page_id)
+    if page.project_id != pid: raise HTTPException(422,'Лист принадлежит другому проекту')
+    source=pymupdf.open(page.pdf_path)
+    if page.source_index >= len(source):
+        source.close(); raise HTTPException(500,'Исходная страница PDF не найдена')
+    document=pymupdf.open(); document.insert_pdf(source,from_page=page.source_index,to_page=page.source_index)
+    source.close(); sheet=document[0]
+    sheet.insert_font(fontname='CalcPlan',fontfile=str(pdf_font_path()))
+    query=(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id)
+           .join(Layer,Element.layer_id==Layer.id).where(Element.page_id==page_id,Layer.export.is_(True)))
+    for element,typ,layer in db.execute(query):
+        color=tuple(int(typ.color[index:index+2],16)/255 for index in (1,3,5))
+        points=geometry_points(element.geometry or {})
+        if points:
+            pdf_points=[pymupdf.Point(point['x']*page.width,point['y']*page.height) for point in points]
+            sheet.draw_polyline(pdf_points,color=color,width=2)
+            for point in pdf_points: sheet.draw_circle(point,3,color=color,fill=color)
+            anchor=pdf_points[0]
+        else:
+            anchor=pymupdf.Point(element.x*page.width,element.y*page.height)
+            sheet.draw_circle(anchor,5,color=color,fill=color)
+        sheet.insert_text((anchor.x+7,anchor.y-4),f'{typ.name} #{element.id}',fontsize=7,fontname='CalcPlan',color=color)
+    content=document.tobytes(deflate=True); document.close()
+    return StreamingResponse(
+        io.BytesIO(content),media_type='application/pdf',
+        headers={'Content-Disposition':f'attachment; filename="plan-{pid}-{page_id}.pdf"'},
+    )
 
 @app.get('/api/projects/{pid}/export/{format}')
 def export(pid: int, format: str, db: DbSession = Depends(session)):
     if format not in ('xlsx','pdf'): raise HTTPException(422,'Формат: xlsx или pdf')
     result=report_rows(db,pid)
     output=io.BytesIO()
-    headers=['Помещение','Категория','Элемент','Количество','Ед.','Параметры']
-    rows=[[r['room'],r['category'],r['name'],r['quantity'],r['unit'],r['parameters']] for r in result['rows']]
+    headers=['Помещение','Категория','Элемент','Товар','Артикул','Производитель','Поставщик','Количество','Ед.','Цена','Валюта','Сумма','Параметры']
+    rows=[[
+        r['room'],r['category'],r['name'],r['product'],r['sku'],r['manufacturer'],
+        r['supplier'],r['quantity'],r['unit'],r['unit_price'],r['currency'],r['total'],r['parameters'],
+    ] for r in result['rows']]
     if format=='xlsx':
         from openpyxl import Workbook
         from openpyxl.styles import Font
-        wb=Workbook(); ws=wb.active; ws.title='Ведомость'
-        ws.append(headers)
-        for cell in ws[1]: cell.font=Font(bold=True)
-        for row in rows:
-            ws.append(row)
-            for cell in ws[ws.max_row]:
-                if cell.data_type=='f': cell.data_type='s'
-        ws.freeze_panes='A2'; ws.auto_filter.ref=ws.dimensions
-        for column,width in [('A',25),('B',25),('C',30),('D',15),('E',10),('F',70)]: ws.column_dimensions[column].width=width
+        wb=Workbook(); wb.remove(wb.active)
+        def safe(value):
+            return "'"+value if isinstance(value,str) and value.startswith(('=','+','-','@')) else value
+        def add_sheet(name,selected_rows):
+            ws=wb.create_sheet(name[:31]); ws.append(headers)
+            for cell in ws[1]: cell.font=Font(bold=True)
+            for row in selected_rows: ws.append([safe(value) for value in row])
+            ws.freeze_panes='A2'; ws.auto_filter.ref=ws.dimensions
+            widths=[22,20,27,27,16,20,20,12,8,13,10,13,55]
+            for index,width in enumerate(widths,1): ws.column_dimensions[chr(64+index)].width=width
+            return ws
+        add_sheet('Общая ведомость',rows)
+        for category in sorted({r['category'] for r in result['rows']}):
+            add_sheet(category,[row for row,item in zip(rows,result['rows']) if item['category']==category])
+        add_sheet('По помещениям',sorted(rows,key=lambda row:(row[0],row[1],row[2])))
+        totals=wb.create_sheet('Итоги')
+        totals.append(['Валюта','Сумма'])
+        for currency,total in result['totals'].items(): totals.append([currency,total])
         notes=wb.create_sheet('Проверки IP')
         for warning in result['warnings']:
-            notes.append([warning]); notes.cell(notes.max_row,1).data_type='s'
+            notes.append([safe(warning)])
         wb.save(output)
         media='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     else:
@@ -266,10 +456,19 @@ def export(pid: int, format: str, db: DbSession = Depends(session)):
         font=pdf_font_path()
         pdfmetrics.registerFont(TTFont('Calc',str(font)))
         style=ParagraphStyle('Calc',fontName='Calc',fontSize=9,leading=14)
-        story=[Paragraph(escape(require(db,Project,pid).name),style),Spacer(1,15)]
-        for r in result['rows']:
-            story.append(Paragraph(escape(f"{r['room']} · {r['category']} · {r['name']}: {r['quantity']} {r['unit']} | {r['parameters']}"),style))
-            story.append(Spacer(1,8))
+        title=ParagraphStyle('Title',parent=style,fontSize=15,leading=19,spaceAfter=12)
+        heading=ParagraphStyle('Heading',parent=style,fontSize=12,leading=16,spaceBefore=12,spaceAfter=6)
+        story=[Paragraph(escape(require(db,Project,pid).name),title)]
+        for category in sorted({r['category'] for r in result['rows']}):
+            story.append(Paragraph(escape(category),heading))
+            for r in (item for item in result['rows'] if item['category']==category):
+                product=f" · {r['manufacturer']} {r['product']} {r['sku']}" if r['product'] else ''
+                price=f" · {r['total']:.2f} {r['currency']}" if r['unit_price'] else ''
+                story.append(Paragraph(escape(f"{r['room']} · {r['name']}{product}: {r['quantity']} {r['unit']}{price} | {r['parameters']}"),style))
+                story.append(Spacer(1,6))
+        if result['totals']:
+            story.append(Paragraph('Итоги',heading))
+            for currency,total in result['totals'].items(): story.append(Paragraph(escape(f'{total:.2f} {currency}'),style))
         for warning in result['warnings']: story.append(Paragraph(escape(warning),style))
         SimpleDocTemplate(output).build(story); media='application/pdf'
     db.add(Report(project_id=pid,format=format)); db.commit()

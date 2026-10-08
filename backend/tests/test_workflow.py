@@ -41,7 +41,7 @@ def test_full_workflow_and_exports(client):
     response=client.get(f'/api/projects/{pid}/export/xlsx')
     assert response.status_code==200
     wb=load_workbook(io.BytesIO(response.content))
-    assert wb.active.cell(2,4).value==3.5
+    assert wb['Общая ведомость'].cell(2,8).value==3.5
     pdf=client.get(f'/api/projects/{pid}/export/pdf')
     assert pdf.status_code==200 and pdf.content.startswith(b'%PDF')
     body['x']=.8;body['parameters']={'length':5,'ip':67}
@@ -82,4 +82,42 @@ def test_extensible_catalog_and_parameter_grouping(client):
         body['parameters']={'length':length}
         assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==201
     rows=client.get(f'/api/projects/{pid}/report').json()['rows']
-    assert sorted(r['quantity'] for r in rows)==[3,4]
+    assert [r['quantity'] for r in rows]==[7]
+
+def test_calibrated_geometry_catalog_and_plan_export(client):
+    pid,body=setup(client)
+    page_id=body['page_id']
+    calibration=client.post(f'/api/pages/{page_id}/calibrate',json={
+        'x1':0,'y1':0,'x2':1,'y2':0,'real_length_m':10,
+    })
+    assert calibration.status_code==200
+    manufacturer=client.post('/api/manufacturers',json={'name':'Test Factory'}).json()
+    supplier=client.post('/api/suppliers',json={'name':'Test Supply','contact':'test@example.com'}).json()
+    product=client.post('/api/products',json={
+        'name':'LED комплект','manufacturer_id':manufacturer['id'],
+        'supplier_id':supplier['id'],'type_id':body['type_id'],'sku':'LED-01',
+        'unit':'м','price':1200,'currency':'RUB','parameters':{'power':12},
+    })
+    assert product.status_code==201
+    body.update({
+        'product_id':product.json()['id'],'x':.1,'y':.2,
+        'geometry':{'points':[{'x':.1,'y':.2},{'x':.6,'y':.2}]},
+        'parameters':{'ip':65},
+    })
+    element=client.post(f'/api/projects/{pid}/elements',json=body)
+    assert element.status_code==201
+    assert element.json()['parameters']['length']==5
+    report=client.get(f'/api/projects/{pid}/report').json()
+    assert report['rows'][0]['product']=='LED комплект'
+    assert report['rows'][0]['manufacturer']=='Test Factory'
+    assert report['rows'][0]['total']==6000
+    assert report['totals']=={'RUB':6000}
+    plan=client.get(f'/api/projects/{pid}/pages/{page_id}/export.pdf')
+    assert plan.status_code==200 and plan.content.startswith(b'%PDF')
+
+def test_geometry_requires_calibration(client):
+    pid,body=setup(client)
+    body['geometry']={'points':[{'x':.1,'y':.2},{'x':.6,'y':.2}]}
+    response=client.post(f'/api/projects/{pid}/elements',json=body)
+    assert response.status_code==422
+    assert 'масштаб' in response.json()['detail']

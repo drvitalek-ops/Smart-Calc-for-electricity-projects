@@ -45,6 +45,14 @@ jobs:
           PYTHONPATH: .
         run: pytest -q
 
+      - name: Validate database migrations
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://smart_calc:smart_calc_test@127.0.0.1:5432/smart_calc_test
+        run: |
+          alembic upgrade head
+          alembic downgrade base
+
       - uses: actions/setup-node@v4
         with:
           node-version: '24'

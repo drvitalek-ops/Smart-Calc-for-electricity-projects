@@ -6,4 +6,6 @@ __pycache__/
 .env
 .env.docker
 storage/
+backups/*
+!backups/.gitkeep
 *.db

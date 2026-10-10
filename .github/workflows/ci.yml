@@ -70,5 +70,12 @@ jobs:
       - name: Validate Docker Compose
         run: docker compose config --quiet
 
+      - name: Validate maintenance scripts
+        shell: bash
+        run: |
+          sh -n backup/backup.sh
+          sh -n scripts/restore-backup.sh
+          pwsh -NoProfile -Command '$tokens=$null; $errors=$null; [System.Management.Automation.Language.Parser]::ParseFile("scripts/restore-backup.ps1",[ref]$tokens,[ref]$errors) | Out-Null; if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }'
+
       - name: Build Docker images
         run: docker compose build

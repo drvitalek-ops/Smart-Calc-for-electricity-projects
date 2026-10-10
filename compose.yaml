@@ -47,6 +47,33 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  backup:
+    build:
+      context: ./backup
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: smart_home_calc_dev
+      PGUSER: smart_calc
+      PGPASSWORD: ${POSTGRES_PASSWORD:-smart_calc_dev}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - project_files:/data/storage:ro
+      - ./backups:/backups
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  restore:
+    build:
+      context: ./backup
+    profiles: ["tools"]
+    volumes:
+      - project_files:/data/storage
+      - ./backups:/backups:ro
+
 volumes:
   postgres_data:
   project_files:

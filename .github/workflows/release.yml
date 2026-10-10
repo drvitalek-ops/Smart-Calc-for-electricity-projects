@@ -46,12 +46,13 @@ jobs:
           if ($actual -ne $expected) { throw "SHA-256 mismatch" }
 
       - name: Publish GitHub release
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME"
-          release/SmartHomeCalc-Windows-x64.exe
-          release/SmartHomeCalc-Windows-x64.exe.sha256
-          --repo "$GITHUB_REPOSITORY"
-          --title "Smart Home Calc $GITHUB_REF_NAME"
-          --notes "Автономное офлайн-приложение Smart Home Calc для Windows x64. Docker и PostgreSQL устанавливать не требуется."
+        run: |
+          gh release create $env:GITHUB_REF_NAME `
+            release/SmartHomeCalc-Windows-x64.exe `
+            release/SmartHomeCalc-Windows-x64.exe.sha256 `
+            --repo $env:GITHUB_REPOSITORY `
+            --title "Smart Home Calc $env:GITHUB_REF_NAME" `
+            --notes "Автономное офлайн-приложение Smart Home Calc для Windows x64. Docker и PostgreSQL устанавливать не требуется."

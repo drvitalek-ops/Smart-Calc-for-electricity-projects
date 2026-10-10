@@ -24,6 +24,8 @@ internal static class Program
 internal sealed class MainWindow : Form
 {
     private const string ApplicationUrl = "http://127.0.0.1:5173";
+    private static readonly string InstallDirectory = Path.GetDirectoryName(Environment.ProcessPath)
+        ?? AppContext.BaseDirectory;
     private readonly WebView2 webView = new() { Dock = DockStyle.Fill };
     private readonly Label status = new()
     {
@@ -122,14 +124,14 @@ internal sealed class MainWindow : Form
             return;
         }
 
-        var backendPath = Path.Combine(AppContext.BaseDirectory, "SmartHomeCalc.Backend.exe");
+        var backendPath = Path.Combine(InstallDirectory, "SmartHomeCalc.Backend.exe");
         if (!File.Exists(backendPath))
         {
             throw new FileNotFoundException("Не найден локальный сервер приложения.", backendPath);
         }
         backendProcess = Process.Start(new ProcessStartInfo(backendPath)
         {
-            WorkingDirectory = AppContext.BaseDirectory,
+            WorkingDirectory = InstallDirectory,
             UseShellExecute = false,
             CreateNoWindow = true,
         }) ?? throw new InvalidOperationException("Не удалось запустить локальный сервер.");

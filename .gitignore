@@ -8,4 +8,6 @@ __pycache__/
 storage/
 backups/*
 !backups/.gitkeep
+packaging/windows-launcher/payload.zip
+release/
 *.db

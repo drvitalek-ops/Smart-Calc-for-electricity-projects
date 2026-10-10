@@ -1,0 +1,4 @@
+/.git* export-ignore
+/.github export-ignore
+/backend/tests export-ignore
+/packaging export-ignore

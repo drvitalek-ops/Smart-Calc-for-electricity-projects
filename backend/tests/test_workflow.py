@@ -1,4 +1,6 @@
 import io
+import json
+import zipfile
 import pytest
 import pymupdf
 from fastapi.testclient import TestClient
@@ -158,3 +160,53 @@ def test_catalog_csv_import_is_atomic(client):
     assert response.status_code==422 and 'строка 3' in response.json()['detail']
     catalog=client.get('/api/catalog').json()
     assert catalog['products']==[] and catalog['manufacturers']==[]
+
+def test_project_backup_restore_round_trip(client):
+    pid,body=setup(client)
+    page_id=body['page_id']
+    assert client.patch(f'/api/pages/{page_id}',json={'name':'План первого этажа'}).status_code==200
+    assert client.post(f'/api/pages/{page_id}/calibrate',json={
+        'x1':0,'y1':0,'x2':1,'y2':0,'real_length_m':10,
+    }).status_code==200
+    manufacturer=client.post('/api/manufacturers',json={'name':'Backup Factory'}).json()
+    product=client.post('/api/products',json={
+        'name':'Резервный комплект','manufacturer_id':manufacturer['id'],'supplier_id':None,
+        'type_id':body['type_id'],'sku':'BACKUP-1','unit':'м','price':100,
+        'currency':'RUB','active':True,'parameters':{},
+    }).json()
+    body.update({
+        'product_id':product['id'],'geometry':{'points':[
+            {'x':.1,'y':.2},{'x':.4,'y':.2},{'x':.2,'y':.2},
+        ]},'parameters':{'ip':65},'comment':'Проверка архива',
+    })
+    assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==201
+    assert client.patch(f"/api/layers/{body['layer_id']}",json={'locked':True}).status_code==200
+    backup=client.get(f'/api/projects/{pid}/backup')
+    assert backup.status_code==200 and backup.content.startswith(b'PK')
+    with zipfile.ZipFile(io.BytesIO(backup.content)) as archive:
+        manifest=json.loads(archive.read('manifest.json'))
+        assert manifest['version']==1 and len(manifest['pages'])==2
+        assert len(manifest['products'])==1 and manifest['elements'][0]['comment']=='Проверка архива'
+    restored=client.post('/api/projects/import',files={
+        'file':('project.zip',backup.content,'application/zip'),
+    })
+    assert restored.status_code==201
+    restored_id=restored.json()['id']
+    assert restored_id!=pid and restored.json()['pages']==2 and restored.json()['elements']==1
+    project=client.get(f'/api/projects/{restored_id}').json()
+    assert project['name']=='Тестовый дом'
+    assert project['pages'][0]['name']=='План первого этажа'
+    assert project['pages'][0]['meters_per_point'] is not None
+    assert project['elements'][0]['comment']=='Проверка архива'
+    assert next(layer for layer in project['layers'] if layer['name']=='LED-подсветка')['locked'] is True
+    assert client.get(f"/api/pages/{project['pages'][0]['id']}/image").content.startswith(b'\x89PNG')
+    report=client.get(f'/api/projects/{restored_id}/report').json()
+    assert report['rows'][0]['quantity']==5 and report['rows'][0]['total']==500
+
+def test_invalid_project_backup_does_not_create_project(client):
+    before=len(client.get('/api/projects').json())
+    response=client.post('/api/projects/import',files={
+        'file':('broken.zip',b'not a zip','application/zip'),
+    })
+    assert response.status_code==422
+    assert len(client.get('/api/projects').json())==before

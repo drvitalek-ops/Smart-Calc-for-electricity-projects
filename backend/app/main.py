@@ -4,7 +4,9 @@ import json
 import math
 import os
 import uuid
+import zipfile
 from pathlib import Path
+from typing import Literal
 from contextlib import asynccontextmanager
 from collections import defaultdict
 import pymupdf
@@ -113,6 +115,71 @@ class ProductInput(NameInput):
     currency: str = Field(default='RUB', pattern='^[A-Z]{3}$')
     active: bool = True
     parameters: dict = Field(default_factory=dict)
+
+class BackupLayer(BaseModel):
+    backup_id: int
+    name: str = Field(min_length=1,max_length=200)
+    visible: bool
+    locked: bool
+    export: bool
+
+class BackupRoom(BaseModel):
+    backup_id: int
+    name: str = Field(min_length=1,max_length=200)
+    wet: bool
+
+class BackupType(BaseModel):
+    backup_id: int
+    name: str = Field(min_length=1,max_length=200)
+    category: str = Field(min_length=1,max_length=200)
+    unit: str = Field(pattern='^(шт|м)$')
+    color: str = Field(pattern='^#[0-9a-fA-F]{6}$')
+    defaults: dict
+    wet_min_ip: int | None = Field(default=None,ge=0,le=69)
+
+class BackupProduct(BaseModel):
+    backup_id: int
+    type_backup_id: int
+    name: str = Field(min_length=1,max_length=500)
+    sku: str = Field(max_length=200)
+    manufacturer: str = Field(min_length=1,max_length=500)
+    supplier: str = Field(default='',max_length=500)
+    supplier_contact: str = Field(default='',max_length=500)
+    unit: str = Field(pattern='^(шт|м)$')
+    price: float = Field(ge=0,le=1_000_000_000)
+    currency: str = Field(pattern='^[A-Z]{3}$')
+    active: bool
+    parameters: dict
+
+class BackupPage(BaseModel):
+    backup_id: int
+    number: int = Field(ge=1,le=10000)
+    name: str | None = Field(default=None,max_length=200)
+    source_index: int = Field(ge=0,le=999)
+    meters_per_point: float | None = Field(default=None,gt=0,le=10000)
+    pdf_file: str = Field(min_length=5,max_length=200)
+
+class BackupElement(BaseModel):
+    page_backup_id: int
+    layer_backup_id: int
+    type_backup_id: int
+    product_backup_id: int | None = None
+    room_backup_id: int | None = None
+    x: float = Field(ge=0,le=1)
+    y: float = Field(ge=0,le=1)
+    parameters: dict
+    geometry: dict
+    comment: str = Field(default='',max_length=2000)
+
+class BackupManifest(BaseModel):
+    version: Literal[1]
+    project_name: str = Field(min_length=1,max_length=200)
+    layers: list[BackupLayer] = Field(max_length=500)
+    rooms: list[BackupRoom] = Field(max_length=5000)
+    types: list[BackupType] = Field(max_length=5000)
+    products: list[BackupProduct] = Field(max_length=10000)
+    pages: list[BackupPage] = Field(max_length=1000)
+    elements: list[BackupElement] = Field(max_length=100000)
 
 def catalog_product(db, product):
     row=data(product)
@@ -339,6 +406,207 @@ async def import_catalog(file: UploadFile, db: DbSession = Depends(session)):
     except ValueError as exc:
         db.rollback(); raise HTTPException(422,str(exc))
     return {'created':created,'updated':updated,'total':created+updated}
+
+@app.get('/api/projects/{pid}/backup')
+def backup_project(pid: int, db: DbSession = Depends(session)):
+    project=require(db,Project,pid)
+    pages=list(db.scalars(select(Page).where(Page.project_id==pid).order_by(Page.id)))
+    rooms=list(db.scalars(select(Room).where(Room.project_id==pid).order_by(Room.id)))
+    layers=list(db.scalars(select(Layer).where(Layer.project_id==pid).order_by(Layer.id)))
+    elements=list(db.scalars(select(Element).where(Element.project_id==pid).order_by(Element.id)))
+    type_ids={item.type_id for item in elements}
+    product_ids={item.product_id for item in elements if item.product_id is not None}
+    types=[require(db,ElementType,item_id) for item_id in sorted(type_ids)]
+    products=[require(db,Product,item_id) for item_id in sorted(product_ids)]
+    pdf_files={}
+    total_size=0
+    for page in pages:
+        path=Path(page.pdf_path)
+        if not path.is_file():
+            raise HTTPException(500,f'Исходный PDF листа {page.number} не найден')
+        if str(path) not in pdf_files:
+            total_size+=path.stat().st_size
+            if total_size>90*1024*1024:
+                raise HTTPException(413,'Суммарный размер PDF проекта превышает 90 МБ')
+            pdf_files[str(path)]=f'pdf/{len(pdf_files)+1}.pdf'
+    manifest=BackupManifest(
+        version=1,project_name=project.name,
+        layers=[BackupLayer(backup_id=item.id,name=item.name,visible=item.visible,locked=item.locked,export=item.export) for item in layers],
+        rooms=[BackupRoom(backup_id=item.id,name=item.name,wet=item.wet) for item in rooms],
+        types=[BackupType(backup_id=item.id,name=item.name,category=item.category,unit=item.unit,color=item.color,defaults=item.defaults,wet_min_ip=item.wet_min_ip) for item in types],
+        products=[BackupProduct(
+            backup_id=item.id,type_backup_id=item.type_id,name=item.name,sku=item.sku,
+            manufacturer=require(db,Manufacturer,item.manufacturer_id).name,
+            supplier=require(db,Supplier,item.supplier_id).name if item.supplier_id else '',
+            supplier_contact=require(db,Supplier,item.supplier_id).contact if item.supplier_id else '',
+            unit=item.unit,price=item.price,currency=item.currency,active=item.active,parameters=item.parameters,
+        ) for item in products],
+        pages=[BackupPage(
+            backup_id=item.id,number=item.number,name=item.name,source_index=item.source_index,
+            meters_per_point=item.meters_per_point,pdf_file=pdf_files[item.pdf_path],
+        ) for item in pages],
+        elements=[BackupElement(
+            page_backup_id=item.page_id,layer_backup_id=item.layer_id,type_backup_id=item.type_id,
+            product_backup_id=item.product_id,room_backup_id=item.room_id,x=item.x,y=item.y,
+            parameters=item.parameters,geometry=item.geometry or {},comment=item.comment,
+        ) for item in elements],
+    )
+    output=io.BytesIO()
+    with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
+        archive.writestr('manifest.json',manifest.model_dump_json(indent=2))
+        for source,name in pdf_files.items(): archive.write(source,name)
+    output.seek(0)
+    return StreamingResponse(
+        output,media_type='application/zip',
+        headers={'Content-Disposition':f'attachment; filename="smart-home-calc-project-{pid}.zip"'},
+    )
+
+def backup_id_map(items):
+    result={}
+    for item in items:
+        if item.backup_id in result:
+            raise ValueError('Повторяющийся идентификатор в manifest.json')
+        result[item.backup_id]=item
+    return result
+
+@app.post('/api/projects/import',status_code=201)
+async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
+    raw=await file.read(100*1024*1024+1)
+    if len(raw)>100*1024*1024:
+        raise HTTPException(413,'Архив резервной копии больше 100 МБ')
+    try:
+        archive=zipfile.ZipFile(io.BytesIO(raw))
+        infos=archive.infolist()
+        names=[item.filename for item in infos]
+        if len(names)!=len(set(names)) or len(names)>1100:
+            raise ValueError('Некорректный список файлов архива')
+        if any(item.flag_bits&1 for item in infos):
+            raise ValueError('Зашифрованные архивы не поддерживаются')
+        if any(Path(name).is_absolute() or '..' in Path(name).parts for name in names):
+            raise ValueError('Некорректный путь внутри архива')
+        if sum(item.file_size for item in infos)>250*1024*1024:
+            raise ValueError('Распакованный архив больше 250 МБ')
+        manifest_info=archive.getinfo('manifest.json')
+        if manifest_info.file_size>5*1024*1024:
+            raise ValueError('manifest.json больше 5 МБ')
+        manifest=BackupManifest.model_validate_json(archive.read(manifest_info))
+        page_specs=backup_id_map(manifest.pages)
+        layer_specs=backup_id_map(manifest.layers)
+        room_specs=backup_id_map(manifest.rooms)
+        type_specs=backup_id_map(manifest.types)
+        product_specs=backup_id_map(manifest.products)
+        pdf_names={item.pdf_file for item in manifest.pages}
+        if any(name not in names or not name.startswith('pdf/') or not name.endswith('.pdf') for name in pdf_names):
+            raise ValueError('В архиве отсутствует PDF из manifest.json')
+        pdf_contents={}
+        for name in pdf_names:
+            info=archive.getinfo(name)
+            if info.file_size>20*1024*1024:
+                raise ValueError(f'PDF {name} больше 20 МБ')
+            content=archive.read(info)
+            document=pymupdf.open(stream=content,filetype='pdf')
+            try:
+                if document.needs_pass or not 1<=len(document)<=100:
+                    raise ValueError(f'Некорректный PDF {name}')
+                for page in manifest.pages:
+                    if page.pdf_file==name and page.source_index>=len(document):
+                        raise ValueError(f'В PDF {name} отсутствует страница {page.source_index+1}')
+            finally:
+                document.close()
+            pdf_contents[name]=content
+        for element in manifest.elements:
+            if element.page_backup_id not in page_specs or element.layer_backup_id not in layer_specs or element.type_backup_id not in type_specs:
+                raise ValueError('Объект ссылается на отсутствующий лист, слой или тип')
+            if element.room_backup_id is not None and element.room_backup_id not in room_specs:
+                raise ValueError('Объект ссылается на отсутствующее помещение')
+            if element.product_backup_id is not None and element.product_backup_id not in product_specs:
+                raise ValueError('Объект ссылается на отсутствующий товар')
+            points=geometry_points(element.geometry)
+            if points and not page_specs[element.page_backup_id].meters_per_point:
+                raise ValueError('Для линейного объекта отсутствует масштаб листа')
+        if any(product.type_backup_id not in type_specs for product in manifest.products):
+            raise ValueError('Товар ссылается на отсутствующий тип')
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(422,f'Некорректная резервная копия: {exc}') from exc
+    finally:
+        if 'archive' in locals(): archive.close()
+    paths=[]
+    try:
+        project=Project(name=manifest.project_name); db.add(project); db.flush()
+        layer_map={}
+        for item in manifest.layers:
+            obj=Layer(project_id=project.id,name=item.name,visible=item.visible,locked=item.locked,export=item.export)
+            db.add(obj); db.flush(); layer_map[item.backup_id]=obj
+        room_map={}
+        for item in manifest.rooms:
+            obj=Room(project_id=project.id,name=item.name,wet=item.wet)
+            db.add(obj); db.flush(); room_map[item.backup_id]=obj
+        type_map={}
+        for item in manifest.types:
+            candidates=db.scalars(select(ElementType).where(ElementType.name==item.name,ElementType.category==item.category,ElementType.unit==item.unit))
+            obj=next((candidate for candidate in candidates if candidate.color==item.color and candidate.defaults==item.defaults and candidate.wet_min_ip==item.wet_min_ip),None)
+            if obj is None:
+                obj=ElementType(name=item.name,category=item.category,unit=item.unit,color=item.color,defaults=item.defaults,wet_min_ip=item.wet_min_ip)
+                db.add(obj); db.flush()
+            type_map[item.backup_id]=obj
+        product_map={}
+        for item in manifest.products:
+            manufacturer=db.scalar(select(Manufacturer).where(Manufacturer.name==item.manufacturer).limit(1))
+            if manufacturer is None:
+                manufacturer=Manufacturer(name=item.manufacturer); db.add(manufacturer); db.flush()
+            supplier=None
+            if item.supplier:
+                supplier=db.scalar(select(Supplier).where(Supplier.name==item.supplier).limit(1))
+                if supplier is None:
+                    supplier=Supplier(name=item.supplier,contact=item.supplier_contact); db.add(supplier); db.flush()
+            typ=type_map[item.type_backup_id]
+            candidates=db.scalars(select(Product).where(Product.manufacturer_id==manufacturer.id,Product.type_id==typ.id,Product.name==item.name))
+            obj=next((candidate for candidate in candidates if candidate.sku==item.sku and candidate.supplier_id==(supplier.id if supplier else None) and candidate.price==item.price and candidate.currency==item.currency and candidate.active==item.active and candidate.parameters==item.parameters),None)
+            if obj is None:
+                obj=Product(
+                    manufacturer_id=manufacturer.id,supplier_id=supplier.id if supplier else None,type_id=typ.id,
+                    name=item.name,sku=item.sku,unit=item.unit,price=item.price,currency=item.currency,
+                    active=item.active,parameters=item.parameters,
+                ); db.add(obj); db.flush()
+            product_map[item.backup_id]=obj
+        stored_pdfs={}
+        for name,content in pdf_contents.items():
+            path=STORAGE/f'{uuid.uuid4().hex}.pdf'; path.write_bytes(content); paths.append(path); stored_pdfs[name]=path
+        page_map={}
+        for item in sorted(manifest.pages,key=lambda value:(value.number,value.backup_id)):
+            document=pymupdf.open(stream=pdf_contents[item.pdf_file],filetype='pdf')
+            source=document[item.source_index]
+            token=uuid.uuid4().hex; image=STORAGE/f'{token}.png'
+            scale=min(1.5,2000/max(source.rect.width,source.rect.height))
+            source.get_pixmap(matrix=pymupdf.Matrix(scale,scale)).save(image); paths.append(image)
+            obj=Page(
+                project_id=project.id,number=item.number,name=item.name,source_index=item.source_index,
+                meters_per_point=item.meters_per_point,width=source.rect.width,height=source.rect.height,
+                pdf_path=str(stored_pdfs[item.pdf_file]),image_path=str(image),
+            )
+            document.close(); db.add(obj); db.flush(); page_map[item.backup_id]=obj
+        for item in manifest.elements:
+            product=product_map.get(item.product_backup_id) if item.product_backup_id is not None else None
+            typ=type_map[item.type_backup_id]
+            if product and product.type_id!=typ.id:
+                raise ValueError('Товар не соответствует типу элемента')
+            db.add(Element(
+                project_id=project.id,page_id=page_map[item.page_backup_id].id,
+                layer_id=layer_map[item.layer_backup_id].id,type_id=typ.id,
+                product_id=product.id if product else None,
+                room_id=room_map[item.room_backup_id].id if item.room_backup_id is not None else None,
+                x=item.x,y=item.y,parameters=item.parameters,geometry=item.geometry,comment=item.comment,
+            ))
+        db.commit()
+        result=data(project); result['pages']=len(page_map); result['elements']=len(manifest.elements)
+        return result
+    except Exception as exc:
+        db.rollback()
+        for path in paths: path.unlink(missing_ok=True)
+        if isinstance(exc,HTTPException): raise
+        raise HTTPException(422,f'Не удалось восстановить проект: {exc}') from exc
 
 @app.get('/api/projects/{pid}')
 def project(pid: int, db: DbSession = Depends(session)):

@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -23,12 +23,27 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Build Windows application
-        run: ./packaging/build-windows-exe.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build standalone Windows application
+        shell: pwsh
+        run: ./packaging/build-windows-exe.ps1
 
       - name: Verify checksum
         working-directory: release
-        run: sha256sum -c SmartHomeCalc-Windows-x64.exe.sha256
+        shell: pwsh
+        run: |
+          $expected = (Get-Content SmartHomeCalc-Windows-x64.exe.sha256).Split(' ')[0]
+          $actual = (Get-FileHash SmartHomeCalc-Windows-x64.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "SHA-256 mismatch" }
 
       - name: Publish GitHub release
         env:
@@ -39,4 +54,4 @@ jobs:
           release/SmartHomeCalc-Windows-x64.exe.sha256
           --repo "$GITHUB_REPOSITORY"
           --title "Smart Home Calc $GITHUB_REF_NAME"
-          --notes "Офлайн-приложение Smart Home Calc для Windows x64. Требуются Docker Desktop и системный компонент WebView2 Runtime."
+          --notes "Автономное офлайн-приложение Smart Home Calc для Windows x64. Docker и PostgreSQL устанавливать не требуется."

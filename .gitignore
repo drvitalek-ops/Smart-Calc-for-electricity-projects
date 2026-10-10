@@ -12,5 +12,6 @@ backups/*
 !backups/.gitkeep
 packaging/windows-launcher/payload.zip
 packaging/windows-launcher/SmartHomeCalc.Desktop.exe
+packaging/windows-launcher/SmartHomeCalc.Backend.exe
 release/
 *.db

@@ -3,6 +3,7 @@ import csv
 import json
 import math
 import os
+import sys
 import uuid
 import zipfile
 from pathlib import Path
@@ -12,10 +13,11 @@ from collections import defaultdict
 import pymupdf
 from fastapi import FastAPI, Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
-from .db import session, Session
+from .db import Base, engine, session, Session
 from .models import (
     Project, Page, Room, Layer, Element, ElementType, Manufacturer, Supplier,
     Product, Report,
@@ -44,6 +46,8 @@ def pdf_font_path():
 
 @asynccontextmanager
 async def lifespan(app):
+    if os.getenv('AUTO_CREATE_SCHEMA') == '1':
+        Base.metadata.create_all(engine)
     with Session() as db:
         seed(db)
     yield
@@ -842,3 +846,10 @@ def export(pid: int, format: str, db: DbSession = Depends(session)):
     db.add(Report(project_id=pid,format=format)); db.commit()
     output.seek(0)
     return StreamingResponse(output,media_type=media,headers={'Content-Disposition':f'attachment; filename="smart-home-{pid}.{format}"'})
+
+STATIC_DIR = Path(os.getenv(
+    'STATIC_DIR',
+    Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parents[2])) / 'frontend',
+))
+if STATIC_DIR.is_dir():
+    app.mount('/', StaticFiles(directory=STATIC_DIR, html=True), name='frontend')

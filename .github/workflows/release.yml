@@ -1,0 +1,42 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.6'
+          cache: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build Windows application
+        run: ./packaging/build-windows-exe.sh
+
+      - name: Verify checksum
+        working-directory: release
+        run: sha256sum -c SmartHomeCalc-Windows-x64.exe.sha256
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          release/SmartHomeCalc-Windows-x64.exe
+          release/SmartHomeCalc-Windows-x64.exe.sha256
+          --repo "$GITHUB_REPOSITORY"
+          --title "Smart Home Calc $GITHUB_REF_NAME"
+          --notes "Офлайн-приложение Smart Home Calc для Windows x64. Требуются Docker Desktop и системный компонент WebView2 Runtime."

@@ -5,7 +5,7 @@
 ## Запуск через EXE на Windows
 
 1. Установите и запустите [Docker Desktop](https://www.docker.com/products/docker-desktop/).
-2. Скачайте `SmartHomeCalc-Windows-x64.exe` из подготовленного релиза.
+2. Откройте страницу [Releases](https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/latest) и скачайте `SmartHomeCalc-Windows-x64.exe` из раздела **Assets**.
 3. Запустите EXE двойным щелчком. При первом запуске подтвердите сообщение и дождитесь загрузки компонентов; Smart Home Calc откроется как отдельное Windows-приложение.
 
 EXE содержит файлы приложения и устанавливает их в `%LOCALAPPDATA%\SmartHomeCalc`. Проекты хранятся в локальных Docker volumes, автоматические копии — в `%LOCALAPPDATA%\SmartHomeCalc\backups`. Повторный запуск EXE открывает существующую установку и сохраняет все данные.

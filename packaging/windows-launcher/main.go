@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	launcherVersion = "0.1.0"
+	launcherVersion = "0.2.0"
 	appURL          = "http://localhost:5173"
 )
 
@@ -168,6 +168,36 @@ func openURL(url string) {
 	_ = exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", url).Start()
 }
 
+func edgeExecutable() (string, error) {
+	if path, err := exec.LookPath("msedge.exe"); err == nil {
+		return path, nil
+	}
+	var locations []string
+	for _, root := range []string{
+		os.Getenv("ProgramFiles(x86)"),
+		os.Getenv("ProgramFiles"),
+		os.Getenv("LOCALAPPDATA"),
+	} {
+		if root != "" {
+			locations = append(locations, filepath.Join(root, "Microsoft", "Edge", "Application", "msedge.exe"))
+		}
+	}
+	for _, path := range locations {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, nil
+		}
+	}
+	return "", errors.New("Microsoft Edge is not installed")
+}
+
+func openApplicationWindow(url string) error {
+	edge, err := edgeExecutable()
+	if err != nil {
+		return err
+	}
+	return exec.Command(edge, "--app="+url, "--start-maximized", "--no-first-run").Start()
+}
+
 func fail(message string, err error) {
 	text := message
 	if err != nil {
@@ -230,5 +260,11 @@ func main() {
 		fail("Приложение не ответило вовремя. Проверьте Docker Desktop и launcher.log.", nil)
 	}
 	fmt.Println("Smart Home Calc готов: " + appURL)
-	openURL(appURL)
+	if err := openApplicationWindow(appURL); err != nil {
+		if logFile != nil {
+			fmt.Fprintln(logFile, "Не удалось открыть отдельное окно приложения:", err)
+		}
+		openURL(appURL)
+		showMessage("Smart Home Calc", "Microsoft Edge не найден, поэтому приложение открыто в обычном браузере.", 0x30)
+	}
 }

@@ -101,7 +101,7 @@ def test_calibrated_geometry_catalog_and_plan_export(client):
     assert product.status_code==201
     body.update({
         'product_id':product.json()['id'],'x':.1,'y':.2,
-        'geometry':{'points':[{'x':.1,'y':.2},{'x':.6,'y':.2}]},
+        'geometry':{'points':[{'x':.1,'y':.2},{'x':.4,'y':.2},{'x':.2,'y':.2}]},
         'parameters':{'ip':65},
     })
     element=client.post(f'/api/projects/{pid}/elements',json=body)
@@ -112,6 +112,9 @@ def test_calibrated_geometry_catalog_and_plan_export(client):
     assert report['rows'][0]['manufacturer']=='Test Factory'
     assert report['rows'][0]['total']==6000
     assert report['totals']=={'RUB':6000}
+    body['geometry']['points'][1]['x']=.6
+    edited=client.put(f"/api/elements/{element.json()['id']}",json=body)
+    assert edited.status_code==200 and edited.json()['parameters']['length']==9
     plan=client.get(f'/api/projects/{pid}/pages/{page_id}/export.pdf')
     assert plan.status_code==200 and plan.content.startswith(b'%PDF')
 

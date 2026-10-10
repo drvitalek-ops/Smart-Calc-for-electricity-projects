@@ -1,5 +1,7 @@
 node_modules/
 dist/
+bin/
+obj/
 __pycache__/
 .pytest_cache/
 .venv/
@@ -9,5 +11,6 @@ storage/
 backups/*
 !backups/.gitkeep
 packaging/windows-launcher/payload.zip
+packaging/windows-launcher/SmartHomeCalc.Desktop.exe
 release/
 *.db

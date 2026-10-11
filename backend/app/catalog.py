@@ -13,7 +13,10 @@ def seed(db):
     ]
     for category, names, color, ip in groups:
         for name in names:
-            db.add(ElementType(name=name, category=category, color=color, wet_min_ip=ip, defaults={'quantity':1,'ip':44 if name=='Влагозащищенная розетка' else 20}))
+            defaults={'quantity':1,'ip':44 if name=='Влагозащищенная розетка' else 20}
+            if name in ('Розетка одинарная','Розетка двойная','USB','TV','RJ45','Влагозащищенная розетка'):
+                defaults['frame_posts']=1
+            db.add(ElementType(name=name, category=category, color=color, wet_min_ip=ip, defaults=defaults))
     db.add(ElementType(name='Трек',category='Освещение',unit='м',color='#facc15',defaults={'length':1,'track_type':'магнитный','color':'черный','mount':'накладной','connectors':0,'end_caps':2}))
     db.add(ElementType(name='LED-линия',category='LED-подсветка',unit='м',color='#34d399',wet_min_ip=65,defaults={'length':1,'zone':'','strip_type':'','voltage':24,'ip':20,'profile':'','control':''}))
     db.add(ElementType(name='Электрокарниз',category='Электрокарнизы',color='#60a5fa',defaults={'quantity':1,'length':1,'control':'Zigbee'}))

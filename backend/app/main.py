@@ -237,11 +237,13 @@ def validate_element(db, project_id, body):
                 (second['y']-first['y'])*page.height,
             )*page.meters_per_point
         parameters['length']=round(length,3)
-    for key in ('length','quantity','connectors','end_caps'):
+    for key in ('length','quantity','connectors','end_caps','frame_posts'):
         if key in parameters:
             try:
                 value = float(parameters[key])
-                if not 0 <= value <= 1000000 or (key in ('quantity','connectors','end_caps') and not value.is_integer()):
+                if not 0 <= value <= 1000000 or (key in ('quantity','connectors','end_caps','frame_posts') and not value.is_integer()):
+                    raise ValueError()
+                if key == 'frame_posts' and not 1 <= value <= 6:
                     raise ValueError()
             except (ValueError,TypeError):
                 raise HTTPException(422, f'Некорректный параметр: {key}')
@@ -717,6 +719,7 @@ def remove_element(eid: int, db: DbSession = Depends(session)):
 def report_rows(db,pid):
     require(db,Project,pid)
     groups=defaultdict(float)
+    frame_groups=defaultdict(float)
     warnings=[]
     for e,t,l in db.execute(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id).join(Layer,Element.layer_id==Layer.id).where(Element.project_id==pid)):
         if not l.export: continue
@@ -724,7 +727,7 @@ def report_rows(db,pid):
         product=db.get(Product,e.product_id) if e.product_id else None
         manufacturer=db.get(Manufacturer,product.manufacturer_id) if product else None
         supplier=db.get(Supplier,product.supplier_id) if product and product.supplier_id else None
-        group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity')}
+        group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity','frame_posts')}
         key=(
             room.name if room else 'Без помещения',t.category,t.name,t.unit,
             json.dumps(group_parameters,ensure_ascii=False,sort_keys=True),
@@ -734,6 +737,9 @@ def report_rows(db,pid):
             float(product.price) if product else 0, product.currency if product else 'RUB',
         )
         groups[key]+=float(e.parameters.get('length',0) if t.unit=='м' else e.parameters.get('quantity',1))
+        if t.name in ('Розетка одинарная','Розетка двойная','USB','TV','RJ45','Влагозащищенная розетка'):
+            posts=int(e.parameters.get('frame_posts',1))
+            frame_groups[(room.name if room else 'Без помещения',posts)]+=1
         if room and room.wet and t.wet_min_ip and int(e.parameters.get('ip',0))<t.wet_min_ip:
             warnings.append(f'{room.name}: {t.name} №{e.id} — рекомендуется IP{t.wet_min_ip} или выше')
     rows=[]
@@ -745,6 +751,15 @@ def report_rows(db,pid):
             manufacturer=key[8],supplier=key[9],unit_price=price,
             currency=key[11],quantity=quantity,total=round(quantity*price,2),
         ))
+    for (room,posts),quantity in frame_groups.items():
+        ending='пост' if posts==1 else 'поста' if posts < 5 else 'постов'
+        rows.append(dict(
+            room=room,category='Рамки',name=f'Рамка на {posts} {ending}',unit='шт',
+            parameters=json.dumps({'frame_posts':posts},ensure_ascii=False),product_id=None,
+            product='',sku='',manufacturer='',supplier='',unit_price=0,currency='RUB',
+            quantity=quantity,total=0,
+        ))
+    rows.sort(key=lambda row:(row['room'],row['category'],row['name'],row['product']))
     totals=defaultdict(float)
     for row in rows: totals[row['currency']]+=row['total']
     return {'rows':rows,'warnings':warnings,'totals':dict(totals)}

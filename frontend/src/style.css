@@ -3,6 +3,7 @@
 .restore-project input{display:none}
 
 .line-node{cursor:move}
+.track-arrow{pointer-events:none}
 .line-preview{pointer-events:none}
 .finish-line{background:#168674}
 
@@ -51,6 +52,9 @@ details input{margin-top:8px}
 .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;background:#fafbfc;border-bottom:1px solid #dfe5ea}
 .toolbar>div{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 .toolbar button{padding:5px 9px}
+.symbol-scale{display:flex;align-items:center;gap:7px;margin:0;padding:4px 8px;border:1px solid #d8dfe5;border-radius:6px;background:white;color:#526170;white-space:nowrap}
+.symbol-scale input{width:90px;margin:0;padding:0;accent-color:#246d61}
+.symbol-scale span{min-width:36px;text-align:right;font-size:11px}
 .tool-link{padding:6px 9px;text-decoration:none;border:1px solid #d8dfe5;border-radius:6px;color:#304155;background:white}
 .upload{margin:0;background:#243c4a;color:white;border-radius:5px;padding:8px 12px;cursor:pointer}
 .upload input{display:none}

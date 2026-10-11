@@ -86,6 +86,20 @@ def test_extensible_catalog_and_parameter_grouping(client):
     rows=client.get(f'/api/projects/{pid}/report').json()['rows']
     assert [r['quantity'] for r in rows]==[7]
 
+def test_socket_frames_from_one_to_six_posts(client):
+    pid,body=setup(client)
+    socket=next(t for t in client.get('/api/types').json() if t['name']=='Розетка одинарная')
+    body['type_id']=socket['id']
+    body['parameters']={'quantity':3,'ip':20,'frame_posts':3}
+    assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==201
+    rows=client.get(f'/api/projects/{pid}/report').json()['rows']
+    mechanisms=next(row for row in rows if row['name']=='Розетка одинарная')
+    frame=next(row for row in rows if row['category']=='Рамки')
+    assert mechanisms['quantity']==3
+    assert frame['name']=='Рамка на 3 поста' and frame['quantity']==1
+    body['parameters']['frame_posts']=7
+    assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==422
+
 def test_calibrated_geometry_catalog_and_plan_export(client):
     pid,body=setup(client)
     page_id=body['page_id']

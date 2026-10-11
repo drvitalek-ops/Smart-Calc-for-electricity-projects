@@ -44,6 +44,7 @@ internal sealed class MainWindow : Form
         Width = 1440;
         Height = 900;
         MinimumSize = new Size(1024, 700);
+        WindowState = FormWindowState.Maximized;
         BackColor = Color.FromArgb(15, 23, 42);
         Controls.Add(status);
     }

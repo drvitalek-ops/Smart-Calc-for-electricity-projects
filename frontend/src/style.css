@@ -48,7 +48,7 @@ details input{margin-top:8px}
 .check{display:flex;align-items:center;gap:8px}
 .check input{width:15px}
 .new-type{font-size:11px;margin-top:12px}
-.plan-area{min-width:0;display:flex;flex-direction:column}
+.plan-area{position:relative;min-width:0;display:flex;flex-direction:column}
 .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;background:#fafbfc;border-bottom:1px solid #dfe5ea}
 .toolbar>div{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 .toolbar button{padding:5px 9px}
@@ -58,11 +58,19 @@ details input{margin-top:8px}
 .tool-link{padding:6px 9px;text-decoration:none;border:1px solid #d8dfe5;border-radius:6px;color:#304155;background:white}
 .upload{margin:0;background:#243c4a;color:white;border-radius:5px;padding:8px 12px;cursor:pointer}
 .upload input{display:none}
+.label-toggle{position:absolute;z-index:8;top:66px;right:16px;border-color:#ffffff80;background:#173f46c7;color:white;opacity:.72;backdrop-filter:blur(5px)}
+.label-toggle:hover{background:#173f46;color:white;opacity:1}
+.label-toggle.inactive{background:#fff;color:#334155}
+.plan-legend{position:absolute;z-index:8;left:16px;bottom:16px;min-width:160px;max-width:230px;padding:12px 14px;border:1px solid #ffffffa8;border-radius:8px;background:#ffffffe0;box-shadow:0 8px 24px #24324420;backdrop-filter:blur(6px);pointer-events:none}
+.plan-legend strong{display:block;margin-bottom:7px;font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:#526170}
+.plan-legend div{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:11px;color:#304155}
+.plan-legend span{display:inline-flex;align-items:center;justify-content:center;min-width:20px;font-size:17px;font-weight:800}
 .viewport{flex:1;height:585px;overflow:auto;padding:32px;background-color:#eef1f4;background-image:radial-gradient(#cbd2da .7px,transparent .7px);background-size:16px 16px}
 .sheet{position:relative;background:white;box-shadow:0 8px 30px #24324420}
 .sheet img{width:100%;height:100%;display:block}
 .sheet svg{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
 .sheet g{cursor:pointer}
+.custom-icon{font-weight:800;pointer-events:none;user-select:none}
 .placing{cursor:crosshair}
 .empty{text-align:center;margin:130px auto;color:#7e8b99}
 .empty h2{color:#435262;font-size:20px}

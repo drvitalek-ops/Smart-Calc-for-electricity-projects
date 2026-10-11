@@ -253,6 +253,8 @@ def validate_element(db, project_id, body):
                 raise ValueError()
         except (ValueError,TypeError):
             raise HTTPException(422,'Некорректная степень IP')
+    if 'plan_icon' in parameters and (not isinstance(parameters['plan_icon'],str) or len(parameters['plan_icon'])>4):
+        raise HTTPException(422,'Иконка на плане должна содержать не более 4 символов')
     return parameters
 
 @app.get('/api/health')
@@ -727,7 +729,7 @@ def report_rows(db,pid):
         product=db.get(Product,e.product_id) if e.product_id else None
         manufacturer=db.get(Manufacturer,product.manufacturer_id) if product else None
         supplier=db.get(Supplier,product.supplier_id) if product and product.supplier_id else None
-        group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity','frame_posts')}
+        group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity','frame_posts','plan_icon')}
         key=(
             room.name if room else 'Без помещения',t.category,t.name,t.unit,
             json.dumps(group_parameters,ensure_ascii=False,sort_keys=True),

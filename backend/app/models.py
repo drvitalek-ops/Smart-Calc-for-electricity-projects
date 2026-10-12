@@ -38,6 +38,8 @@ class Room(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'))
     name: Mapped[str] = mapped_column(String(200))
     wet: Mapped[bool] = mapped_column(Boolean, default=False)
+    page_id: Mapped[int | None] = mapped_column(ForeignKey('pages.id'))
+    polygon: Mapped[list | None] = mapped_column(JSON)
 
 class Layer(Base):
     __tablename__ = 'layers'

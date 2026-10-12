@@ -66,6 +66,12 @@ async def lifespan(app):
             for column,definition in page_upgrades.items():
                 if column not in page_columns:
                     connection.execute(text(f'ALTER TABLE pages ADD COLUMN {column} {definition}'))
+        room_columns={column['name'] for column in inspect(engine).get_columns('rooms')}
+        with engine.begin() as connection:
+            if 'page_id' not in room_columns:
+                connection.execute(text('ALTER TABLE rooms ADD COLUMN page_id INTEGER'))
+            if 'polygon' not in room_columns:
+                connection.execute(text('ALTER TABLE rooms ADD COLUMN polygon JSON'))
     with Session() as db:
         seed(db)
     yield
@@ -84,8 +90,14 @@ def data(obj):
 class NameInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
+class PolygonPoint(BaseModel):
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+
 class RoomInput(NameInput):
     wet: bool = False
+    page_id: int | None = None
+    polygon: list[PolygonPoint] | None = None
 
 class LayerInput(BaseModel):
     visible: bool | None = None
@@ -100,6 +112,9 @@ class PageInput(BaseModel):
     offset_x: float | None = Field(default=None, ge=-1, le=1)
     offset_y: float | None = Field(default=None, ge=-1, le=1)
     scale: float | None = Field(default=None, ge=0.5, le=2)
+
+class PageSelectionInput(BaseModel):
+    page_ids: list[int] = Field(min_length=1, max_length=1000)
 
 class CalibrationInput(BaseModel):
     x1: float = Field(ge=0, le=1)
@@ -163,6 +178,8 @@ class BackupRoom(BaseModel):
     backup_id: int
     name: str = Field(min_length=1,max_length=200)
     wet: bool
+    page_backup_id: int | None = None
+    polygon: list[PolygonPoint] | None = None
 
 class BackupType(BaseModel):
     backup_id: int
@@ -244,6 +261,45 @@ def geometry_points(geometry):
             raise HTTPException(422, 'Координаты линии выходят за границы листа')
         result.append({'x':x,'y':y})
     return result
+
+def point_in_polygon(x: float, y: float, polygon):
+    inside=False
+    previous=polygon[-1]
+    for current in polygon:
+        x1,y1=float(previous['x']),float(previous['y'])
+        x2,y2=float(current['x']),float(current['y'])
+        if (y1>y)!=(y2>y) and x < (x2-x1)*(y-y1)/(y2-y1)+x1:
+            inside=not inside
+        previous=current
+    return inside
+
+def room_at_point(db, project_id: int, page_id: int, x: float, y: float):
+    rooms=db.scalars(select(Room).where(
+        Room.project_id==project_id,Room.page_id==page_id,Room.polygon.is_not(None),
+    ).order_by(Room.id.desc()))
+    return next((room for room in rooms if len(room.polygon or [])>=3 and point_in_polygon(x,y,room.polygon)),None)
+
+def reassign_page_rooms(db, project_id: int, page_id: int):
+    for element in db.scalars(select(Element).where(Element.project_id==project_id,Element.page_id==page_id)):
+        zone=room_at_point(db,project_id,page_id,element.x,element.y)
+        current=db.get(Room,element.room_id) if element.room_id else None
+        if zone:
+            element.room_id=zone.id
+        elif current and current.polygon:
+            element.room_id=None
+
+def validate_room(db, project_id: int, body: RoomInput):
+    values=body.model_dump()
+    polygon=values['polygon']
+    if (values['page_id'] is None)!=(polygon is None):
+        raise HTTPException(422,'Для области помещения укажите страницу и минимум три точки')
+    if polygon is not None:
+        if len(polygon)<3:
+            raise HTTPException(422,'Для области помещения нужны минимум три точки')
+        page=require(db,Page,values['page_id'])
+        if page.project_id!=project_id:
+            raise HTTPException(422,'Страница принадлежит другому проекту')
+    return values
 
 def validate_element(db, project_id, body):
     for model, id in [(Page,body.page_id),(Layer,body.layer_id),(Room,body.room_id)]:
@@ -479,7 +535,10 @@ def backup_project(pid: int, db: DbSession = Depends(session)):
     manifest=BackupManifest(
         version=1,project_name=project.name,
         layers=[BackupLayer(backup_id=item.id,name=item.name,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity) for item in layers],
-        rooms=[BackupRoom(backup_id=item.id,name=item.name,wet=item.wet) for item in rooms],
+        rooms=[BackupRoom(
+            backup_id=item.id,name=item.name,wet=item.wet,
+            page_backup_id=item.page_id,polygon=item.polygon,
+        ) for item in rooms],
         types=[BackupType(backup_id=item.id,name=item.name,category=item.category,unit=item.unit,color=item.color,defaults=item.defaults,wet_min_ip=item.wet_min_ip) for item in types],
         products=[BackupProduct(
             backup_id=item.id,type_backup_id=item.type_id,name=item.name,sku=item.sku,
@@ -573,6 +632,13 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
             points=geometry_points(element.geometry)
             if points and not page_specs[element.page_backup_id].meters_per_point:
                 raise ValueError('Для линейного объекта отсутствует масштаб листа')
+        for room in manifest.rooms:
+            if (room.page_backup_id is None)!=(room.polygon is None):
+                raise ValueError('Некорректная область помещения')
+            if room.page_backup_id is not None and room.page_backup_id not in page_specs:
+                raise ValueError('Помещение ссылается на отсутствующий лист')
+            if room.polygon is not None and len(room.polygon)<3:
+                raise ValueError('Для области помещения нужны минимум три точки')
         if any(product.type_backup_id not in type_specs for product in manifest.products):
             raise ValueError('Товар ссылается на отсутствующий тип')
     except HTTPException:
@@ -588,10 +654,6 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
         for item in manifest.layers:
             obj=Layer(project_id=project.id,name=item.name,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity)
             db.add(obj); db.flush(); layer_map[item.backup_id]=obj
-        room_map={}
-        for item in manifest.rooms:
-            obj=Room(project_id=project.id,name=item.name,wet=item.wet)
-            db.add(obj); db.flush(); room_map[item.backup_id]=obj
         type_map={}
         for item in manifest.types:
             candidates=db.scalars(select(ElementType).where(ElementType.name==item.name,ElementType.category==item.category,ElementType.unit==item.unit))
@@ -638,6 +700,14 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
                 pdf_path=str(stored_pdfs[item.pdf_file]),image_path=str(image),
             )
             document.close(); db.add(obj); db.flush(); page_map[item.backup_id]=obj
+        room_map={}
+        for item in manifest.rooms:
+            obj=Room(
+                project_id=project.id,name=item.name,wet=item.wet,
+                page_id=page_map[item.page_backup_id].id if item.page_backup_id is not None else None,
+                polygon=[point.model_dump() for point in item.polygon] if item.polygon is not None else None,
+            )
+            db.add(obj); db.flush(); room_map[item.backup_id]=obj
         for item in manifest.elements:
             product=product_map.get(item.product_backup_id) if item.product_backup_id is not None else None
             typ=type_map[item.type_backup_id]
@@ -669,8 +739,32 @@ def project(pid: int, db: DbSession = Depends(session)):
 @app.post('/api/projects/{pid}/rooms',status_code=201)
 def add_room(pid: int, body: RoomInput, db: DbSession = Depends(session)):
     require(db,Project,pid)
-    r=Room(project_id=pid,**body.model_dump()); db.add(r); db.commit()
+    values=validate_room(db,pid,body)
+    r=Room(project_id=pid,**values); db.add(r); db.flush()
+    if r.page_id is not None: reassign_page_rooms(db,pid,r.page_id)
+    db.commit()
     return data(r)
+
+@app.put('/api/rooms/{room_id}')
+def edit_room(room_id: int, body: RoomInput, db: DbSession = Depends(session)):
+    room=require(db,Room,room_id)
+    old_page_id=room.page_id
+    values=validate_room(db,room.project_id,body)
+    for key,value in values.items(): setattr(room,key,value)
+    db.flush()
+    for page_id in {old_page_id,room.page_id}-{None}:
+        reassign_page_rooms(db,room.project_id,page_id)
+    db.commit(); return data(room)
+
+@app.delete('/api/rooms/{room_id}',status_code=204)
+def remove_room(room_id: int, db: DbSession = Depends(session)):
+    room=require(db,Room,room_id)
+    project_id,page_id=room.project_id,room.page_id
+    for element in db.scalars(select(Element).where(Element.room_id==room.id)):
+        element.room_id=None
+    db.delete(room); db.flush()
+    if page_id is not None: reassign_page_rooms(db,project_id,page_id)
+    db.commit()
 
 @app.post('/api/projects/{pid}/layers',status_code=201)
 def add_layer(pid: int, body: NameInput, db: DbSession = Depends(session)):
@@ -693,28 +787,44 @@ def edit_page(page_id: int, body: PageInput, db: DbSession = Depends(session)):
         setattr(page,key,value)
     db.commit(); return data(page)
 
+def delete_project_pages(db: DbSession, project_id: int, page_ids: list[int]):
+    unique_ids=list(dict.fromkeys(page_ids))
+    pages=list(db.scalars(select(Page).where(Page.project_id==project_id,Page.id.in_(unique_ids))))
+    if len(pages)!=len(unique_ids):
+        raise HTTPException(404,'Одна или несколько страниц не найдены в проекте')
+    elements=list(db.scalars(select(Element).where(Element.project_id==project_id,Element.page_id.in_(unique_ids))))
+    type_ids={element.type_id for element in elements}
+    protected_type_ids=set(db.scalars(select(ElementType.id).where(
+        ElementType.id.in_(type_ids),
+        ElementType.category.in_(('Электроустановки','Освещение','LED-подсветка')),
+    ))) if type_ids else set()
+    if any(element.type_id in protected_type_ids for element in elements):
+        raise HTTPException(409,'Нельзя удалить выбранные страницы: на них есть электроустановки или освещение')
+    image_paths=[Path(page.image_path) for page in pages]
+    pdf_paths={Path(page.pdf_path) for page in pages}
+    for room in db.scalars(select(Room).where(Room.project_id==project_id,Room.page_id.in_(unique_ids))):
+        db.delete(room)
+    for element in elements: db.delete(element)
+    for page in pages: db.delete(page)
+    db.flush()
+    remaining=list(db.scalars(select(Page).where(Page.project_id==project_id).order_by(Page.number,Page.id)))
+    for number,item in enumerate(remaining,1): item.number=number
+    unused_pdf_paths=[path for path in pdf_paths if not db.scalar(select(Page.id).where(Page.pdf_path==str(path)).limit(1))]
+    db.commit()
+    for path in image_paths: path.unlink(missing_ok=True)
+    for path in unused_pdf_paths: path.unlink(missing_ok=True)
+    return unique_ids
+
+@app.post('/api/projects/{project_id}/pages/delete')
+def remove_project_pages(project_id: int, body: PageSelectionInput, db: DbSession = Depends(session)):
+    require(db,Project,project_id)
+    deleted=delete_project_pages(db,project_id,body.page_ids)
+    return {'deleted':len(deleted),'page_ids':deleted}
+
 @app.delete('/api/pages/{page_id}',status_code=204)
 def remove_page(page_id: int, db: DbSession = Depends(session)):
     page=require(db,Page,page_id)
-    elements=list(db.scalars(select(Element).where(Element.page_id==page.id)))
-    protected=[]
-    for element in elements:
-        typ=require(db,ElementType,element.type_id)
-        if typ.category in ('Электроустановки','Освещение','LED-подсветка'):
-            protected.append(typ.name)
-    if protected:
-        raise HTTPException(409,'Нельзя удалить страницу: на ней есть электроустановки или освещение')
-    image_path=Path(page.image_path)
-    pdf_path=Path(page.pdf_path)
-    project_id=page.project_id
-    for element in elements: db.delete(element)
-    db.delete(page); db.flush()
-    remaining=list(db.scalars(select(Page).where(Page.project_id==project_id).order_by(Page.number,Page.id)))
-    for number,item in enumerate(remaining,1): item.number=number
-    pdf_in_use=db.scalar(select(Page.id).where(Page.pdf_path==str(pdf_path)).limit(1))
-    db.commit()
-    image_path.unlink(missing_ok=True)
-    if not pdf_in_use: pdf_path.unlink(missing_ok=True)
+    delete_project_pages(db,page.project_id,[page.id])
 
 @app.post('/api/pages/{page_id}/calibrate')
 def calibrate_page(page_id: int, body: CalibrationInput, db: DbSession = Depends(session)):
@@ -780,6 +890,8 @@ def page_image(page_id: int, db: DbSession = Depends(session)):
 def add_element(pid: int, body: ElementInput, db: DbSession = Depends(session)):
     require(db,Project,pid)
     values=body.model_dump(); values['parameters']=validate_element(db,pid,body)
+    automatic_room=room_at_point(db,pid,body.page_id,body.x,body.y)
+    if automatic_room: values['room_id']=automatic_room.id
     e=Element(project_id=pid,**values); db.add(e); db.commit(); return data(e)
 
 @app.put('/api/elements/{eid}')
@@ -788,6 +900,10 @@ def edit_element(eid: int, body: ElementInput, db: DbSession = Depends(session))
     if require(db,Layer,e.layer_id).locked:
         raise HTTPException(409,'Слой заблокирован')
     values=body.model_dump(); values['parameters']=validate_element(db,e.project_id,body)
+    automatic_room=room_at_point(db,e.project_id,body.page_id,body.x,body.y)
+    if automatic_room: values['room_id']=automatic_room.id
+    elif e.room_id and (current_room:=db.get(Room,e.room_id)) and current_room.polygon:
+        values['room_id']=None
     for key,value in values.items(): setattr(e,key,value)
     db.commit(); return data(e)
 

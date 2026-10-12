@@ -79,6 +79,68 @@ def test_layer_lock_and_export(client):
     assert client.delete(f"/api/pages/{empty_page['id']}").status_code==204
     assert len(client.get(f'/api/projects/{pid}').json()['pages'])==1
 
+def test_bulk_page_deletion_is_atomic_and_renumbers_pages(client):
+    pid,body=setup(client)
+    protected_page_id=body['page_id']
+    assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==201
+    document=pymupdf.open();document.new_page();document.new_page()
+    uploaded=client.post(
+        f'/api/projects/{pid}/pdf',
+        files={'file':('extra.pdf',document.tobytes(),'application/pdf')},
+    ).json()
+    project=client.get(f'/api/projects/{pid}').json()
+    assert len(project['pages'])==4
+    empty_page_id=uploaded[0]['id']
+    blocked=client.post(f'/api/projects/{pid}/pages/delete',json={
+        'page_ids':[protected_page_id,empty_page_id],
+    })
+    assert blocked.status_code==409
+    assert len(client.get(f'/api/projects/{pid}').json()['pages'])==4
+    deleted=client.post(f'/api/projects/{pid}/pages/delete',json={
+        'page_ids':[page['id'] for page in uploaded],
+    })
+    assert deleted.status_code==200
+    assert deleted.json()['deleted']==2
+    remaining=client.get(f'/api/projects/{pid}').json()['pages']
+    assert len(remaining)==2
+    assert [page['number'] for page in remaining]==[1,2]
+
+def test_polygon_room_assigns_existing_and_new_elements(client):
+    pid,body=setup(client)
+    existing=client.post(f'/api/projects/{pid}/elements',json=body).json()
+    room=client.post(f'/api/projects/{pid}/rooms',json={
+        'name':'Кухня','wet':False,'page_id':body['page_id'],
+        'polygon':[{'x':.1,'y':.3},{'x':.5,'y':.3},{'x':.5,'y':.7},{'x':.1,'y':.7}],
+    })
+    assert room.status_code==201
+    room_id=room.json()['id']
+    project=client.get(f'/api/projects/{pid}').json()
+    assert next(item for item in project['elements'] if item['id']==existing['id'])['room_id']==room_id
+    body['x']=.3;body['y']=.5;body['room_id']=None
+    added=client.post(f'/api/projects/{pid}/elements',json=body)
+    assert added.status_code==201 and added.json()['room_id']==room_id
+    moved=client.put(f"/api/elements/{added.json()['id']}",json={**body,'x':.8})
+    assert moved.status_code==200 and moved.json()['room_id'] is None
+    renamed=client.put(f'/api/rooms/{room_id}',json={
+        'name':'Кухня-гостиная','wet':False,'page_id':body['page_id'],
+        'polygon':[{'x':.6,'y':.3},{'x':.9,'y':.3},{'x':.9,'y':.7},{'x':.6,'y':.7}],
+    })
+    assert renamed.status_code==200
+    project=client.get(f'/api/projects/{pid}').json()
+    assert next(item for item in project['elements'] if item['id']==existing['id'])['room_id'] is None
+    assert next(item for item in project['elements'] if item['id']==added.json()['id'])['room_id']==room_id
+    archive=client.get(f'/api/projects/{pid}/backup')
+    restored=client.post('/api/projects/import',files={
+        'file':('project.zip',archive.content,'application/zip'),
+    })
+    assert restored.status_code==201
+    restored_project=client.get(f"/api/projects/{restored.json()['id']}").json()
+    restored_room=next(item for item in restored_project['rooms'] if item['polygon'])
+    assert restored_room['name']=='Кухня-гостиная'
+    assert len(restored_room['polygon'])==4
+    assert client.delete(f'/api/rooms/{room_id}').status_code==204
+    assert all(item['room_id'] is None for item in client.get(f'/api/projects/{pid}').json()['elements'])
+
 def test_cross_project_and_validation(client):
     pid,body=setup(client)
     other=client.post('/api/projects',json={'name':'Другой'}).json()['id']

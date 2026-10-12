@@ -29,7 +29,10 @@ header small{font-size:11px}
 header select{margin-left:auto;width:190px}
 header form{display:flex;gap:6px}
 header form input{width:160px}
-.workspace{display:grid;grid-template-columns:235px minmax(0,1fr) 245px;min-height:650px}
+.workspace{display:grid;grid-template-columns:235px minmax(0,1fr) 285px;min-height:650px}
+.workspace.left-collapsed{grid-template-columns:minmax(0,1fr) 285px}
+.workspace.right-collapsed{grid-template-columns:235px minmax(0,1fr)}
+.workspace.left-collapsed.right-collapsed{grid-template-columns:minmax(0,1fr)}
 aside{background:#fff;padding:22px 16px;border-right:1px solid #dfe5ea}
 .right{border-left:1px solid #dfe5ea;border-right:0}
 aside h3{font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:1px;margin:5px 0 18px}
@@ -52,6 +55,7 @@ details input{margin-top:8px}
 .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;background:#fafbfc;border-bottom:1px solid #dfe5ea}
 .toolbar>div{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 .toolbar button{padding:5px 9px}
+.toolbar .panel-toggle{background:#eef3f4;color:#285f58;border-color:#d4e3df}
 .symbol-scale{display:flex;align-items:center;gap:7px;margin:0;padding:4px 8px;border:1px solid #d8dfe5;border-radius:6px;background:white;color:#526170;white-space:nowrap}
 .symbol-scale input{width:90px;margin:0;padding:0;accent-color:#246d61}
 .symbol-scale span{min-width:36px;text-align:right;font-size:11px}
@@ -74,6 +78,13 @@ details input{margin-top:8px}
 .custom-icon{font-weight:800;pointer-events:none;user-select:none}
 .frame-group-outline{pointer-events:none}
 .selection-box{fill:#38bdf826;stroke:#0284c7;stroke-width:2;stroke-dasharray:8 5;vector-effect:non-scaling-stroke;pointer-events:none}
+.room-polygon-editor polygon{fill:#22c55e30;stroke:#16a34a;stroke-width:4;stroke-dasharray:12 7;vector-effect:non-scaling-stroke}
+.room-polygon-editor circle{fill:white;stroke:#15803d;stroke-width:4;vector-effect:non-scaling-stroke;cursor:move}
+.room-polygon-editor text{font-size:15px;font-weight:800;fill:#14532d;stroke:white;stroke-width:5;paint-order:stroke;pointer-events:none}
+.room-context-menu{position:fixed;z-index:300;display:grid;gap:5px;width:190px;padding:10px;border:1px solid #d8dfe5;border-radius:8px;background:#fff;box-shadow:0 14px 40px #0f172a38}
+.room-context-menu strong{padding:4px 5px;color:#24423e}
+.room-context-menu button{width:100%;text-align:left;padding:7px 9px}
+.room-context-menu .danger{margin:0;border:1px solid #f0d5d5}
 .frame-editor{padding:10px;border:1px solid #e2e8ec;border-radius:7px;background:#f8fafb}
 .frame-editor>button:not(.danger){width:100%;margin-top:7px}
 .alignment-mode rect{cursor:move;pointer-events:all}
@@ -88,6 +99,12 @@ details input{margin-top:8px}
 .page img{width:100%;height:80px;object-fit:contain;margin-bottom:5px}
 .page-layers{display:block;max-height:520px;padding-right:3px}
 .page-layer{margin-bottom:9px;padding:7px;border:1px solid #e2e8ec;border-radius:7px;background:#f8fafb}
+.page-layer{position:relative}
+.page-check{position:absolute;z-index:2;top:10px;right:10px;margin:0;padding:4px;border-radius:5px;background:#fffffff0;box-shadow:0 1px 5px #24324420}
+.page-check input{display:block;width:16px;height:16px;margin:0;accent-color:#246d61}
+.page-bulk-actions{display:grid;grid-template-columns:1fr auto;gap:6px;margin:-7px 0 12px}
+.page-bulk-actions button{padding:6px 7px;font-size:9px}
+.page-bulk-actions .bulk-delete{color:#a23434}
 .page-layer>.page{display:grid;grid-template-columns:58px 1fr;align-items:center;gap:8px;width:100%;text-align:left;border:0;background:transparent}
 .page-layer>.page img{position:static;width:58px;height:58px;margin:0;background:white}
 .page-layer-controls{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:6px}
@@ -143,7 +160,8 @@ footer{display:flex;justify-content:space-between;padding:16px 28px;color:#8a97a
 .catalog-error,.catalog-success{padding:10px 13px;border-radius:6px}
 .catalog-error{background:#ffe4e4;color:#a23434}
 .catalog-success{background:#e2f6ed;color:#17624f}
-@media(max-width:1000px){.workspace{grid-template-columns:190px minmax(0,1fr)}
+@media(max-width:1000px){.workspace,.workspace.right-collapsed{grid-template-columns:190px minmax(0,1fr)}
+.workspace.left-collapsed,.workspace.left-collapsed.right-collapsed{grid-template-columns:minmax(0,1fr)}
 .right{grid-column:1/-1}
 .pages{display:flex}
 .page{width:100px}

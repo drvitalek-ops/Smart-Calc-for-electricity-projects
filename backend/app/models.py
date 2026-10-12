@@ -42,6 +42,7 @@ class Layer(Base):
     visible: Mapped[bool] = mapped_column(Boolean, default=True)
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
     export: Mapped[bool] = mapped_column(Boolean, default=True)
+    opacity: Mapped[float] = mapped_column(Float, default=1)
 
 class ElementType(Base):
     __tablename__ = 'element_types'

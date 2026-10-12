@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	launcherVersion = "1.0.7"
+	launcherVersion = "1.0.8"
 	desktopHostName = "SmartHomeCalc.Desktop.exe"
 	backendName     = "SmartHomeCalc.Backend.exe"
 )

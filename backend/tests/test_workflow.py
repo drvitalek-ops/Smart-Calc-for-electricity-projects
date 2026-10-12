@@ -65,6 +65,9 @@ def test_layer_lock_and_export(client):
     assert client.delete(f'/api/elements/{eid}').status_code==409
     client.patch(f'/api/layers/{lid}',json={'export':False})
     assert client.get(f'/api/projects/{pid}/report').json()['rows']==[]
+    opacity=client.patch(f'/api/layers/{lid}',json={'opacity':.35})
+    assert opacity.status_code==200 and opacity.json()['opacity']==.35
+    assert client.patch(f'/api/layers/{lid}',json={'opacity':1.1}).status_code==422
 
 def test_cross_project_and_validation(client):
     pid,body=setup(client)
@@ -95,22 +98,37 @@ def test_extensible_catalog_and_parameter_grouping(client):
     rows=client.get(f'/api/projects/{pid}/report').json()['rows']
     assert [r['quantity'] for r in rows]==[7]
 
-def test_socket_frames_from_one_to_six_posts(client):
+def test_frames_are_assigned_to_selected_electrical_installations(client):
     pid,body=setup(client)
-    socket=next(t for t in client.get('/api/types').json() if t['name']=='Розетка одинарная')
-    body['type_id']=socket['id']
-    body['parameters']={'quantity':3,'ip':20,'frame_posts':3,'plan_icon':'R'}
-    assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==201
+    types=client.get('/api/types').json()
+    names=['Розетка одинарная','Выключатель','HDMI-розетка']
+    selected=[]
+    body['layer_id']=client.get(f'/api/projects/{pid}').json()['layers'][0]['id']
+    body['parameters']={'quantity':1,'ip':20,'plan_icon':'R'}
+    for index,name in enumerate(names):
+        body['type_id']=next(t['id'] for t in types if t['name']==name)
+        body['x']=.2+index*.1
+        response=client.post(f'/api/projects/{pid}/elements',json=body)
+        assert response.status_code==201
+        selected.append(response.json()['id'])
     rows=client.get(f'/api/projects/{pid}/report').json()['rows']
-    mechanisms=next(row for row in rows if row['name']=='Розетка одинарная')
+    assert not any(row['category']=='Рамки' for row in rows)
+    mismatch=client.post(f'/api/projects/{pid}/frames',json={'element_ids':selected,'posts':2})
+    assert mismatch.status_code==422
+    assert 'не соответствует количеству постов' in mismatch.json()['detail']
+    assigned=client.post(f'/api/projects/{pid}/frames',json={'element_ids':selected,'posts':3})
+    assert assigned.status_code==200
+    elements=client.get(f'/api/projects/{pid}').json()['elements']
+    assert len({item['parameters']['frame_group'] for item in elements})==1
+    assert all(item['parameters']['frame_posts']==3 for item in elements)
+    rows=client.get(f'/api/projects/{pid}/report').json()['rows']
     frame=next(row for row in rows if row['category']=='Рамки')
-    assert mechanisms['quantity']==3
-    assert 'plan_icon' not in json.loads(mechanisms['parameters'])
     assert frame['name']=='Рамка на 3 поста' and frame['quantity']==1
-    body['parameters']['frame_posts']=7
-    assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==422
-    body['parameters'].update(frame_posts=3,plan_icon='слишком')
-    assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==422
+    removed=client.post(f'/api/projects/{pid}/frames/remove',json={'element_ids':[selected[0]]})
+    assert removed.status_code==200
+    elements=client.get(f'/api/projects/{pid}').json()['elements']
+    assert all('frame_group' not in item['parameters'] for item in elements)
+    assert not any(row['category']=='Рамки' for row in client.get(f'/api/projects/{pid}/report').json()['rows'])
 
 def test_calibrated_geometry_catalog_and_plan_export(client):
     pid,body=setup(client)

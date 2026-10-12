@@ -15,7 +15,7 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session as DbSession
 from .db import Base, engine, session, Session
 from .models import (
@@ -51,6 +51,9 @@ def pdf_font_path():
 async def lifespan(app):
     if os.getenv('AUTO_CREATE_SCHEMA') == '1':
         Base.metadata.create_all(engine)
+        if 'opacity' not in {column['name'] for column in inspect(engine).get_columns('layers')}:
+            with engine.begin() as connection:
+                connection.execute(text('ALTER TABLE layers ADD COLUMN opacity FLOAT NOT NULL DEFAULT 1'))
     with Session() as db:
         seed(db)
     yield
@@ -76,6 +79,7 @@ class LayerInput(BaseModel):
     visible: bool | None = None
     locked: bool | None = None
     export: bool | None = None
+    opacity: float | None = Field(default=None, ge=0.05, le=1)
 
 class PageInput(BaseModel):
     name: str | None = Field(default=None, max_length=200)
@@ -129,6 +133,14 @@ class BackupLayer(BaseModel):
     visible: bool
     locked: bool
     export: bool
+    opacity: float = Field(default=1, ge=0.05, le=1)
+
+class FrameAssignment(BaseModel):
+    element_ids: list[int] = Field(min_length=1, max_length=100)
+    posts: int = Field(ge=1, le=6)
+
+class ElementSelection(BaseModel):
+    element_ids: list[int] = Field(min_length=1, max_length=100)
 
 class BackupRoom(BaseModel):
     backup_id: int
@@ -258,6 +270,8 @@ def validate_element(db, project_id, body):
             raise HTTPException(422,'Некорректная степень IP')
     if 'plan_icon' in parameters and (not isinstance(parameters['plan_icon'],str) or len(parameters['plan_icon'])>4):
         raise HTTPException(422,'Иконка на плане должна содержать не более 4 символов')
+    if 'frame_group' in parameters and (not isinstance(parameters['frame_group'],str) or len(parameters['frame_group'])>64):
+        raise HTTPException(422,'Некорректная группа рамки')
     return parameters
 
 @app.get('/api/health')
@@ -442,7 +456,7 @@ def backup_project(pid: int, db: DbSession = Depends(session)):
             pdf_files[str(path)]=f'pdf/{len(pdf_files)+1}.pdf'
     manifest=BackupManifest(
         version=1,project_name=project.name,
-        layers=[BackupLayer(backup_id=item.id,name=item.name,visible=item.visible,locked=item.locked,export=item.export) for item in layers],
+        layers=[BackupLayer(backup_id=item.id,name=item.name,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity) for item in layers],
         rooms=[BackupRoom(backup_id=item.id,name=item.name,wet=item.wet) for item in rooms],
         types=[BackupType(backup_id=item.id,name=item.name,category=item.category,unit=item.unit,color=item.color,defaults=item.defaults,wet_min_ip=item.wet_min_ip) for item in types],
         products=[BackupProduct(
@@ -548,7 +562,7 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
         project=Project(name=manifest.project_name); db.add(project); db.flush()
         layer_map={}
         for item in manifest.layers:
-            obj=Layer(project_id=project.id,name=item.name,visible=item.visible,locked=item.locked,export=item.export)
+            obj=Layer(project_id=project.id,name=item.name,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity)
             db.add(obj); db.flush(); layer_map[item.backup_id]=obj
         room_map={}
         for item in manifest.rooms:
@@ -731,12 +745,63 @@ def remove_element(eid: int, db: DbSession = Depends(session)):
     e=require(db,Element,eid)
     if require(db,Layer,e.layer_id).locked:
         raise HTTPException(409,'Слой заблокирован')
+    group=e.parameters.get('frame_group')
+    if group:
+        for member in db.scalars(select(Element).where(Element.project_id==e.project_id)):
+            if member.parameters.get('frame_group')==group:
+                member.parameters={key:value for key,value in member.parameters.items() if key not in ('frame_group','frame_posts')}
     db.delete(e); db.commit()
+
+def frame_elements(db, pid, element_ids):
+    require(db,Project,pid)
+    ids=list(dict.fromkeys(element_ids))
+    elements=list(db.scalars(select(Element).where(Element.project_id==pid,Element.id.in_(ids))))
+    if len(elements)!=len(ids):
+        raise HTTPException(404,'Один или несколько элементов не найдены')
+    types={item.id:require(db,ElementType,item.type_id) for item in elements}
+    if any(types[item.id].category!='Электроустановки' for item in elements):
+        raise HTTPException(422,'Рамку можно назначить только электроустановкам')
+    if len({item.page_id for item in elements})!=1 or len({item.room_id for item in elements})!=1:
+        raise HTTPException(422,'Элементы рамки должны находиться на одном листе и в одном помещении')
+    if any(require(db,Layer,item.layer_id).locked for item in elements):
+        raise HTTPException(409,'Слой заблокирован')
+    return elements
+
+def clear_frame_groups(db, pid, groups):
+    if not groups:
+        return
+    for member in db.scalars(select(Element).where(Element.project_id==pid)):
+        if member.parameters.get('frame_group') in groups:
+            member.parameters={key:value for key,value in member.parameters.items() if key not in ('frame_group','frame_posts')}
+
+@app.post('/api/projects/{pid}/frames')
+def assign_frame(pid: int, body: FrameAssignment, db: DbSession = Depends(session)):
+    if len(set(body.element_ids))!=body.posts:
+        raise HTTPException(422,'Количество выделенных электроустановок не соответствует количеству постов в рамке')
+    elements=frame_elements(db,pid,body.element_ids)
+    old_groups={item.parameters.get('frame_group') for item in elements if item.parameters.get('frame_group')}
+    clear_frame_groups(db,pid,old_groups)
+    group=uuid.uuid4().hex
+    for item in elements:
+        item.parameters={**item.parameters,'frame_group':group,'frame_posts':body.posts}
+    db.commit()
+    return {'frame_group':group,'posts':body.posts,'element_ids':[item.id for item in elements]}
+
+@app.post('/api/projects/{pid}/frames/remove')
+def remove_frames(pid: int, body: ElementSelection, db: DbSession = Depends(session)):
+    elements=frame_elements(db,pid,body.element_ids)
+    groups={item.parameters.get('frame_group') for item in elements if item.parameters.get('frame_group')}
+    clear_frame_groups(db,pid,groups)
+    for item in elements:
+        item.parameters={key:value for key,value in item.parameters.items() if key not in ('frame_group','frame_posts')}
+    db.commit()
+    return {'element_ids':[item.id for item in elements]}
 
 def report_rows(db,pid):
     require(db,Project,pid)
     groups=defaultdict(float)
     frame_groups=defaultdict(float)
+    frame_members=defaultdict(list)
     warnings=[]
     for e,t,l in db.execute(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id).join(Layer,Element.layer_id==Layer.id).where(Element.project_id==pid)):
         if not l.export: continue
@@ -744,7 +809,7 @@ def report_rows(db,pid):
         product=db.get(Product,e.product_id) if e.product_id else None
         manufacturer=db.get(Manufacturer,product.manufacturer_id) if product else None
         supplier=db.get(Supplier,product.supplier_id) if product and product.supplier_id else None
-        group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity','frame_posts','plan_icon')}
+        group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity','frame_posts','frame_group','plan_icon')}
         key=(
             room.name if room else 'Без помещения',t.category,t.name,t.unit,
             json.dumps(group_parameters,ensure_ascii=False,sort_keys=True),
@@ -754,11 +819,20 @@ def report_rows(db,pid):
             float(product.price) if product else 0, product.currency if product else 'RUB',
         )
         groups[key]+=float(e.parameters.get('length',0) if t.unit=='м' else e.parameters.get('quantity',1))
-        if t.name in ('Розетка одинарная','Розетка двойная','USB','TV','RJ45','Влагозащищенная розетка'):
-            posts=int(e.parameters.get('frame_posts',1))
-            frame_groups[(room.name if room else 'Без помещения',posts)]+=1
+        frame_group=e.parameters.get('frame_group')
+        if t.category=='Электроустановки' and frame_group:
+            frame_members[frame_group].append((e,room.name if room else 'Без помещения'))
         if room and room.wet and t.wet_min_ip and int(e.parameters.get('ip',0))<t.wet_min_ip:
             warnings.append(f'{room.name}: {t.name} №{e.id} — рекомендуется IP{t.wet_min_ip} или выше')
+    for group,members in frame_members.items():
+        posts={int(item.parameters.get('frame_posts',0)) for item,_ in members}
+        rooms={room for _,room in members}
+        pages={item.page_id for item,_ in members}
+        expected=next(iter(posts)) if len(posts)==1 else 0
+        if expected<1 or expected>6 or len(members)!=expected or len(rooms)!=1 or len(pages)!=1:
+            warnings.append(f'Рамка {group[:8]}: количество выделенных электроустановок не соответствует количеству постов')
+            continue
+        frame_groups[(next(iter(rooms)),expected)]+=1
     rows=[]
     for key,value in sorted(groups.items(),key=lambda item:(item[0][0],item[0][1],item[0][2],item[0][6])):
         quantity=round(value,3); price=key[10]

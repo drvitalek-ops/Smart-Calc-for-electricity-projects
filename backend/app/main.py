@@ -54,6 +54,18 @@ async def lifespan(app):
         if 'opacity' not in {column['name'] for column in inspect(engine).get_columns('layers')}:
             with engine.begin() as connection:
                 connection.execute(text('ALTER TABLE layers ADD COLUMN opacity FLOAT NOT NULL DEFAULT 1'))
+        page_columns={column['name'] for column in inspect(engine).get_columns('pages')}
+        page_upgrades={
+            'overlay_visible':'BOOLEAN NOT NULL DEFAULT 0',
+            'opacity':'FLOAT NOT NULL DEFAULT 1',
+            'offset_x':'FLOAT NOT NULL DEFAULT 0',
+            'offset_y':'FLOAT NOT NULL DEFAULT 0',
+            'scale':'FLOAT NOT NULL DEFAULT 1',
+        }
+        with engine.begin() as connection:
+            for column,definition in page_upgrades.items():
+                if column not in page_columns:
+                    connection.execute(text(f'ALTER TABLE pages ADD COLUMN {column} {definition}'))
     with Session() as db:
         seed(db)
     yield
@@ -83,6 +95,11 @@ class LayerInput(BaseModel):
 
 class PageInput(BaseModel):
     name: str | None = Field(default=None, max_length=200)
+    overlay_visible: bool | None = None
+    opacity: float | None = Field(default=None, ge=0.05, le=1)
+    offset_x: float | None = Field(default=None, ge=-1, le=1)
+    offset_y: float | None = Field(default=None, ge=-1, le=1)
+    scale: float | None = Field(default=None, ge=0.5, le=2)
 
 class CalibrationInput(BaseModel):
     x1: float = Field(ge=0, le=1)
@@ -176,6 +193,11 @@ class BackupPage(BaseModel):
     name: str | None = Field(default=None,max_length=200)
     source_index: int = Field(ge=0,le=999)
     meters_per_point: float | None = Field(default=None,gt=0,le=10000)
+    overlay_visible: bool = False
+    opacity: float = Field(default=1,ge=0.05,le=1)
+    offset_x: float = Field(default=0,ge=-1,le=1)
+    offset_y: float = Field(default=0,ge=-1,le=1)
+    scale: float = Field(default=1,ge=0.5,le=2)
     pdf_file: str = Field(min_length=5,max_length=200)
 
 class BackupElement(BaseModel):
@@ -468,7 +490,9 @@ def backup_project(pid: int, db: DbSession = Depends(session)):
         ) for item in products],
         pages=[BackupPage(
             backup_id=item.id,number=item.number,name=item.name,source_index=item.source_index,
-            meters_per_point=item.meters_per_point,pdf_file=pdf_files[item.pdf_path],
+            meters_per_point=item.meters_per_point,overlay_visible=item.overlay_visible,
+            opacity=item.opacity,offset_x=item.offset_x,offset_y=item.offset_y,scale=item.scale,
+            pdf_file=pdf_files[item.pdf_path],
         ) for item in pages],
         elements=[BackupElement(
             page_backup_id=item.page_id,layer_backup_id=item.layer_id,type_backup_id=item.type_id,
@@ -609,6 +633,8 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
             obj=Page(
                 project_id=project.id,number=item.number,name=item.name,source_index=item.source_index,
                 meters_per_point=item.meters_per_point,width=source.rect.width,height=source.rect.height,
+                overlay_visible=item.overlay_visible,opacity=item.opacity,
+                offset_x=item.offset_x,offset_y=item.offset_y,scale=item.scale,
                 pdf_path=str(stored_pdfs[item.pdf_file]),image_path=str(image),
             )
             document.close(); db.add(obj); db.flush(); page_map[item.backup_id]=obj
@@ -662,8 +688,33 @@ def edit_layer(lid: int, body: LayerInput, db: DbSession = Depends(session)):
 @app.patch('/api/pages/{page_id}')
 def edit_page(page_id: int, body: PageInput, db: DbSession = Depends(session)):
     page=require(db,Page,page_id)
-    page.name=body.name.strip() if body.name and body.name.strip() else None
+    for key,value in body.model_dump(exclude_unset=True).items():
+        if key=='name': value=value.strip() if value and value.strip() else None
+        setattr(page,key,value)
     db.commit(); return data(page)
+
+@app.delete('/api/pages/{page_id}',status_code=204)
+def remove_page(page_id: int, db: DbSession = Depends(session)):
+    page=require(db,Page,page_id)
+    elements=list(db.scalars(select(Element).where(Element.page_id==page.id)))
+    protected=[]
+    for element in elements:
+        typ=require(db,ElementType,element.type_id)
+        if typ.category in ('Электроустановки','Освещение','LED-подсветка'):
+            protected.append(typ.name)
+    if protected:
+        raise HTTPException(409,'Нельзя удалить страницу: на ней есть электроустановки или освещение')
+    image_path=Path(page.image_path)
+    pdf_path=Path(page.pdf_path)
+    project_id=page.project_id
+    for element in elements: db.delete(element)
+    db.delete(page); db.flush()
+    remaining=list(db.scalars(select(Page).where(Page.project_id==project_id).order_by(Page.number,Page.id)))
+    for number,item in enumerate(remaining,1): item.number=number
+    pdf_in_use=db.scalar(select(Page.id).where(Page.pdf_path==str(pdf_path)).limit(1))
+    db.commit()
+    image_path.unlink(missing_ok=True)
+    if not pdf_in_use: pdf_path.unlink(missing_ok=True)
 
 @app.post('/api/pages/{page_id}/calibrate')
 def calibrate_page(page_id: int, body: CalibrationInput, db: DbSession = Depends(session)):
@@ -761,8 +812,8 @@ def frame_elements(db, pid, element_ids):
     types={item.id:require(db,ElementType,item.type_id) for item in elements}
     if any(types[item.id].category!='Электроустановки' for item in elements):
         raise HTTPException(422,'Рамку можно назначить только электроустановкам')
-    if len({item.page_id for item in elements})!=1 or len({item.room_id for item in elements})!=1:
-        raise HTTPException(422,'Элементы рамки должны находиться на одном листе и в одном помещении')
+    if len({item.room_id for item in elements})!=1:
+        raise HTTPException(422,'Элементы рамки должны находиться в одном помещении')
     if any(require(db,Layer,item.layer_id).locked for item in elements):
         raise HTTPException(409,'Слой заблокирован')
     return elements
@@ -827,9 +878,8 @@ def report_rows(db,pid):
     for group,members in frame_members.items():
         posts={int(item.parameters.get('frame_posts',0)) for item,_ in members}
         rooms={room for _,room in members}
-        pages={item.page_id for item,_ in members}
         expected=next(iter(posts)) if len(posts)==1 else 0
-        if expected<1 or expected>6 or len(members)!=expected or len(rooms)!=1 or len(pages)!=1:
+        if expected<1 or expected>6 or len(members)!=expected or len(rooms)!=1:
             warnings.append(f'Рамка {group[:8]}: количество выделенных электроустановок не соответствует количеству постов')
             continue
         frame_groups[(next(iter(rooms)),expected)]+=1

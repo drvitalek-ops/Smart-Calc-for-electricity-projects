@@ -24,6 +24,11 @@ class Page(Base):
     height: Mapped[float] = mapped_column(Float)
     source_index: Mapped[int] = mapped_column(default=0)
     meters_per_point: Mapped[float | None] = mapped_column(Float)
+    overlay_visible: Mapped[bool] = mapped_column(Boolean, default=False)
+    opacity: Mapped[float] = mapped_column(Float, default=1)
+    offset_x: Mapped[float] = mapped_column(Float, default=0)
+    offset_y: Mapped[float] = mapped_column(Float, default=0)
+    scale: Mapped[float] = mapped_column(Float, default=1)
     pdf_path: Mapped[str]
     image_path: Mapped[str]
 

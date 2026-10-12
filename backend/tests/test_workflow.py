@@ -57,6 +57,7 @@ def test_full_workflow_and_exports(client):
 
 def test_layer_lock_and_export(client):
     pid,body=setup(client)
+    project=client.get(f'/api/projects/{pid}').json()
     lid=body['layer_id']
     eid=client.post(f'/api/projects/{pid}/elements',json=body).json()['id']
     client.patch(f'/api/layers/{lid}',json={'locked':True})
@@ -68,6 +69,15 @@ def test_layer_lock_and_export(client):
     opacity=client.patch(f'/api/layers/{lid}',json={'opacity':.35})
     assert opacity.status_code==200 and opacity.json()['opacity']==.35
     assert client.patch(f'/api/layers/{lid}',json={'opacity':1.1}).status_code==422
+    overlay=client.patch(f"/api/pages/{body['page_id']}",json={
+        'overlay_visible':True,'opacity':.4,'offset_x':.12,'offset_y':-.08,'scale':1.2,
+    })
+    assert overlay.status_code==200
+    assert overlay.json()['opacity']==.4 and overlay.json()['scale']==1.2
+    assert client.delete(f"/api/pages/{body['page_id']}").status_code==409
+    empty_page=next(page for page in project['pages'] if page['id']!=body['page_id'])
+    assert client.delete(f"/api/pages/{empty_page['id']}").status_code==204
+    assert len(client.get(f'/api/projects/{pid}').json()['pages'])==1
 
 def test_cross_project_and_validation(client):
     pid,body=setup(client)
@@ -103,10 +113,12 @@ def test_frames_are_assigned_to_selected_electrical_installations(client):
     types=client.get('/api/types').json()
     names=['Розетка одинарная','Выключатель','HDMI-розетка']
     selected=[]
-    body['layer_id']=client.get(f'/api/projects/{pid}').json()['layers'][0]['id']
+    project=client.get(f'/api/projects/{pid}').json()
+    body['layer_id']=project['layers'][0]['id']
     body['parameters']={'quantity':1,'ip':20,'plan_icon':'R'}
     for index,name in enumerate(names):
         body['type_id']=next(t['id'] for t in types if t['name']==name)
+        body['page_id']=project['pages'][index%2]['id']
         body['x']=.2+index*.1
         response=client.post(f'/api/projects/{pid}/elements',json=body)
         assert response.status_code==201
@@ -208,7 +220,10 @@ def test_catalog_csv_import_is_atomic(client):
 def test_project_backup_restore_round_trip(client):
     pid,body=setup(client)
     page_id=body['page_id']
-    assert client.patch(f'/api/pages/{page_id}',json={'name':'План первого этажа'}).status_code==200
+    assert client.patch(f'/api/pages/{page_id}',json={
+        'name':'План первого этажа','overlay_visible':True,'opacity':.45,
+        'offset_x':.1,'offset_y':-.05,'scale':1.15,
+    }).status_code==200
     assert client.post(f'/api/pages/{page_id}/calibrate',json={
         'x1':0,'y1':0,'x2':1,'y2':0,'real_length_m':10,
     }).status_code==200
@@ -241,6 +256,9 @@ def test_project_backup_restore_round_trip(client):
     assert project['name']=='Тестовый дом'
     assert project['pages'][0]['name']=='План первого этажа'
     assert project['pages'][0]['meters_per_point'] is not None
+    assert project['pages'][0]['overlay_visible'] is True
+    assert project['pages'][0]['opacity']==.45 and project['pages'][0]['scale']==1.15
+    assert project['pages'][0]['offset_x']==.1 and project['pages'][0]['offset_y']==-.05
     assert project['elements'][0]['comment']=='Проверка архива'
     assert next(layer for layer in project['layers'] if layer['name']=='LED-подсветка')['locked'] is True
     assert client.get(f"/api/pages/{project['pages'][0]['id']}/image").content.startswith(b'\x89PNG')

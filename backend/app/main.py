@@ -26,6 +26,9 @@ from .catalog import LAYERS, seed
 
 STORAGE = Path(os.getenv('STORAGE_DIR', 'storage')).resolve()
 STORAGE.mkdir(parents=True, exist_ok=True)
+PDF_MAX_MB = 500
+PDF_MAX_BYTES = PDF_MAX_MB * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 PDF_FONT_CANDIDATES = [
     os.getenv('PDF_FONT_PATH'),
@@ -663,16 +666,21 @@ def calibrate_page(page_id: int, body: CalibrationInput, db: DbSession = Depends
 @app.post('/api/projects/{pid}/pdf',status_code=201)
 async def upload(pid: int, file: UploadFile, db: DbSession = Depends(session)):
     require(db,Project,pid)
-    content=await file.read(20*1024*1024+1)
-    if len(content)>20*1024*1024:
-        raise HTTPException(413,'Максимальный размер PDF — 20 МБ')
-    paths=[]
+    token=uuid.uuid4().hex
+    pdf=STORAGE/f'{token}.pdf'
+    paths=[pdf]
+    doc=None
     try:
-        doc=pymupdf.open(stream=content,filetype='pdf')
+        size=0
+        with pdf.open('wb') as destination:
+            while chunk:=await file.read(UPLOAD_CHUNK_BYTES):
+                size+=len(chunk)
+                if size>PDF_MAX_BYTES:
+                    raise HTTPException(413,f'Максимальный размер PDF — {PDF_MAX_MB} МБ')
+                destination.write(chunk)
+        doc=pymupdf.open(pdf)
         if doc.needs_pass or not 1<=len(doc)<=100:
             raise ValueError('Нужен PDF без пароля, от 1 до 100 страниц')
-        token=uuid.uuid4().hex
-        pdf=STORAGE/f'{token}.pdf'; pdf.write_bytes(content); paths.append(pdf)
         number=max((p.number for p in db.scalars(select(Page).where(Page.project_id==pid))),default=0)
         pages=[]
         for i, page in enumerate(doc):
@@ -685,8 +693,15 @@ async def upload(pid: int, file: UploadFile, db: DbSession = Depends(session)):
                 pdf_path=str(pdf),image_path=str(image),
             )
             db.add(obj); db.flush(); pages.append(data(obj))
-        doc.close(); db.commit(); return pages
+        doc.close(); doc=None; db.commit(); return pages
+    except HTTPException:
+        if doc is not None: doc.close()
+        db.rollback()
+        for path in paths:
+            path.unlink(missing_ok=True)
+        raise
     except Exception as exc:
+        if doc is not None: doc.close()
         db.rollback()
         for path in paths:
             path.unlink(missing_ok=True)

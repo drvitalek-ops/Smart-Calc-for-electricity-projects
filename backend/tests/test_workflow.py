@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from app.db import Base, engine
 from app.main import app
+from app import main as main_module
 
 @pytest.fixture()
 def client():
@@ -74,6 +75,14 @@ def test_cross_project_and_validation(client):
     body['x']=.2;body['parameters']={'length':-1}
     assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==422
     assert client.post(f'/api/projects/{pid}/pdf',files={'file':('bad.pdf',b'bad')}).status_code==422
+
+def test_pdf_upload_limit_is_500_mb_and_enforced_while_streaming(client,monkeypatch):
+    assert main_module.PDF_MAX_BYTES==500*1024*1024
+    pid=client.post('/api/projects',json={'name':'Большой PDF'}).json()['id']
+    monkeypatch.setattr(main_module,'PDF_MAX_BYTES',10)
+    response=client.post(f'/api/projects/{pid}/pdf',files={'file':('large.pdf',b'x'*11,'application/pdf')})
+    assert response.status_code==413
+    assert '500 МБ' in response.json()['detail']
 
 def test_extensible_catalog_and_parameter_grouping(client):
     pid,body=setup(client)

@@ -1287,6 +1287,7 @@ export default function App() {
   }
   function selectSameType(item: Item) {
     if (!project) return;
+    window.getSelection()?.removeAllRanges();
     const ids = project.elements
       .filter((candidate) => candidate.type_id === item.type_id)
       .map((candidate) => candidate.id);
@@ -2564,11 +2565,13 @@ export default function App() {
                                 opacity={isSelected ? 1 : opacity}
                                 onContextMenu={(e) => showObjectMenu(item, e)}
                                 onDoubleClick={(e) => {
+                                  e.preventDefault();
                                   e.stopPropagation();
                                   selectSameType(item);
                                 }}
                                 onPointerDown={(e) => {
                                   if (e.button !== 0) return;
+                                  e.preventDefault();
                                   e.stopPropagation();
                                   if (objectDoubleClick(item)) return;
                                   choose(item, e.ctrlKey);
@@ -2674,11 +2677,13 @@ export default function App() {
                               transform={`translate(${marker.x * 1000},${marker.y * 1000})`}
                               onContextMenu={(e) => showObjectMenu(item, e)}
                               onDoubleClick={(e) => {
+                                e.preventDefault();
                                 e.stopPropagation();
                                 selectSameType(item);
                               }}
                               onPointerDown={(e) => {
                                 if (e.button !== 0) return;
+                                e.preventDefault();
                                 e.stopPropagation();
                                 if (objectDoubleClick(item)) return;
                                 choose(item, e.ctrlKey);

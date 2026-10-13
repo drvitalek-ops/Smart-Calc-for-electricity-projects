@@ -29,11 +29,15 @@ header small{font-size:11px}
 header select{margin-left:auto;width:190px}
 header form{display:flex;gap:6px}
 header form input{width:160px}
+.app-tabs{display:flex;gap:5px;padding:4px;border-radius:8px;background:#eef3f4}
+.app-tabs button{padding:7px 12px;border:0;background:transparent}
+.app-tabs button.active{color:#175f53;background:white!important;box-shadow:0 1px 4px #2432441f}
 .workspace{display:grid;grid-template-columns:235px minmax(0,1fr) 285px;min-height:650px}
 .workspace.left-collapsed{grid-template-columns:minmax(0,1fr) 285px}
 .workspace.right-collapsed{grid-template-columns:235px minmax(0,1fr)}
 .workspace.left-collapsed.right-collapsed{grid-template-columns:minmax(0,1fr)}
 aside{background:#fff;padding:22px 16px;border-right:1px solid #dfe5ea}
+.workspace>aside{min-height:0;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
 .right{border-left:1px solid #dfe5ea;border-right:0}
 aside h3{font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:1px;margin:5px 0 18px}
 aside h3:not(:first-child){margin-top:28px}
@@ -81,10 +85,17 @@ details input{margin-top:8px}
 .room-polygon-editor polygon{fill:#22c55e30;stroke:#16a34a;stroke-width:4;stroke-dasharray:12 7;vector-effect:non-scaling-stroke}
 .room-polygon-editor circle{fill:white;stroke:#15803d;stroke-width:4;vector-effect:non-scaling-stroke;cursor:move}
 .room-polygon-editor text{font-size:15px;font-weight:800;fill:#14532d;stroke:white;stroke-width:5;paint-order:stroke;pointer-events:none}
+.room-polygon-editor .room-close-node{fill:#d1fae5;stroke:#047857;stroke-width:6}
+.room-polygon-editor .room-preview-line{stroke:#059669;stroke-width:4;stroke-dasharray:10 7;vector-effect:non-scaling-stroke;pointer-events:none}
+.room-polygon-editor .room-node-number{font-size:12px;stroke-width:3}
 .room-context-menu{position:fixed;z-index:300;display:grid;gap:5px;width:190px;padding:10px;border:1px solid #d8dfe5;border-radius:8px;background:#fff;box-shadow:0 14px 40px #0f172a38}
 .room-context-menu strong{padding:4px 5px;color:#24423e}
 .room-context-menu button{width:100%;text-align:left;padding:7px 9px}
 .room-context-menu .danger{margin:0;border:1px solid #f0d5d5}
+.object-context-menu{position:fixed;z-index:310;display:grid;gap:5px;width:220px;padding:10px;border:1px solid #b9d5ce;border-radius:8px;background:#fff;box-shadow:0 14px 40px #0f172a38}
+.object-context-menu strong{padding:5px;color:#24423e}
+.object-context-menu button{width:100%;text-align:left;padding:7px 9px}
+.object-context-menu .danger{margin:0;border:1px solid #f0d5d5}
 .frame-editor{padding:10px;border:1px solid #e2e8ec;border-radius:7px;background:#f8fafb}
 .frame-editor>button:not(.danger){width:100%;margin-top:7px}
 .alignment-mode rect{cursor:move;pointer-events:all}
@@ -126,6 +137,7 @@ details input{margin-top:8px}
 textarea{height:65px}
 .danger{color:#b04444;background:transparent;border:0;width:100%;margin-top:8px}
 .report{padding:24px 28px;background:white;border-top:1px solid #dfe5ea}
+.report-view{flex:1;min-height:0;overflow:auto}
 .report-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
 .eyebrow{font-size:10px;color:#288574;letter-spacing:2px;font-weight:700}
 .report h2{font-size:19px;margin:5px 0}
@@ -201,15 +213,20 @@ header select{margin-left:0}
 .product-list>button{grid-template-columns:1fr}
 }
 @media print{header,aside,.toolbar,footer,.report-head a,.report-head button,.modal-backdrop{display:none}
+html,body,#root,.app-shell{height:auto!important;overflow:visible!important}
 .workspace{display:block}
 .viewport{height:auto;overflow:visible;padding:0}
 .sheet{width:100%!important}
-.report{break-before:page}
+.report,.report-view{break-before:page;overflow:visible}
 .error{display:none}
 }
 
-html,body,#root{min-height:100%;width:100%}
-.app-shell{display:flex;flex-direction:column;min-height:100vh;width:100%}
+html,body,#root{height:100%;min-height:100%;width:100%;overflow:hidden}
+.app-shell{display:flex;flex-direction:column;height:100vh;min-height:0;width:100%;overflow:hidden}
+.app-shell>header,.app-shell>footer{flex:none}
+.app-shell>.workspace{flex:1;min-height:0;height:auto}
+.plan-area{min-height:0}
+.viewport{height:auto;min-height:0}
 .brand{min-width:max-content}
 header{gap:clamp(10px,1vw,20px);padding:clamp(14px,2vh,24px) clamp(18px,1.8vw,36px)}
 header select{width:clamp(170px,12vw,230px)}
@@ -224,6 +241,9 @@ header small{font-size:clamp(10px,.65vw,12px)}
 .steps{display:flex;flex-wrap:wrap;gap:clamp(18px,2.5vw,48px);margin-top:clamp(32px,5vh,60px)}
 footer{gap:20px;padding:clamp(13px,1.7vh,20px) clamp(18px,1.8vw,36px)}
 @media(max-width:720px){
+html,body,#root{height:auto;overflow:auto}
+.app-shell{height:auto;min-height:100vh;overflow:visible}
+.workspace{min-height:650px}
 header{align-items:stretch}
 .brand{min-width:0;flex:1}
 header select,header form,header form input{width:100%}

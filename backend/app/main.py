@@ -1,4 +1,5 @@
 import io
+import copy
 import csv
 import json
 import math
@@ -7,6 +8,7 @@ import re
 import sys
 import uuid
 import zipfile
+from threading import Lock
 from pathlib import Path
 from typing import Literal
 from contextlib import asynccontextmanager
@@ -30,6 +32,9 @@ STORAGE.mkdir(parents=True, exist_ok=True)
 PDF_MAX_MB = 500
 PDF_MAX_BYTES = PDF_MAX_MB * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1024 * 1024
+ELEMENT_HISTORY_LIMIT = 50
+ELEMENT_HISTORY: dict[int, list[list[dict]]] = defaultdict(list)
+ELEMENT_HISTORY_LOCK = Lock()
 
 PDF_FONT_CANDIDATES = [
     os.getenv('PDF_FONT_PATH'),
@@ -50,6 +55,8 @@ def pdf_font_path():
 
 @asynccontextmanager
 async def lifespan(app):
+    with ELEMENT_HISTORY_LOCK:
+        ELEMENT_HISTORY.clear()
     if os.getenv('AUTO_CREATE_SCHEMA') == '1':
         Base.metadata.create_all(engine)
         if 'opacity' not in {column['name'] for column in inspect(engine).get_columns('layers')}:
@@ -87,6 +94,19 @@ def require(db, model, id):
 
 def data(obj):
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns if c.name not in ('pdf_path','image_path')}
+
+def element_snapshot(db: DbSession, project_id: int):
+    return [
+        copy.deepcopy({column.name:getattr(item,column.name) for column in Element.__table__.columns})
+        for item in db.scalars(select(Element).where(Element.project_id==project_id).order_by(Element.id))
+    ]
+
+def remember_elements(db: DbSession, project_id: int):
+    snapshot=element_snapshot(db,project_id)
+    with ELEMENT_HISTORY_LOCK:
+        history=ELEMENT_HISTORY[project_id]
+        history.append(snapshot)
+        del history[:-ELEMENT_HISTORY_LIMIT]
 
 class NameInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -897,6 +917,7 @@ def add_element(pid: int, body: ElementInput, db: DbSession = Depends(session)):
     values=body.model_dump(); values['parameters']=validate_element(db,pid,body)
     automatic_room=room_at_point(db,pid,body.page_id,body.x,body.y)
     if automatic_room: values['room_id']=automatic_room.id
+    remember_elements(db,pid)
     e=Element(project_id=pid,**values); db.add(e); db.commit(); return data(e)
 
 @app.put('/api/elements/{eid}')
@@ -907,12 +928,13 @@ def edit_element(eid: int, body: ElementInput, db: DbSession = Depends(session))
     old_frame_group=e.parameters.get('frame_group')
     values=body.model_dump(); values['parameters']=validate_element(db,e.project_id,body)
     new_frame_group=values['parameters'].get('frame_group')
-    if old_frame_group and old_frame_group!=new_frame_group:
-        clear_frame_groups(db,e.project_id,{old_frame_group})
     automatic_room=room_at_point(db,e.project_id,body.page_id,body.x,body.y)
     if automatic_room: values['room_id']=automatic_room.id
     elif e.room_id and (current_room:=db.get(Room,e.room_id)) and current_room.polygon:
         values['room_id']=None
+    remember_elements(db,e.project_id)
+    if old_frame_group and old_frame_group!=new_frame_group:
+        clear_frame_groups(db,e.project_id,{old_frame_group})
     for key,value in values.items(): setattr(e,key,value)
     db.commit(); return data(e)
 
@@ -921,6 +943,7 @@ def remove_element(eid: int, db: DbSession = Depends(session)):
     e=require(db,Element,eid)
     if require(db,Layer,e.layer_id).locked:
         raise HTTPException(409,'Слой заблокирован')
+    remember_elements(db,e.project_id)
     group=e.parameters.get('frame_group')
     if group:
         for member in db.scalars(select(Element).where(Element.project_id==e.project_id)):
@@ -955,6 +978,7 @@ def assign_frame(pid: int, body: FrameAssignment, db: DbSession = Depends(sessio
     if len(set(body.element_ids))!=body.posts:
         raise HTTPException(422,'Количество выделенных электроустановок не соответствует количеству постов в рамке')
     elements=frame_elements(db,pid,body.element_ids)
+    remember_elements(db,pid)
     old_groups={item.parameters.get('frame_group') for item in elements if item.parameters.get('frame_group')}
     clear_frame_groups(db,pid,old_groups)
     group=uuid.uuid4().hex
@@ -966,12 +990,35 @@ def assign_frame(pid: int, body: FrameAssignment, db: DbSession = Depends(sessio
 @app.post('/api/projects/{pid}/frames/remove')
 def remove_frames(pid: int, body: ElementSelection, db: DbSession = Depends(session)):
     elements=frame_elements(db,pid,body.element_ids)
+    remember_elements(db,pid)
     groups={item.parameters.get('frame_group') for item in elements if item.parameters.get('frame_group')}
     clear_frame_groups(db,pid,groups)
     for item in elements:
         item.parameters={key:value for key,value in item.parameters.items() if key not in ('frame_group','frame_posts')}
     db.commit()
     return {'element_ids':[item.id for item in elements]}
+
+@app.post('/api/projects/{pid}/elements/undo')
+def undo_elements(pid: int, db: DbSession = Depends(session)):
+    require(db,Project,pid)
+    with ELEMENT_HISTORY_LOCK:
+        history=ELEMENT_HISTORY.get(pid,[])
+        if not history:
+            return {'undone':False}
+        snapshot=history.pop()
+    try:
+        for item in db.scalars(select(Element).where(Element.project_id==pid)):
+            db.delete(item)
+        db.flush()
+        for values in snapshot:
+            db.add(Element(**values))
+        db.commit()
+    except Exception:
+        db.rollback()
+        with ELEMENT_HISTORY_LOCK:
+            ELEMENT_HISTORY[pid].append(snapshot)
+        raise
+    return {'undone':True,'elements':len(snapshot)}
 
 def report_rows(db,pid):
     require(db,Project,pid)

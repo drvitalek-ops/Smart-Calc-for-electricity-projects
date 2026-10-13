@@ -60,6 +60,7 @@ details input{margin-top:8px}
 .toolbar>div{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 .toolbar button{padding:5px 9px}
 .toolbar .panel-toggle{background:#eef3f4;color:#285f58;border-color:#d4e3df}
+.toolbar .clean-plan-toggle{background:#173f46;color:white;border-color:#173f46}
 .symbol-scale{display:flex;align-items:center;gap:7px;margin:0;padding:4px 8px;border:1px solid #d8dfe5;border-radius:6px;background:white;color:#526170;white-space:nowrap}
 .symbol-scale input{width:90px;margin:0;padding:0;accent-color:#246d61}
 .symbol-scale span{min-width:36px;text-align:right;font-size:11px}
@@ -80,6 +81,10 @@ details input{margin-top:8px}
 .sheet svg{position:absolute;z-index:100;inset:0;width:100%;height:100%;touch-action:none}
 .sheet g{cursor:pointer}
 .custom-icon{font-weight:800;pointer-events:none;user-select:none}
+.selection-halo,.selection-line-halo{filter:drop-shadow(0 0 5px #0ea5e9);animation:selection-pulse 1.25s ease-in-out infinite;pointer-events:none}
+.selection-ring{pointer-events:none}
+.selected-point-object,.selected-line-object{filter:drop-shadow(0 2px 3px #0f172a80)}
+@keyframes selection-pulse{0%,100%{stroke-opacity:.55}50%{stroke-opacity:1}}
 .frame-group-outline{pointer-events:none}
 .selection-box{fill:#38bdf826;stroke:#0284c7;stroke-width:2;stroke-dasharray:8 5;vector-effect:non-scaling-stroke;pointer-events:none}
 .room-polygon-editor polygon{fill:#22c55e30;stroke:#16a34a;stroke-width:4;stroke-dasharray:12 7;vector-effect:non-scaling-stroke}
@@ -126,9 +131,11 @@ details input{margin-top:8px}
 .page-layer-controls .delete-page{grid-column:1/-1;color:#a23434}
 .right h2{margin:0 0 6px;font-size:16px}
 .object-title{display:flex;align-items:center;gap:8px;margin-bottom:6px}
-.object-title h2{margin:0}
-.object-title button{width:30px;height:28px;padding:0;border-color:#2b806f;color:#237263;font-weight:800}
-.object-title button.active{color:white;background:#237263}
+.object-title .object-focus{flex:1;width:auto;height:auto;padding:5px 7px;border:0;background:transparent;color:#263b49;font-size:16px;font-weight:700;text-align:left;text-decoration:underline dotted #6c8e88;text-underline-offset:4px}
+.object-title .object-focus:hover{background:#edf7f4;color:#176557}
+.object-title>button:not(.object-focus){width:30px;height:28px;padding:0;border-color:#2b806f;color:#237263;font-weight:800}
+.object-title>button:not(.object-focus).active{color:white;background:#237263}
+.autosave-note{margin:8px 0 2px;padding:8px 10px;border-radius:6px;background:#eef7f4;color:#397166;font-size:10px;text-align:center}
 .nomenclature-editor{padding:9px;border:1px solid #d5e5e0;border-radius:7px;background:#f3f8f6}
 .right label>small{display:block;margin-top:5px;font-size:9px;line-height:1.45}
 .color-editor{display:flex;align-items:center;gap:8px;margin-top:5px}

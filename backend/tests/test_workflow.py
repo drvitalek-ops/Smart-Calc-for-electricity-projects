@@ -242,6 +242,27 @@ def test_switch_catalog_has_distinct_default_colors_and_custom_point_color(clien
     body['parameters']['plan_color']='orange'
     assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==422
 
+def test_element_actions_can_be_undone_in_order(client):
+    pid,body=setup(client)
+    created=client.post(f'/api/projects/{pid}/elements',json=body).json()
+    original_x=created['x']
+    body['x']=.73
+    edited=client.put(f"/api/elements/{created['id']}",json=body).json()
+    assert edited['x']==.73
+    assert client.delete(f"/api/elements/{created['id']}").status_code==204
+    assert client.get(f'/api/projects/{pid}').json()['elements']==[]
+
+    restored_delete=client.post(f'/api/projects/{pid}/elements/undo').json()
+    assert restored_delete=={'undone':True,'elements':1}
+    restored=client.get(f'/api/projects/{pid}').json()['elements'][0]
+    assert restored['id']==created['id'] and restored['x']==.73
+
+    assert client.post(f'/api/projects/{pid}/elements/undo').json()['undone'] is True
+    assert client.get(f'/api/projects/{pid}').json()['elements'][0]['x']==original_x
+    assert client.post(f'/api/projects/{pid}/elements/undo').json()['undone'] is True
+    assert client.get(f'/api/projects/{pid}').json()['elements']==[]
+    assert client.post(f'/api/projects/{pid}/elements/undo').json()=={'undone':False}
+
 def test_calibrated_geometry_catalog_and_plan_export(client):
     pid,body=setup(client)
     page_id=body['page_id']

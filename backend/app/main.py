@@ -397,7 +397,14 @@ def create_project(body: NameInput, db: DbSession = Depends(session)):
 
 @app.get('/api/types')
 def types(db: DbSession = Depends(session)):
-    return [data(t) for t in db.scalars(select(ElementType).order_by(ElementType.id))]
+    category_order={name:index for index,name in enumerate(LAYERS)}
+    items=list(db.scalars(select(ElementType).order_by(ElementType.id)))
+    items.sort(key=lambda item:(
+        category_order.get(item.category,len(category_order)),
+        1 if item.category=='Электроустановки' and 'выключатель' in item.name.casefold() else 0,
+        item.id,
+    ))
+    return [data(item) for item in items]
 
 @app.post('/api/types',status_code=201)
 def add_type(body: TypeInput, db: DbSession = Depends(session)):

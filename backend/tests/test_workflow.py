@@ -214,6 +214,13 @@ def test_frames_are_assigned_to_selected_electrical_installations(client):
 def test_switch_catalog_has_distinct_default_colors_and_custom_point_color(client):
     pid,body=setup(client)
     types=client.get('/api/types').json()
+    categories=[item['category'] for item in types]
+    assert categories[0]=='Электроустановки'
+    assert categories.count('Электроустановки')==categories.index('Освещение')
+    electrical=[item['name'] for item in types if item['category']=='Электроустановки']
+    first_switch=next(index for index,name in enumerate(electrical) if 'выключатель' in name.casefold())
+    assert all('выключатель' not in name.casefold() for name in electrical[:first_switch])
+    assert all('выключатель' in name.casefold() for name in electrical[first_switch:])
     thermostat=next(item for item in types if item['name']=='Терморегулятор')
     assert thermostat['category']=='Электроустановки'
     assert thermostat['color']=='#be123c'

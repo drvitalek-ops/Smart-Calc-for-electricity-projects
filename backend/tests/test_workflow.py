@@ -229,6 +229,12 @@ def test_switch_catalog_has_distinct_default_colors_and_custom_point_color(clien
     })
     created=client.post(f'/api/projects/{pid}/elements',json=body)
     assert created.status_code==201 and created.json()['parameters']['plan_color']=='#123abc'
+    replacement=switches[1]
+    body['type_id']=replacement['id']
+    changed=client.put(f"/api/elements/{created.json()['id']}",json=body)
+    assert changed.status_code==200 and changed.json()['type_id']==replacement['id']
+    assert changed.json()['x']==body['x'] and changed.json()['room_id']==body['room_id']
+    assert any(row['name']==replacement['name'] for row in client.get(f'/api/projects/{pid}/report').json()['rows'])
     body['parameters']['plan_color']='orange'
     assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==422
 

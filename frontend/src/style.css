@@ -114,6 +114,12 @@ details input{margin-top:8px}
 .page-layer-controls span{text-align:right}
 .page-layer-controls .delete-page{grid-column:1/-1;color:#a23434}
 .right h2{margin:0 0 6px;font-size:16px}
+.object-title{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.object-title h2{margin:0}
+.object-title button{width:30px;height:28px;padding:0;border-color:#2b806f;color:#237263;font-weight:800}
+.object-title button.active{color:white;background:#237263}
+.nomenclature-editor{padding:9px;border:1px solid #d5e5e0;border-radius:7px;background:#f3f8f6}
+.right label>small{display:block;margin-top:5px;font-size:9px;line-height:1.45}
 .color-editor{display:flex;align-items:center;gap:8px;margin-top:5px}
 .color-editor input{width:54px;height:36px;margin:0;padding:3px;cursor:pointer}
 .color-editor button{flex:1}

@@ -353,6 +353,8 @@ def validate_element(db, project_id, body):
         raise HTTPException(422,'Цвет обозначения должен быть в формате #RRGGBB')
     if 'frame_group' in parameters and (not isinstance(parameters['frame_group'],str) or len(parameters['frame_group'])>64):
         raise HTTPException(422,'Некорректная группа рамки')
+    if typ.category!='Электроустановки':
+        parameters={key:value for key,value in parameters.items() if key not in ('frame_group','frame_posts')}
     return parameters
 
 @app.get('/api/health')
@@ -902,7 +904,11 @@ def edit_element(eid: int, body: ElementInput, db: DbSession = Depends(session))
     e=require(db,Element,eid)
     if require(db,Layer,e.layer_id).locked:
         raise HTTPException(409,'Слой заблокирован')
+    old_frame_group=e.parameters.get('frame_group')
     values=body.model_dump(); values['parameters']=validate_element(db,e.project_id,body)
+    new_frame_group=values['parameters'].get('frame_group')
+    if old_frame_group and old_frame_group!=new_frame_group:
+        clear_frame_groups(db,e.project_id,{old_frame_group})
     automatic_room=room_at_point(db,e.project_id,body.page_id,body.x,body.y)
     if automatic_room: values['room_id']=automatic_room.id
     elif e.room_id and (current_room:=db.get(Room,e.room_id)) and current_room.polygon:

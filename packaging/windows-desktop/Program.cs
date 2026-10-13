@@ -63,7 +63,7 @@ internal sealed class MainWindow : Form
             webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             webView.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = false;
             webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
-            webView.CoreWebView2.Settings.IsZoomControlEnabled = true;
+            webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
             webView.CoreWebView2.NewWindowRequested += (_, eventArgs) =>
             {
                 eventArgs.Handled = true;

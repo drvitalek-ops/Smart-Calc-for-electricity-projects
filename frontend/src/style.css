@@ -114,6 +114,9 @@ details input{margin-top:8px}
 .page-layer-controls span{text-align:right}
 .page-layer-controls .delete-page{grid-column:1/-1;color:#a23434}
 .right h2{margin:0 0 6px;font-size:16px}
+.color-editor{display:flex;align-items:center;gap:8px;margin-top:5px}
+.color-editor input{width:54px;height:36px;margin:0;padding:3px;cursor:pointer}
+.color-editor button{flex:1}
 textarea{height:65px}
 .danger{color:#b04444;background:transparent;border:0;width:100%;margin-top:8px}
 .report{padding:24px 28px;background:white;border-top:1px solid #dfe5ea}
@@ -123,6 +126,23 @@ textarea{height:65px}
 .report h2 small{font-size:11px;font-weight:400;margin-left:12px}
 .report a{display:inline-block;text-decoration:none;padding:9px 16px;color:#286d61;border:1px solid #dbe5e0;margin-right:8px;border-radius:5px}
 .table-scroll{overflow:auto}
+.report-rooms{display:grid;gap:18px}
+.report-room{border:1px solid #dfe5ea;border-radius:9px;overflow:hidden;background:#fff}
+.report-room h3{margin:0;padding:13px 16px;background:#edf5f2;color:#215f55;font-size:14px}
+.report-room table{min-width:850px}
+.frame-row{background:#fff7ed}
+.frame-row td:first-child{color:#c65f16;font-weight:700}
+.report-summary{margin-top:22px;padding:20px;border:1px solid #cadfd8;border-radius:10px;background:#f2f8f6}
+.report-summary h3{margin:5px 0 18px;font-size:19px}
+.summary-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px}
+.summary-metrics article{display:flex;flex-direction:column;padding:14px;border-radius:8px;background:white;border:1px solid #dce9e5}
+.summary-metrics strong{font-size:25px;color:#246d61}
+.summary-metrics span{font-size:11px;color:#738078}
+.summary-breakdown{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.summary-breakdown>div{padding:14px;background:white;border-radius:8px;border:1px solid #dce9e5}
+.summary-breakdown h4{margin:0 0 10px}
+.summary-breakdown p{display:flex;justify-content:space-between;gap:15px;margin:7px 0;padding-bottom:7px;border-bottom:1px solid #edf2f0}
+.summary-breakdown p:last-child{border-bottom:0}
 table{width:100%;border-collapse:collapse;text-align:left}
 th{font-size:10px;text-transform:uppercase;letter-spacing:.7px;color:#8b97a3;background:#f6f8fa;padding:11px}
 td{padding:12px 11px;border-bottom:1px solid #edf0f2;font-size:12px}
@@ -170,6 +190,7 @@ header{flex-wrap:wrap}
 header select{margin-left:0}
 .viewport{height:500px}
 .catalog-grid,.catalog-products{grid-template-columns:1fr}
+.summary-breakdown{grid-template-columns:1fr}
 .catalog-import{flex-wrap:wrap}
 .product-list>button{grid-template-columns:1fr}
 }

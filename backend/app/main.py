@@ -3,6 +3,7 @@ import csv
 import json
 import math
 import os
+import re
 import sys
 import uuid
 import zipfile
@@ -348,6 +349,8 @@ def validate_element(db, project_id, body):
             raise HTTPException(422,'Некорректная степень IP')
     if 'plan_icon' in parameters and (not isinstance(parameters['plan_icon'],str) or len(parameters['plan_icon'])>4):
         raise HTTPException(422,'Иконка на плане должна содержать не более 4 символов')
+    if 'plan_color' in parameters and (not isinstance(parameters['plan_color'],str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',parameters['plan_color'])):
+        raise HTTPException(422,'Цвет обозначения должен быть в формате #RRGGBB')
     if 'frame_group' in parameters and (not isinstance(parameters['frame_group'],str) or len(parameters['frame_group'])>64):
         raise HTTPException(422,'Некорректная группа рамки')
     return parameters
@@ -976,7 +979,7 @@ def report_rows(db,pid):
         product=db.get(Product,e.product_id) if e.product_id else None
         manufacturer=db.get(Manufacturer,product.manufacturer_id) if product else None
         supplier=db.get(Supplier,product.supplier_id) if product and product.supplier_id else None
-        group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity','frame_posts','frame_group','plan_icon')}
+        group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity','frame_posts','frame_group','plan_icon','plan_color')}
         key=(
             room.name if room else 'Без помещения',t.category,t.name,t.unit,
             json.dumps(group_parameters,ensure_ascii=False,sort_keys=True),
@@ -1016,10 +1019,28 @@ def report_rows(db,pid):
             product='',sku='',manufacturer='',supplier='',unit_price=0,currency='RUB',
             quantity=quantity,total=0,
         ))
-    rows.sort(key=lambda row:(row['room'],row['category'],row['name'],row['product']))
+    def row_order(row):
+        room_order=(row['room']=='Без помещения',row['room'].casefold())
+        category_order={'Электроустановки':0,'Рамки':1}.get(row['category'],2)
+        return (*room_order,category_order,row['category'],row['name'],row['product'])
+    rows.sort(key=row_order)
     totals=defaultdict(float)
     for row in rows: totals[row['currency']]+=row['total']
-    return {'rows':rows,'warnings':warnings,'totals':dict(totals)}
+    electrical=defaultdict(float)
+    frames=defaultdict(float)
+    for row in rows:
+        if row['category']=='Электроустановки': electrical[row['name']]+=row['quantity']
+        elif row['category']=='Рамки': frames[int(json.loads(row['parameters'])['frame_posts'])]+=row['quantity']
+    electrical_rows=[{'name':name,'quantity':round(quantity,3)} for name,quantity in sorted(electrical.items())]
+    frame_rows=[{'posts':posts,'quantity':round(quantity,3)} for posts,quantity in sorted(frames.items())]
+    summary={
+        'electrical':electrical_rows,
+        'frames':frame_rows,
+        'electrical_total':round(sum(electrical.values()),3),
+        'frame_total':round(sum(frames.values()),3),
+        'post_total':round(sum(posts*quantity for posts,quantity in frames.items()),3),
+    }
+    return {'rows':rows,'warnings':warnings,'totals':dict(totals),'summary':summary}
 
 @app.get('/api/projects/{pid}/report')
 def report(pid: int, db: DbSession = Depends(session)):
@@ -1038,7 +1059,8 @@ def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
     query=(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id)
            .join(Layer,Element.layer_id==Layer.id).where(Element.page_id==page_id,Layer.export.is_(True)))
     for element,typ,layer in db.execute(query):
-        color=tuple(int(typ.color[index:index+2],16)/255 for index in (1,3,5))
+        plan_color=element.parameters.get('plan_color',typ.color)
+        color=tuple(int(plan_color[index:index+2],16)/255 for index in (1,3,5))
         points=geometry_points(element.geometry or {})
         if points:
             pdf_points=[pymupdf.Point(point['x']*page.width,point['y']*page.height) for point in points]
@@ -1082,10 +1104,17 @@ def export(pid: int, format: str, db: DbSession = Depends(session)):
         add_sheet('Общая ведомость',rows)
         for category in sorted({r['category'] for r in result['rows']}):
             add_sheet(category,[row for row,item in zip(rows,result['rows']) if item['category']==category])
-        add_sheet('По помещениям',sorted(rows,key=lambda row:(row[0],row[1],row[2])))
+        add_sheet('По помещениям',rows)
         totals=wb.create_sheet('Итоги')
         totals.append(['Валюта','Сумма'])
         for currency,total in result['totals'].items(): totals.append([currency,total])
+        totals.append([])
+        totals.append(['Электроустановки всего',result['summary']['electrical_total']])
+        for item in result['summary']['electrical']: totals.append([item['name'],item['quantity']])
+        totals.append([])
+        totals.append(['Рамки всего',result['summary']['frame_total']])
+        for item in result['summary']['frames']: totals.append([f"Рамка на {item['posts']} постов",item['quantity']])
+        totals.append(['Постов в рамках всего',result['summary']['post_total']])
         notes=wb.create_sheet('Проверки IP')
         for warning in result['warnings']:
             notes.append([safe(warning)])
@@ -1103,16 +1132,20 @@ def export(pid: int, format: str, db: DbSession = Depends(session)):
         title=ParagraphStyle('Title',parent=style,fontSize=15,leading=19,spaceAfter=12)
         heading=ParagraphStyle('Heading',parent=style,fontSize=12,leading=16,spaceBefore=12,spaceAfter=6)
         story=[Paragraph(escape(require(db,Project,pid).name),title)]
-        for category in sorted({r['category'] for r in result['rows']}):
-            story.append(Paragraph(escape(category),heading))
-            for r in (item for item in result['rows'] if item['category']==category):
+        for room in dict.fromkeys(r['room'] for r in result['rows']):
+            story.append(Paragraph(escape(room),heading))
+            for r in (item for item in result['rows'] if item['room']==room):
                 product=f" · {r['manufacturer']} {r['product']} {r['sku']}" if r['product'] else ''
                 price=f" · {r['total']:.2f} {r['currency']}" if r['unit_price'] else ''
-                story.append(Paragraph(escape(f"{r['room']} · {r['name']}{product}: {r['quantity']} {r['unit']}{price} | {r['parameters']}"),style))
+                story.append(Paragraph(escape(f"{r['category']} · {r['name']}{product}: {r['quantity']} {r['unit']}{price} | {r['parameters']}"),style))
                 story.append(Spacer(1,6))
-        if result['totals']:
-            story.append(Paragraph('Итоги',heading))
-            for currency,total in result['totals'].items(): story.append(Paragraph(escape(f'{total:.2f} {currency}'),style))
+        story.append(Paragraph('Общий итог',heading))
+        for item in result['summary']['electrical']:
+            story.append(Paragraph(escape(f"{item['name']}: {item['quantity']} шт"),style))
+        for item in result['summary']['frames']:
+            story.append(Paragraph(escape(f"Рамка на {item['posts']} постов: {item['quantity']} шт"),style))
+        story.append(Paragraph(escape(f"ЭУИ всего: {result['summary']['electrical_total']} шт · рамок: {result['summary']['frame_total']} шт · постов: {result['summary']['post_total']}"),style))
+        for currency,total in result['totals'].items(): story.append(Paragraph(escape(f'Стоимость: {total:.2f} {currency}'),style))
         for warning in result['warnings']: story.append(Paragraph(escape(warning),style))
         SimpleDocTemplate(output).build(story); media='application/pdf'
     db.add(Report(project_id=pid,format=format)); db.commit()

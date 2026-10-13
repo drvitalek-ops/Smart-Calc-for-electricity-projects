@@ -195,14 +195,42 @@ def test_frames_are_assigned_to_selected_electrical_installations(client):
     elements=client.get(f'/api/projects/{pid}').json()['elements']
     assert len({item['parameters']['frame_group'] for item in elements})==1
     assert all(item['parameters']['frame_posts']==3 for item in elements)
-    rows=client.get(f'/api/projects/{pid}/report').json()['rows']
+    report=client.get(f'/api/projects/{pid}/report').json()
+    rows=report['rows']
     frame=next(row for row in rows if row['category']=='Рамки')
     assert frame['name']=='Рамка на 3 поста' and frame['quantity']==1
+    room_rows=[row for row in rows if row['room']=='Ванная']
+    assert [row['category'] for row in room_rows][-1]=='Рамки'
+    assert report['summary']['electrical_total']==3
+    assert report['summary']['frame_total']==1
+    assert report['summary']['post_total']==3
+    assert sum(item['quantity'] for item in report['summary']['electrical'])==3
     removed=client.post(f'/api/projects/{pid}/frames/remove',json={'element_ids':[selected[0]]})
     assert removed.status_code==200
     elements=client.get(f'/api/projects/{pid}').json()['elements']
     assert all('frame_group' not in item['parameters'] for item in elements)
     assert not any(row['category']=='Рамки' for row in client.get(f'/api/projects/{pid}/report').json()['rows'])
+
+def test_switch_catalog_has_distinct_default_colors_and_custom_point_color(client):
+    pid,body=setup(client)
+    types=client.get('/api/types').json()
+    switch_names={
+        'Двойной выключатель','Двойной перекрестный выключатель',
+        'Двойной проходной выключатель','Тройной выключатель',
+        'Одинарный проходной выключатель','Одинарный перекрестный выключатель',
+    }
+    switches=[item for item in types if item['name'] in switch_names]
+    assert {item['name'] for item in switches}==switch_names
+    assert len({item['color'] for item in switches})==len(switch_names)
+    project=client.get(f'/api/projects/{pid}').json()
+    body.update({
+        'layer_id':project['layers'][0]['id'],'type_id':switches[0]['id'],
+        'parameters':{'quantity':1,'ip':20,'plan_color':'#123abc'},
+    })
+    created=client.post(f'/api/projects/{pid}/elements',json=body)
+    assert created.status_code==201 and created.json()['parameters']['plan_color']=='#123abc'
+    body['parameters']['plan_color']='orange'
+    assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==422
 
 def test_calibrated_geometry_catalog_and_plan_export(client):
     pid,body=setup(client)

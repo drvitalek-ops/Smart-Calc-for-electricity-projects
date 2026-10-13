@@ -214,6 +214,10 @@ def test_frames_are_assigned_to_selected_electrical_installations(client):
 def test_switch_catalog_has_distinct_default_colors_and_custom_point_color(client):
     pid,body=setup(client)
     types=client.get('/api/types').json()
+    thermostat=next(item for item in types if item['name']=='Терморегулятор')
+    assert thermostat['category']=='Электроустановки'
+    assert thermostat['color']=='#be123c'
+    assert thermostat['defaults']=={'quantity':1,'ip':20}
     switch_names={
         'Двойной выключатель','Двойной перекрестный выключатель',
         'Двойной проходной выключатель','Тройной выключатель',

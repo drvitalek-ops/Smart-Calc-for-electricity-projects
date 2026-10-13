@@ -66,7 +66,7 @@ details input{margin-top:8px}
 .tool-link{padding:6px 9px;text-decoration:none;border:1px solid #d8dfe5;border-radius:6px;color:#304155;background:white}
 .upload{margin:0;background:#243c4a;color:white;border-radius:5px;padding:8px 12px;cursor:pointer}
 .upload input{display:none}
-.label-toggle{position:absolute;z-index:8;top:66px;right:16px;border-color:#ffffff80;background:#173f46c7;color:white;opacity:.72;backdrop-filter:blur(5px)}
+.label-toggle{position:absolute;z-index:220;top:66px;right:16px;border-color:#ffffff80;background:#173f46c7;color:white;opacity:.72;backdrop-filter:blur(5px);pointer-events:auto}
 .label-toggle:hover{background:#173f46;color:white;opacity:1}
 .label-toggle.inactive{background:#fff;color:#334155}
 .plan-legend{position:absolute;z-index:8;left:16px;bottom:16px;min-width:160px;max-width:230px;padding:12px 14px;border:1px solid #ffffffa8;border-radius:8px;background:#ffffffe0;box-shadow:0 8px 24px #24324420;backdrop-filter:blur(6px);pointer-events:none}

@@ -847,6 +847,9 @@ export default function App() {
     window.addEventListener("pointerdown", closeMenus);
     return () => window.removeEventListener("pointerdown", closeMenus);
   }, []);
+  useEffect(() => {
+    setFramePosts(Math.min(6, Math.max(1, selectedIds.length)));
+  }, [selectedIds]);
   const page = project?.pages.find((p) => p.id === pageId),
     kind = types.find((t) => t.id === typeId),
     layer = project?.layers.find((l) => l.id === layerId);

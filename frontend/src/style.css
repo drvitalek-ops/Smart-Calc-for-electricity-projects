@@ -129,6 +129,8 @@ details input{margin-top:8px}
 .page-layer-controls input{margin:0;padding:0;accent-color:#246d61}
 .page-layer-controls span{text-align:right}
 .page-layer-controls .delete-page{grid-column:1/-1;color:#a23434}
+.page-layer-controls .overlay-apply{background:#246d61;color:white;border-color:#246d61;font-weight:700}
+.page-layer-controls input:disabled{opacity:.4;cursor:not-allowed}
 .right h2{margin:0 0 6px;font-size:16px}
 .object-title{display:flex;align-items:center;gap:8px;margin-bottom:6px}
 .object-title .object-focus{flex:1;width:auto;height:auto;padding:5px 7px;border:0;background:transparent;color:#263b49;font-size:16px;font-weight:700;text-align:left;text-decoration:underline dotted #6c8e88;text-underline-offset:4px}

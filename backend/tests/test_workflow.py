@@ -74,10 +74,32 @@ def test_layer_lock_and_export(client):
     })
     assert overlay.status_code==200
     assert overlay.json()['opacity']==.4 and overlay.json()['scale']==1.2
+    expanded=client.patch(f"/api/pages/{body['page_id']}",json={
+        'offset_x':1.5,'offset_y':-1.5,'scale':4,
+    })
+    assert expanded.status_code==200
+    assert expanded.json()['offset_x']==1.5 and expanded.json()['scale']==4
     assert client.delete(f"/api/pages/{body['page_id']}").status_code==409
     empty_page=next(page for page in project['pages'] if page['id']!=body['page_id'])
     assert client.delete(f"/api/pages/{empty_page['id']}").status_code==204
     assert len(client.get(f'/api/projects/{pid}').json()['pages'])==1
+
+def test_smart_device_catalog_and_layer(client):
+    expected={
+        'Zigbee диммер','Zigbee реле одноканальное',
+        'Zigbee реле двухканальное','Zigbee реле трехканальное',
+        'Zigbee лампочка','Zigbee контроллер для ленты',
+        'Zigbee электрокарниз','Zigbee терморегулятор',
+    }
+    smart={
+        item['name'] for item in client.get('/api/types').json()
+        if item['category']=='Умные устройства'
+    }
+    assert expected <= smart
+    project=client.post('/api/projects',json={'name':'Умный дом'}).json()
+    assert 'Умные устройства' in {
+        layer['name'] for layer in client.get(f"/api/projects/{project['id']}").json()['layers']
+    }
 
 def test_bulk_page_deletion_is_atomic_and_renumbers_pages(client):
     pid,body=setup(client)

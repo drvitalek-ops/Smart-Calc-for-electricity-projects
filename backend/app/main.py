@@ -130,9 +130,9 @@ class PageInput(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     overlay_visible: bool | None = None
     opacity: float | None = Field(default=None, ge=0.05, le=1)
-    offset_x: float | None = Field(default=None, ge=-1, le=1)
-    offset_y: float | None = Field(default=None, ge=-1, le=1)
-    scale: float | None = Field(default=None, ge=0.5, le=2)
+    offset_x: float | None = Field(default=None, ge=-2, le=2)
+    offset_y: float | None = Field(default=None, ge=-2, le=2)
+    scale: float | None = Field(default=None, ge=0.1, le=5)
 
 class PageSelectionInput(BaseModel):
     page_ids: list[int] = Field(min_length=1, max_length=1000)
@@ -233,9 +233,9 @@ class BackupPage(BaseModel):
     meters_per_point: float | None = Field(default=None,gt=0,le=10000)
     overlay_visible: bool = False
     opacity: float = Field(default=1,ge=0.05,le=1)
-    offset_x: float = Field(default=0,ge=-1,le=1)
-    offset_y: float = Field(default=0,ge=-1,le=1)
-    scale: float = Field(default=1,ge=0.5,le=2)
+    offset_x: float = Field(default=0,ge=-2,le=2)
+    offset_y: float = Field(default=0,ge=-2,le=2)
+    scale: float = Field(default=1,ge=0.1,le=5)
     pdf_file: str = Field(min_length=5,max_length=200)
 
 class BackupElement(BaseModel):

@@ -786,6 +786,13 @@ export default function App() {
     [catalogOpen, setCatalogOpen] = useState(false),
     [view, setView] = useState<"plan" | "report">("plan");
   const [alignPageId, setAlignPageId] = useState<number | null>(null);
+  const [alignOriginal, setAlignOriginal] = useState<{
+    overlay_visible: boolean;
+    opacity: number;
+    offset_x: number;
+    offset_y: number;
+    scale: number;
+  } | null>(null);
   const [leftPanelVisible, setLeftPanelVisible] = useState(true),
     [rightPanelVisible, setRightPanelVisible] = useState(true),
     [checkedPageIds, setCheckedPageIds] = useState<number[]>([]);
@@ -882,6 +889,7 @@ export default function App() {
     setView("plan");
     setCheckedPageIds([]);
     setAlignPageId(null);
+    setAlignOriginal(null);
     setRoomMode(null);
     setRoomPoints([]);
     setEditingRoomId(null);
@@ -967,7 +975,7 @@ export default function App() {
         return;
       }
       if (event.key === "Escape" && alignPageId) {
-        setAlignPageId(null);
+        cancelAlignment();
         return;
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
@@ -1065,6 +1073,39 @@ export default function App() {
   async function savePage(id: number, values: Partial<Page>) {
     await api(`/pages/${id}`, "PATCH", values);
   }
+  function startAlignment(item: Page) {
+    if (alignPageId && alignOriginal) localPage(alignPageId, alignOriginal);
+    setAlignOriginal({
+      overlay_visible: item.overlay_visible,
+      opacity: item.opacity ?? 1,
+      offset_x: item.offset_x ?? 0,
+      offset_y: item.offset_y ?? 0,
+      scale: item.scale ?? 1,
+    });
+    localPage(item.id, { overlay_visible: true });
+    setAlignPageId(item.id);
+  }
+  function cancelAlignment() {
+    if (alignPageId && alignOriginal) localPage(alignPageId, alignOriginal);
+    alignDrag.current = null;
+    setAlignPageId(null);
+    setAlignOriginal(null);
+  }
+  async function applyAlignment() {
+    if (!project || !alignPageId) return;
+    const source = project.pages.find((item) => item.id === alignPageId);
+    if (!source) return;
+    await savePage(source.id, {
+      overlay_visible: true,
+      opacity: source.opacity,
+      offset_x: source.offset_x,
+      offset_y: source.offset_y,
+      scale: source.scale,
+    });
+    alignDrag.current = null;
+    setAlignPageId(null);
+    setAlignOriginal(null);
+  }
   async function deletePage(item: Page) {
     if (
       !confirm(
@@ -1075,7 +1116,10 @@ export default function App() {
     await api(`/pages/${item.id}`, "DELETE");
     const updated = await refresh(project!.id);
     if (pageId === item.id) setPageId(updated.pages[0]?.id ?? null);
-    if (alignPageId === item.id) setAlignPageId(null);
+    if (alignPageId === item.id) {
+      setAlignPageId(null);
+      setAlignOriginal(null);
+    }
     setCheckedPageIds((ids) => ids.filter((id) => id !== item.id));
     setSelected(null);
     setSelectedIds([]);
@@ -1094,7 +1138,10 @@ export default function App() {
     });
     const updated = await refresh(project.id);
     if (pageId && deleting.has(pageId)) setPageId(updated.pages[0]?.id ?? null);
-    if (alignPageId && deleting.has(alignPageId)) setAlignPageId(null);
+    if (alignPageId && deleting.has(alignPageId)) {
+      setAlignPageId(null);
+      setAlignOriginal(null);
+    }
     setCheckedPageIds([]);
     setSelected(null);
     setSelectedIds([]);
@@ -2788,13 +2835,27 @@ export default function App() {
                                 if (!rect) return;
                                 localPage(alignPageId, {
                                   offset_x:
-                                    alignDrag.current.offsetX +
-                                    (e.clientX - alignDrag.current.clientX) /
-                                      rect.width,
+                                    Math.max(
+                                      -2,
+                                      Math.min(
+                                        2,
+                                        alignDrag.current.offsetX +
+                                          (e.clientX -
+                                            alignDrag.current.clientX) /
+                                            rect.width,
+                                      ),
+                                    ),
                                   offset_y:
-                                    alignDrag.current.offsetY +
-                                    (e.clientY - alignDrag.current.clientY) /
-                                      rect.height,
+                                    Math.max(
+                                      -2,
+                                      Math.min(
+                                        2,
+                                        alignDrag.current.offsetY +
+                                          (e.clientY -
+                                            alignDrag.current.clientY) /
+                                            rect.height,
+                                      ),
+                                    ),
                                 });
                               }}
                               onPointerUp={(e) => {
@@ -2803,25 +2864,10 @@ export default function App() {
                                   e.pointerId,
                                 );
                                 alignDrag.current = null;
-                                const source = project.pages.find(
-                                  (item) => item.id === alignPageId,
-                                );
-                                if (source)
-                                  void savePage(source.id, {
-                                    offset_x: source.offset_x,
-                                    offset_y: source.offset_y,
-                                  }).catch((error) =>
-                                    setError(
-                                      error instanceof Error
-                                        ? error.message
-                                        : "Ошибка",
-                                    ),
-                                  );
                               }}
                             />
                             <text x="500" y="35" textAnchor="middle">
-                              Перетаскивайте страницу для совмещения ·
-                              Esc/кнопка — завершить
+                              Перетаскивайте активный слой · затем нажмите ОК
                             </text>
                           </g>
                         )}
@@ -2934,6 +2980,7 @@ export default function App() {
                         <button
                           className="page"
                           onClick={() => {
+                            cancelAlignment();
                             setPageId(p.id);
                             setRoomMode(null);
                             setRoomPoints([]);
@@ -2942,7 +2989,6 @@ export default function App() {
                             setRoomPointMenu(null);
                             setSelected(null);
                             setSelectedIds([]);
-                            setAlignPageId(null);
                             setLinePoints([]);
                             setLineCursor(null);
                             setCalibrationStart(null);
@@ -2954,7 +3000,7 @@ export default function App() {
                         <div className="page-layer-controls">
                           <button
                             aria-label={`Наложение ${p.name || `Лист ${p.number}`}`}
-                            disabled={p.id === pageId}
+                            disabled={p.id === pageId || alignPageId === p.id}
                             title={
                               p.id === pageId
                                 ? "Текущая основа"
@@ -2987,18 +3033,11 @@ export default function App() {
                               min="0.05"
                               max="1"
                               step="0.05"
+                              disabled={alignPageId !== p.id}
                               value={p.opacity ?? 1}
                               onChange={(e) => {
                                 const opacity = +e.target.value;
                                 localPage(p.id, { opacity });
-                                void savePage(p.id, { opacity }).catch(
-                                  (error) =>
-                                    setError(
-                                      error instanceof Error
-                                        ? error.message
-                                        : "Ошибка",
-                                    ),
-                                );
                               }}
                             />
                             <span>{Math.round((p.opacity ?? 1) * 100)}%</span>
@@ -3008,20 +3047,14 @@ export default function App() {
                             <input
                               aria-label={`Масштаб страницы ${p.name || `Лист ${p.number}`}`}
                               type="range"
-                              min="0.5"
-                              max="2"
+                              min="0.1"
+                              max="5"
                               step="0.01"
+                              disabled={alignPageId !== p.id}
                               value={p.scale ?? 1}
                               onChange={(e) => {
                                 const scale = +e.target.value;
                                 localPage(p.id, { scale });
-                                void savePage(p.id, { scale }).catch((error) =>
-                                  setError(
-                                    error instanceof Error
-                                      ? error.message
-                                      : "Ошибка",
-                                  ),
-                                );
                               }}
                             />
                             <span>{Math.round((p.scale ?? 1) * 100)}%</span>
@@ -3030,30 +3063,30 @@ export default function App() {
                             <button
                               className={alignPageId === p.id ? "active" : ""}
                               onClick={() => {
-                                if (!p.overlay_visible) {
-                                  localPage(p.id, { overlay_visible: true });
-                                  void savePage(p.id, {
-                                    overlay_visible: true,
-                                  });
-                                }
-                                setAlignPageId((value) =>
-                                  value === p.id ? null : p.id,
-                                );
+                                if (alignPageId === p.id) cancelAlignment();
+                                else startAlignment(p);
                               }}
                             >
                               {alignPageId === p.id
-                                ? "✓ Совмещение"
-                                : "↔ Совместить"}
+                                ? "Отмена"
+                                : p.overlay_visible
+                                  ? "Изменить наложение"
+                                  : "Настроить наложение"}
+                            </button>
+                          )}
+                          {alignPageId === p.id && (
+                            <button
+                              className="overlay-apply"
+                              disabled={busy}
+                              onClick={() => void run(applyAlignment)}
+                            >
+                              ✓ ОК
                             </button>
                           )}
                           <button
+                            disabled={alignPageId !== p.id}
                             onClick={() => {
                               localPage(p.id, {
-                                offset_x: 0,
-                                offset_y: 0,
-                                scale: 1,
-                              });
-                              void savePage(p.id, {
                                 offset_x: 0,
                                 offset_y: 0,
                                 scale: 1,

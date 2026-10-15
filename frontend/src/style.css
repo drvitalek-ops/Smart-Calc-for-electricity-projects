@@ -103,7 +103,10 @@ details input{margin-top:8px}
 .object-context-menu .danger{margin:0;border:1px solid #f0d5d5}
 .frame-editor{padding:10px;border:1px solid #e2e8ec;border-radius:7px;background:#f8fafb}
 .frame-editor>button:not(.danger){width:100%;margin-top:7px}
-.alignment-mode rect{cursor:move;pointer-events:all}
+.sheet.alignment-active{cursor:grab;touch-action:none}
+.sheet.alignment-active:active{cursor:grabbing}
+.alignment-mode{pointer-events:none}
+.alignment-mode rect{pointer-events:none}
 .alignment-mode text{font-size:14px;font-weight:700;fill:#0f172a;stroke:white;stroke-width:4;paint-order:stroke;pointer-events:none}
 .placing{cursor:crosshair}
 .empty{text-align:center;margin:130px auto;color:#7e8b99}
@@ -131,6 +134,10 @@ details input{margin-top:8px}
 .page-layer-controls .delete-page{grid-column:1/-1;color:#a23434}
 .page-layer-controls .overlay-apply{background:#246d61;color:white;border-color:#246d61;font-weight:700}
 .page-layer-controls input:disabled{opacity:.4;cursor:not-allowed}
+.overlay-nudge{grid-column:1/-1;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:6px;border:1px solid #dce8e4;border-radius:6px;background:#edf6f3}
+.overlay-nudge strong{grid-column:1/-1;text-align:center;color:#225b51;font-size:9px}
+.overlay-nudge span{grid-column:1/-1;text-align:center;color:#38675f;font-size:9px}
+.overlay-nudge button{padding:5px;font-size:14px;font-weight:700}
 .right h2{margin:0 0 6px;font-size:16px}
 .object-title{display:flex;align-items:center;gap:8px;margin-bottom:6px}
 .object-title .object-focus{flex:1;width:auto;height:auto;padding:5px 7px;border:0;background:transparent;color:#263b49;font-size:16px;font-weight:700;text-align:left;text-decoration:underline dotted #6c8e88;text-underline-offset:4px}

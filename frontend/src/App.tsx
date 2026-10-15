@@ -843,6 +843,7 @@ export default function App() {
   const roomNodeDrag = useRef<number | null>(null);
   const lastObjectClick = useRef<{ id: number; time: number } | null>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const sheetRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     function closeMenus(event: PointerEvent) {
       const target = event.target as HTMLElement | null;
@@ -857,6 +858,46 @@ export default function App() {
   useEffect(() => {
     setFramePosts(Math.min(6, Math.max(1, selectedIds.length)));
   }, [selectedIds]);
+  useEffect(() => {
+    const activePageId = alignPageId;
+    if (activePageId === null) return;
+    const moveAlignment = (event: PointerEvent) => {
+      if (!alignDrag.current) return;
+      event.preventDefault();
+      const rect = sheetRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      localPage(activePageId, {
+        offset_x: Math.max(
+          -2,
+          Math.min(
+            2,
+            alignDrag.current.offsetX +
+              (event.clientX - alignDrag.current.clientX) / rect.width,
+          ),
+        ),
+        offset_y: Math.max(
+          -2,
+          Math.min(
+            2,
+            alignDrag.current.offsetY +
+              (event.clientY - alignDrag.current.clientY) / rect.height,
+          ),
+        ),
+      });
+    };
+    const finishAlignmentDrag = () => {
+      alignDrag.current = null;
+    };
+    window.addEventListener("pointermove", moveAlignment, { passive: false });
+    window.addEventListener("pointerup", finishAlignmentDrag);
+    window.addEventListener("pointercancel", finishAlignmentDrag);
+    return () => {
+      window.removeEventListener("pointermove", moveAlignment);
+      window.removeEventListener("pointerup", finishAlignmentDrag);
+      window.removeEventListener("pointercancel", finishAlignmentDrag);
+      alignDrag.current = null;
+    };
+  }, [alignPageId]);
   const page = project?.pages.find((p) => p.id === pageId),
     kind = types.find((t) => t.id === typeId),
     layer = project?.layers.find((l) => l.id === layerId);
@@ -1105,6 +1146,15 @@ export default function App() {
     alignDrag.current = null;
     setAlignPageId(null);
     setAlignOriginal(null);
+  }
+  function nudgeAlignment(x: number, y: number) {
+    if (!project || !alignPageId) return;
+    const source = project.pages.find((item) => item.id === alignPageId);
+    if (!source) return;
+    localPage(source.id, {
+      offset_x: Math.max(-2, Math.min(2, (source.offset_x ?? 0) + x)),
+      offset_y: Math.max(-2, Math.min(2, (source.offset_y ?? 0) + y)),
+    });
   }
   async function deletePage(item: Page) {
     if (
@@ -2196,10 +2246,28 @@ export default function App() {
                 >
                   {page ? (
                     <div
-                      className="sheet"
+                      ref={sheetRef}
+                      className={
+                        "sheet" + (alignPageId ? " alignment-active" : "")
+                      }
                       style={{
                         width: 850 * zoom,
                         aspectRatio: `${page.width}/${page.height}`,
+                      }}
+                      onPointerDownCapture={(event) => {
+                        if (!alignPageId || event.button !== 0) return;
+                        const source = project.pages.find(
+                          (item) => item.id === alignPageId,
+                        );
+                        if (!source) return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        alignDrag.current = {
+                          clientX: event.clientX,
+                          clientY: event.clientY,
+                          offsetX: source.offset_x ?? 0,
+                          offsetY: source.offset_y ?? 0,
+                        };
                       }}
                     >
                       {displayedPages.map((source, index) => (
@@ -2813,58 +2881,6 @@ export default function App() {
                               width="1000"
                               height="1000"
                               fill="transparent"
-                              onPointerDown={(e) => {
-                                if (e.button !== 0) return;
-                                const source = project.pages.find(
-                                  (item) => item.id === alignPageId,
-                                );
-                                if (!source) return;
-                                e.stopPropagation();
-                                e.currentTarget.setPointerCapture(e.pointerId);
-                                alignDrag.current = {
-                                  clientX: e.clientX,
-                                  clientY: e.clientY,
-                                  offsetX: source.offset_x ?? 0,
-                                  offsetY: source.offset_y ?? 0,
-                                };
-                              }}
-                              onPointerMove={(e) => {
-                                if (!alignDrag.current) return;
-                                const svg = e.currentTarget.ownerSVGElement,
-                                  rect = svg?.getBoundingClientRect();
-                                if (!rect) return;
-                                localPage(alignPageId, {
-                                  offset_x:
-                                    Math.max(
-                                      -2,
-                                      Math.min(
-                                        2,
-                                        alignDrag.current.offsetX +
-                                          (e.clientX -
-                                            alignDrag.current.clientX) /
-                                            rect.width,
-                                      ),
-                                    ),
-                                  offset_y:
-                                    Math.max(
-                                      -2,
-                                      Math.min(
-                                        2,
-                                        alignDrag.current.offsetY +
-                                          (e.clientY -
-                                            alignDrag.current.clientY) /
-                                            rect.height,
-                                      ),
-                                    ),
-                                });
-                              }}
-                              onPointerUp={(e) => {
-                                if (!alignDrag.current) return;
-                                e.currentTarget.releasePointerCapture(
-                                  e.pointerId,
-                                );
-                                alignDrag.current = null;
-                              }}
                             />
                             <text x="500" y="35" textAnchor="middle">
                               Перетаскивайте активный слой · затем нажмите ОК
@@ -3082,6 +3098,41 @@ export default function App() {
                             >
                               ✓ ОК
                             </button>
+                          )}
+                          {alignPageId === p.id && (
+                            <div className="overlay-nudge">
+                              <strong>
+                                Зажмите левую кнопку на плане и тяните слой
+                              </strong>
+                              <span>
+                                Сдвиг: X {Math.round((p.offset_x ?? 0) * 100)}% ·
+                                Y {Math.round((p.offset_y ?? 0) * 100)}%
+                              </span>
+                              <button
+                                aria-label="Сдвинуть наложение влево"
+                                onClick={() => nudgeAlignment(-0.01, 0)}
+                              >
+                                ←
+                              </button>
+                              <button
+                                aria-label="Сдвинуть наложение вверх"
+                                onClick={() => nudgeAlignment(0, -0.01)}
+                              >
+                                ↑
+                              </button>
+                              <button
+                                aria-label="Сдвинуть наложение вниз"
+                                onClick={() => nudgeAlignment(0, 0.01)}
+                              >
+                                ↓
+                              </button>
+                              <button
+                                aria-label="Сдвинуть наложение вправо"
+                                onClick={() => nudgeAlignment(0.01, 0)}
+                              >
+                                →
+                              </button>
+                            </div>
                           )}
                           <button
                             disabled={alignPageId !== p.id}

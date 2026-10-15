@@ -14,7 +14,7 @@ from typing import Literal
 from contextlib import asynccontextmanager
 from collections import defaultdict
 import pymupdf
-from fastapi import FastAPI, Depends, HTTPException, UploadFile
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -32,6 +32,8 @@ STORAGE.mkdir(parents=True, exist_ok=True)
 PDF_MAX_MB = 500
 PDF_MAX_BYTES = PDF_MAX_MB * 1024 * 1024
 UPLOAD_CHUNK_BYTES = 1024 * 1024
+PDF_IMAGE_LOCK = Lock()
+PDF_IMAGE_MAX_PIXELS = 16_000_000
 ELEMENT_HISTORY_LIMIT = 50
 ELEMENT_HISTORY: dict[int, list[list[dict]]] = defaultdict(list)
 ELEMENT_HISTORY_LOCK = Lock()
@@ -848,7 +850,10 @@ def delete_project_pages(db: DbSession, project_id: int, page_ids: list[int]):
     for number,item in enumerate(remaining,1): item.number=number
     unused_pdf_paths=[path for path in pdf_paths if not db.scalar(select(Page.id).where(Page.pdf_path==str(path)).limit(1))]
     db.commit()
-    for path in image_paths: path.unlink(missing_ok=True)
+    for path in image_paths:
+        path.unlink(missing_ok=True)
+        for level in (1024,2048,4096,8192):
+            path.with_name(f'{path.stem}-q{level}.png').unlink(missing_ok=True)
     for path in unused_pdf_paths: path.unlink(missing_ok=True)
     return unique_ids
 
@@ -920,8 +925,28 @@ async def upload(pid: int, file: UploadFile, db: DbSession = Depends(session)):
         raise HTTPException(422,'Не удалось прочитать PDF') from exc
 
 @app.get('/api/pages/{page_id}/image')
-def page_image(page_id: int, db: DbSession = Depends(session)):
-    return FileResponse(require(db,Page,page_id).image_path,media_type='image/png')
+def page_image(page_id: int, edge: int | None = Query(default=None, ge=1, le=8192),
+               db: DbSession = Depends(session)):
+    page=require(db,Page,page_id)
+    if edge is None:
+        return FileResponse(page.image_path,media_type='image/png')
+    # A finite set of levels bounds the on-disk cache for each immutable PDF page.
+    level=next(value for value in (1024,2048,4096,8192) if value>=edge)
+    image=Path(page.image_path).with_name(f'{Path(page.image_path).stem}-q{level}.png')
+    with PDF_IMAGE_LOCK:
+        if not image.is_file():
+            with pymupdf.open(page.pdf_path) as document:
+                sheet=document[page.source_index]
+                width,height=sheet.rect.width,sheet.rect.height
+                scale=min(level/max(width,height),math.sqrt(PDF_IMAGE_MAX_PIXELS/(width*height)))
+                temporary=image.with_suffix('.tmp')
+                try:
+                    temporary.write_bytes(sheet.get_pixmap(
+                        matrix=pymupdf.Matrix(scale,scale),alpha=False).tobytes('png'))
+                    temporary.replace(image)
+                finally:
+                    temporary.unlink(missing_ok=True)
+    return FileResponse(image,media_type='image/png',headers={'Cache-Control':'private, max-age=86400'})
 
 @app.post('/api/projects/{pid}/elements',status_code=201)
 def add_element(pid: int, body: ElementInput, db: DbSession = Depends(session)):

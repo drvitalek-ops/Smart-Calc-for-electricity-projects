@@ -13,6 +13,44 @@ type Page = {
   offset_y: number;
   scale: number;
 };
+// Keep the current image visible while a sharper level loads in the background.
+function PlanImage({ pageId, displayEdge, ...props }: {
+  pageId: number;
+  displayEdge: number;
+} & React.ImgHTMLAttributes<HTMLImageElement>) {
+  const base = `/api/pages/${pageId}/image`,
+    [source, setSource] = useState(base),
+    [pixelRatio, setPixelRatio] = useState(() => window.devicePixelRatio || 1);
+  useEffect(() => {
+    const update = () => setPixelRatio(window.devicePixelRatio || 1);
+    window.addEventListener("resize", update);
+    const query = window.matchMedia(`(resolution: ${pixelRatio}dppx)`);
+    query.addEventListener("change", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      query.removeEventListener("change", update);
+    };
+  }, [pixelRatio]);
+  const requested = Math.min(8192, Math.max(1, displayEdge * pixelRatio)),
+    level = [1024, 2048, 4096, 8192].find((value) => value >= requested)!;
+  useEffect(() => {
+    let active = true;
+    const image = new Image(),
+      timer = window.setTimeout(() => {
+        image.onload = () => {
+          if (active) setSource(`${base}?edge=${level}`);
+        };
+        image.src = `${base}?edge=${level}`;
+      }, 200);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      image.onload = null;
+      image.src = "";
+    };
+  }, [base, level]);
+  return <img {...props} src={source} />;
+}
 type Room = {
   id: number;
   name: string;
@@ -2271,7 +2309,9 @@ export default function App() {
                       }}
                     >
                       {displayedPages.map((source, index) => (
-                        <img
+                        <PlanImage
+                          pageId={source.id}
+                          displayEdge={850 * zoom * (source.scale ?? 1) * Math.max(1, page.height / page.width)}
                           className={
                             "page-overlay-image" +
                             (alignPageId === source.id
@@ -2279,7 +2319,6 @@ export default function App() {
                               : "")
                           }
                           key={source.id}
-                          src={`/api/pages/${source.id}/image`}
                           draggable={false}
                           alt={`PDF-план, лист ${source.number}`}
                           style={{

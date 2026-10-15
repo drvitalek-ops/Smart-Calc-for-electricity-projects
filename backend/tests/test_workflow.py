@@ -430,3 +430,37 @@ def test_invalid_project_backup_does_not_create_project(client):
     })
     assert response.status_code==422
     assert len(client.get('/api/projects').json())==before
+
+
+def test_adaptive_pdf_image_quality_and_cache(client, monkeypatch):
+    pid,body=setup(client)
+    page_id=body['page_id']
+    url=f'/api/pages/{page_id}/image'
+    low=client.get(url+'?edge=1024')
+    high=client.get(url+'?edge=2048')
+    assert low.status_code==high.status_code==200
+    low_pix=pymupdf.Pixmap(low.content)
+    high_pix=pymupdf.Pixmap(high.content)
+    assert max(low_pix.width,low_pix.height)==1024
+    assert max(high_pix.width,high_pix.height)==2048
+    assert high_pix.width>low_pix.width
+    # Requests in one quality level reuse the existing render.
+    def unexpected_render(*args, **kwargs):
+        raise AssertionError('Cached image should not reopen PDF')
+    with monkeypatch.context() as patch:
+        patch.setattr(main_module.pymupdf,'open',unexpected_render)
+        assert client.get(url+'?edge=1800').content==high.content
+    for edge in ('0','8193','nan','inf','-1'):
+        assert client.get(url+'?edge='+edge).status_code==422
+    assert client.get('/api/pages/999999/image?edge=2048').status_code==404
+    assert client.get(url).content.startswith(b'\x89PNG')
+    # Even at the highest level, raster memory stays bounded.
+    capped=client.get(url+'?edge=8192')
+    pix=pymupdf.Pixmap(capped.content)
+    assert pix.width*pix.height < main_module.PDF_IMAGE_MAX_PIXELS+16384
+    assert max(pix.width,pix.height)<=8192
+    assert capped.headers['cache-control']=='private, max-age=86400'
+    paths=list(main_module.STORAGE.glob('*-q*.png'))
+    assert paths
+    assert client.post(f'/api/projects/{pid}/pages/delete',json={'page_ids':[page_id]}).status_code==200
+    assert not any(path.exists() for path in paths)

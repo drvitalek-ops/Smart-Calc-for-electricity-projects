@@ -1467,18 +1467,30 @@ export default function App() {
     }
     setSelected({ ...selected, type_id: typeId, product_id: null, parameters });
   }
-  async function assignFrame(posts = framePosts) {
-    await api(`/projects/${project!.id}/frames`, "POST", {
+  async function changeFrame(path: string, posts?: number) {
+    if (!project) return;
+    // Flush pending property edits before changing server-managed frame data.
+    const stored =
+      selected && project.elements.find((item) => item.id === selected.id);
+    if (selected && stored && !sameItem(selected, stored)) await save(selected);
+    await api(`/projects/${project.id}/frames${path}`, "POST", {
       element_ids: selectedIds,
-      posts,
+      ...(posts === undefined ? {} : { posts }),
     });
-    await refresh(project!.id);
+    const updated = await refresh(project.id);
+    // The autosave draft must include the new frame membership. Otherwise its
+    // stale parameters are treated as edits and undo the frame operation.
+    setSelected((current) =>
+      current
+        ? (updated.elements.find((item) => item.id === current.id) ?? null)
+        : null,
+    );
+  }
+  async function assignFrame(posts = framePosts) {
+    await changeFrame("", posts);
   }
   async function removeFrame() {
-    await api(`/projects/${project!.id}/frames/remove`, "POST", {
-      element_ids: selectedIds,
-    });
-    await refresh(project!.id);
+    await changeFrame("/remove");
   }
   const previewPoints =
       lineCursor && linePoints.length
@@ -2213,7 +2225,7 @@ export default function App() {
                           Изменить свойства
                         </button>
                         <button
-                          disabled={!contextCanFrame}
+                          disabled={busy || !contextCanFrame}
                           onClick={() => {
                             setFramePosts(contextItems.length);
                             setObjectMenu(null);
@@ -2223,7 +2235,7 @@ export default function App() {
                           Объединить в рамку · {contextItems.length}
                         </button>
                         <button
-                          disabled={!contextHasFrame}
+                          disabled={busy || !contextHasFrame}
                           onClick={() => {
                             setObjectMenu(null);
                             void run(removeFrame);

@@ -32,6 +32,14 @@ def setup(c):
     body={'page_id':pages[0]['id'],'layer_id':project['layers'][2]['id'],'type_id':typ['id'],'room_id':room['id'],'x':.2,'y':.4,'parameters':{'length':3.5,'ip':20}}
     return pid,body
 
+def test_health_identifies_desktop_backend(client,monkeypatch):
+    monkeypatch.setenv('SMART_HOME_CALC_INSTANCE_TOKEN','test-instance')
+    health=client.get('/api/health')
+    assert health.status_code==200
+    assert health.json()=={
+        'status':'ok','version':'1.0.22','instance':'test-instance',
+    }
+
 def test_full_workflow_and_exports(client):
     pid,body=setup(client)
     r=client.post(f'/api/projects/{pid}/elements',json=body)

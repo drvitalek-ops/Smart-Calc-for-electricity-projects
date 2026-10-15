@@ -23,4 +23,7 @@ if __name__ == '__main__':
     import uvicorn
     from app.main import app
 
-    uvicorn.run(app, host='127.0.0.1', port=5173, log_config=None)
+    port = int(os.environ.get('SMART_HOME_CALC_PORT', '5173'))
+    if not 1024 <= port <= 65535:
+        raise ValueError('SMART_HOME_CALC_PORT must be between 1024 and 65535')
+    uvicorn.run(app, host='127.0.0.1', port=port, log_config=None)

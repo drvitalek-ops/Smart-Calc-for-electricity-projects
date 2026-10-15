@@ -84,7 +84,8 @@ async def lifespan(app):
         seed(db)
     yield
 
-app = FastAPI(title='Smart Home Calc', version='0.1.0', lifespan=lifespan)
+APP_VERSION = '1.0.22'
+app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
     obj = db.get(model, id)
@@ -380,7 +381,11 @@ def validate_element(db, project_id, body):
 @app.get('/api/health')
 def health(db: DbSession = Depends(session)):
     db.execute(select(1))
-    return {'status':'ok'}
+    return {
+        'status':'ok',
+        'version':APP_VERSION,
+        'instance':os.getenv('SMART_HOME_CALC_INSTANCE_TOKEN',''),
+    }
 
 @app.get('/api/projects')
 def projects(db: DbSession = Depends(session)):

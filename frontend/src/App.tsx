@@ -2272,7 +2272,12 @@ export default function App() {
                     >
                       {displayedPages.map((source, index) => (
                         <img
-                          className="page-overlay-image"
+                          className={
+                            "page-overlay-image" +
+                            (alignPageId === source.id
+                              ? " alignment-target"
+                              : "")
+                          }
                           key={source.id}
                           src={`/api/pages/${source.id}/image`}
                           draggable={false}
@@ -2280,7 +2285,7 @@ export default function App() {
                           style={{
                             opacity: source.opacity ?? 1,
                             zIndex: index,
-                            transform: `translate(${(source.offset_x ?? 0) * 100}% ${(source.offset_y ?? 0) * 100}%) scale(${source.scale ?? 1})`,
+                            transform: `translate(${(source.offset_x ?? 0) * 100}%, ${(source.offset_y ?? 0) * 100}%) scale(${source.scale ?? 1})`,
                           }}
                         />
                       ))}
@@ -3104,6 +3109,44 @@ export default function App() {
                               <strong>
                                 Зажмите левую кнопку на плане и тяните слой
                               </strong>
+                              <label className="overlay-field">
+                                Масштаб, %
+                                <input
+                                  aria-label={`Точный масштаб страницы ${p.name || `Лист ${p.number}`}`}
+                                  type="number"
+                                  min="10"
+                                  max="500"
+                                  step="1"
+                                  value={Math.round((p.scale ?? 1) * 100)}
+                                  onChange={(event) =>
+                                    localPage(p.id, {
+                                      scale: Math.max(
+                                        0.1,
+                                        Math.min(5, +event.target.value / 100),
+                                      ),
+                                    })
+                                  }
+                                />
+                              </label>
+                              <label className="overlay-field">
+                                Прозрачность, %
+                                <input
+                                  aria-label={`Точная прозрачность страницы ${p.name || `Лист ${p.number}`}`}
+                                  type="number"
+                                  min="5"
+                                  max="100"
+                                  step="1"
+                                  value={Math.round((p.opacity ?? 1) * 100)}
+                                  onChange={(event) =>
+                                    localPage(p.id, {
+                                      opacity: Math.max(
+                                        0.05,
+                                        Math.min(1, +event.target.value / 100),
+                                      ),
+                                    })
+                                  }
+                                />
+                              </label>
                               <span>
                                 Сдвиг: X {Math.round((p.offset_x ?? 0) * 100)}% ·
                                 Y {Math.round((p.offset_y ?? 0) * 100)}%
@@ -3631,7 +3674,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 01</span>
+        <span>SMART HOME CALC / 1.0.22</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

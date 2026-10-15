@@ -1,7 +1,9 @@
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 
 namespace SmartHomeCalc.Desktop;
 
@@ -23,9 +25,12 @@ internal static class Program
 
 internal sealed class MainWindow : Form
 {
-    private const string ApplicationUrl = "http://127.0.0.1:5173";
+    private const string ApplicationVersion = "1.0.22";
     private static readonly string InstallDirectory = Path.GetDirectoryName(Environment.ProcessPath)
         ?? AppContext.BaseDirectory;
+    private readonly int backendPort = FindAvailablePort();
+    private readonly string instanceToken = Guid.NewGuid().ToString("N");
+    private string ApplicationUrl => $"http://127.0.0.1:{backendPort}";
     private readonly WebView2 webView = new() { Dock = DockStyle.Fill };
     private readonly Label status = new()
     {
@@ -83,7 +88,7 @@ internal sealed class MainWindow : Form
             };
             Controls.Remove(status);
             Controls.Add(webView);
-            webView.CoreWebView2.Navigate(ApplicationUrl);
+            webView.CoreWebView2.Navigate(ApplicationUrl + "/?desktopVersion=" + ApplicationVersion);
         }
         catch (WebView2RuntimeNotFoundException)
         {
@@ -120,22 +125,21 @@ internal sealed class MainWindow : Form
     private async Task StartBackendAsync()
     {
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-        if (await IsBackendReady(client))
-        {
-            return;
-        }
-
         var backendPath = Path.Combine(InstallDirectory, "SmartHomeCalc.Backend.exe");
         if (!File.Exists(backendPath))
         {
             throw new FileNotFoundException("Не найден локальный сервер приложения.", backendPath);
         }
-        backendProcess = Process.Start(new ProcessStartInfo(backendPath)
+        var startInfo = new ProcessStartInfo(backendPath)
         {
             WorkingDirectory = InstallDirectory,
             UseShellExecute = false,
             CreateNoWindow = true,
-        }) ?? throw new InvalidOperationException("Не удалось запустить локальный сервер.");
+        };
+        startInfo.Environment["SMART_HOME_CALC_PORT"] = backendPort.ToString();
+        startInfo.Environment["SMART_HOME_CALC_INSTANCE_TOKEN"] = instanceToken;
+        backendProcess = Process.Start(startInfo)
+            ?? throw new InvalidOperationException("Не удалось запустить локальный сервер.");
 
         for (var attempt = 0; attempt < 90; attempt++)
         {
@@ -152,12 +156,14 @@ internal sealed class MainWindow : Form
         throw new TimeoutException("Локальный сервер не ответил вовремя.");
     }
 
-    private static async Task<bool> IsBackendReady(HttpClient client)
+    private async Task<bool> IsBackendReady(HttpClient client)
     {
         try
         {
             var health = await client.GetFromJsonAsync<HealthResponse>(ApplicationUrl + "/api/health");
-            return health?.Status == "ok";
+            return health?.Status == "ok"
+                && health.Version == ApplicationVersion
+                && health.Instance == instanceToken;
         }
         catch
         {
@@ -165,5 +171,12 @@ internal sealed class MainWindow : Form
         }
     }
 
-    private sealed record HealthResponse(string Status);
+    private static int FindAvailablePort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
+    }
+
+    private sealed record HealthResponse(string Status, string Version, string Instance);
 }

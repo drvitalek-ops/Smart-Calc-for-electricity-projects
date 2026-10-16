@@ -2061,7 +2061,7 @@ export default function App() {
                           ? calibrationStart
                             ? "Укажите вторую точку"
                             : "Укажите первую точку"
-                          : "Масштаб"}
+                          : "Масштаб, мм"}
                       </button>
                     )}
                     {page && (
@@ -2429,25 +2429,36 @@ export default function App() {
                               return;
                             }
                             const raw = prompt(
-                              "Реальное расстояние между точками, м",
+                              "Реальное расстояние между точками, мм (например, 5000)",
                             );
                             if (raw === null) return;
-                            const real = Number(raw);
+                            const real = Number(
+                              raw.trim().replace(/\s/g, "").replace(",", "."),
+                            );
                             if (!Number.isFinite(real) || real <= 0) {
-                              setError("Введите положительную длину");
+                              setError("Введите положительную длину в миллиметрах");
                               return;
                             }
                             void run(async () => {
+                              const stored =
+                                selected && project.elements.find((item) => item.id === selected.id);
+                              if (selected && stored && !sameItem(selected, stored))
+                                await save(selected);
                               await api(`/pages/${page.id}/calibrate`, "POST", {
                                 x1: calibrationStart.x,
                                 y1: calibrationStart.y,
                                 x2: pos.x,
                                 y2: pos.y,
-                                real_length_m: real,
+                                real_length_mm: real,
                               });
                               setCalibrating(false);
                               setCalibrationStart(null);
-                              await refresh(project.id);
+                              const updated = await refresh(project.id);
+                              setSelected((current) =>
+                                current
+                                  ? (updated.elements.find((item) => item.id === current.id) ?? null)
+                                  : null,
+                              );
                             });
                             return;
                           }
@@ -3709,7 +3720,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.27</span>
+        <span>SMART HOME CALC / 1.0.28</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

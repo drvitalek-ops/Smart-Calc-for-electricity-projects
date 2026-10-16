@@ -37,7 +37,7 @@ def test_health_identifies_desktop_backend(client,monkeypatch):
     health=client.get('/api/health')
     assert health.status_code==200
     assert health.json()=={
-        'status':'ok','version':'1.0.27','instance':'test-instance',
+        'status':'ok','version':'1.0.28','instance':'test-instance',
     }
 
 def test_full_workflow_and_exports(client):
@@ -495,3 +495,85 @@ def test_adaptive_pdf_image_quality_and_cache(client, monkeypatch):
     assert paths
     assert client.post(f'/api/projects/{pid}/pages/delete',json={'page_ids':[page_id]}).status_code==200
     assert not any(path.exists() for path in paths)
+
+
+def test_millimeter_calibration_recalculates_existing_lines_in_meters(client):
+    pid,body=setup(client)
+    page_id=body['page_id']
+    url=f'/api/pages/{page_id}/calibrate'
+    calibration={'x1':0,'y1':0,'x2':1,'y2':0,'real_length_mm':5000}
+    response=client.post(url,json=calibration)
+    assert response.status_code==200
+    assert response.json()['calibration_length_mm']==5000
+    assert response.json()['calibration_length_m']==5
+    body['geometry']={'points':[{'x':0,'y':0},{'x':1,'y':0}]}
+    body['parameters']={'ip':65}
+    led=client.post(f'/api/projects/{pid}/elements',json=body).json()
+    assert led['parameters']['length']==5
+    manual=client.post(f'/api/projects/{pid}/elements',json={
+        **body,'geometry':{},'parameters':{'length':2,'ip':65},
+    }).json()
+    project=client.get(f'/api/projects/{pid}').json()
+    track_type=next(kind for kind in client.get('/api/types').json() if kind['name']=='Трек')
+    track_layer=next(layer for layer in project['layers'] if layer['name']=='Освещение')
+    track=client.post(f'/api/projects/{pid}/elements',json={
+        **body,'type_id':track_type['id'],'layer_id':track_layer['id'],
+        'geometry':{'points':[{'x':0,'y':0},{'x':.5,'y':0}]},
+    }).json()
+    assert track['parameters']['length']==2.5
+    client.patch(f"/api/layers/{body['layer_id']}",json={'locked':True})
+    calibration['real_length_mm']=2500
+    recalibrated=client.post(url,json=calibration)
+    assert recalibrated.status_code==200
+    assert recalibrated.json()['recalculated_lines']==2
+    elements={item['id']:item for item in client.get(f'/api/projects/{pid}').json()['elements']}
+    assert elements[led['id']]['parameters']['length']==2.5
+    assert elements[track['id']]['parameters']['length']==1.25
+    assert elements[manual['id']]['parameters']['length']==2
+    report=client.get(f'/api/projects/{pid}/report').json()
+    assert all(row['unit']=='м' for row in report['rows'])
+    assert next(row for row in report['rows'] if row['name']=='LED-линия')['quantity']==4.5
+    # Old undo snapshots must not put obsolete lengths back after recalibration.
+    assert client.post(f'/api/projects/{pid}/elements/undo').json()=={'undone':False}
+    for value in (0,-1,10_000_001,'NaN','Infinity'):
+        assert client.post(url,json={**calibration,'real_length_mm':value}).status_code==422
+    assert client.post(url,json={**calibration,'real_length_m':2.5}).status_code==422
+    missing={key:value for key,value in calibration.items() if key!='real_length_mm'}
+    assert client.post(url,json=missing).status_code==422
+
+
+def test_startup_recalculates_all_projects_without_changing_meter_scales(client):
+    expected={}
+    pages_and_scales={}
+    for index in range(2):
+        pid,body=setup(client)
+        page_id=body['page_id']
+        calibration=client.post(f'/api/pages/{page_id}/calibrate',json={
+            'x1':0,'y1':0,'x2':1,'y2':0,'real_length_m':5,
+        }).json()
+        body['geometry']={'points':[{'x':0,'y':0},{'x':1,'y':0}]}
+        body['parameters']={'ip':65}
+        line=client.post(f'/api/projects/{pid}/elements',json=body).json()
+        assert line['parameters']['length']==5
+        manual=client.post(f'/api/projects/{pid}/elements',json={
+            **body,'geometry':{},'parameters':{'length':3.5,'ip':65},
+        }).json()
+        # Reproduce the old version: scale changed, cached line length did not.
+        with main_module.Session() as db:
+            page=db.get(main_module.Page,page_id)
+            page.meters_per_point=(8+index*2)/page.width
+            pages_and_scales[page_id]=page.meters_per_point
+            db.commit()
+        expected[pid]={line['id']:8+index*2,manual['id']:3.5}
+    # Opening the new application checks every project, including closed ones.
+    for _ in range(2):
+        with TestClient(app) as reopened:
+            for pid,lengths in expected.items():
+                project=reopened.get(f'/api/projects/{pid}').json()
+                assert {item['id']:item['parameters']['length'] for item in project['elements']}==lengths
+                for page in project['pages']:
+                    if page['id'] in pages_and_scales:
+                        assert page['meters_per_point']==pages_and_scales[page['id']]
+                report=reopened.get(f'/api/projects/{pid}/report').json()
+                assert all(row['unit']=='м' for row in report['rows'])
+                assert sum(row['quantity'] for row in report['rows'])==sum(lengths.values())

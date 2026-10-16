@@ -17,7 +17,7 @@ import pymupdf
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session as DbSession
 from .db import Base, engine, session, Session
@@ -84,9 +84,11 @@ async def lifespan(app):
                 connection.execute(text('ALTER TABLE rooms ADD COLUMN polygon JSON'))
     with Session() as db:
         seed(db)
+        recalculate_all_project_lines(db)
+        db.commit()
     yield
 
-APP_VERSION = '1.0.27'
+APP_VERSION = '1.0.28'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -145,7 +147,18 @@ class CalibrationInput(BaseModel):
     y1: float = Field(ge=0, le=1)
     x2: float = Field(ge=0, le=1)
     y2: float = Field(ge=0, le=1)
-    real_length_m: float = Field(gt=0, le=10000)
+    real_length_mm: float | None = Field(default=None, gt=0, le=10_000_000, allow_inf_nan=False)
+    real_length_m: float | None = Field(default=None, gt=0, le=10000, allow_inf_nan=False)
+
+    @model_validator(mode='after')
+    def one_length_unit(self):
+        if (self.real_length_mm is None) == (self.real_length_m is None):
+            raise ValueError('Укажите расстояние в миллиметрах: real_length_mm')
+        return self
+
+    @property
+    def length_m(self):
+        return self.real_length_mm / 1000 if self.real_length_mm is not None else self.real_length_m
 
 class TypeInput(NameInput):
     category: str = Field(min_length=1, max_length=200)
@@ -325,6 +338,36 @@ def validate_room(db, project_id: int, body: RoomInput):
             raise HTTPException(422,'Страница принадлежит другому проекту')
     return values
 
+def geometry_length_m(page, points):
+    return round(sum(math.hypot(
+        (second['x']-first['x'])*page.width,
+        (second['y']-first['y'])*page.height,
+    )*page.meters_per_point for first,second in zip(points,points[1:])),3)
+
+
+def recalculate_page_lines(db, page):
+    if not page.meters_per_point:
+        return 0
+    updated=0
+    for item in db.scalars(select(Element).where(Element.page_id==page.id)):
+        points=geometry_points(item.geometry or {})
+        if len(points)<2:
+            continue
+        length=geometry_length_m(page,points)
+        if length>1_000_000:
+            raise HTTPException(422,'Длина линии после калибровки превышает 1 000 000 м')
+        if item.parameters.get('length')!=length:
+            item.parameters={**item.parameters,'length':length}
+            updated+=1
+    return updated
+
+def recalculate_all_project_lines(db):
+    # Existing scales are already in metres per PDF point. Changing the input
+    # unit to millimetres must preserve those scales and all physical dimensions.
+    # Rebuild only stale cached lengths, making repeated startup idempotent.
+    return sum(recalculate_page_lines(db,page) for page in db.scalars(
+        select(Page).where(Page.meters_per_point.is_not(None))))
+
 def validate_element(db, project_id, body):
     for model, id in [(Page,body.page_id),(Layer,body.layer_id),(Room,body.room_id)]:
         if id is not None:
@@ -347,13 +390,7 @@ def validate_element(db, project_id, body):
         page=require(db,Page,body.page_id)
         if not page.meters_per_point:
             raise HTTPException(422, 'Сначала откалибруйте масштаб листа')
-        length=0.0
-        for first,second in zip(points,points[1:]):
-            length += math.hypot(
-                (second['x']-first['x'])*page.width,
-                (second['y']-first['y'])*page.height,
-            )*page.meters_per_point
-        parameters['length']=round(length,3)
+        parameters['length']=geometry_length_m(page,points)
     for key in ('length','quantity','connectors','end_caps','frame_posts'):
         if key in parameters:
             try:
@@ -874,10 +911,15 @@ def calibrate_page(page_id: int, body: CalibrationInput, db: DbSession = Depends
     distance=math.hypot((body.x2-body.x1)*page.width,(body.y2-body.y1)*page.height)
     if distance < 1:
         raise HTTPException(422,'Точки калибровки расположены слишком близко')
-    page.meters_per_point=body.real_length_m/distance
+    page.meters_per_point=body.length_m/distance
+    updated=recalculate_page_lines(db,page)
     db.commit()
+    with ELEMENT_HISTORY_LOCK:
+        ELEMENT_HISTORY.pop(page.project_id,None)
     result=data(page)
-    result['calibration_length_m']=body.real_length_m
+    result['calibration_length_m']=body.length_m
+    result['calibration_length_mm']=body.length_m*1000
+    result['recalculated_lines']=updated
     return result
 
 @app.post('/api/projects/{pid}/pdf',status_code=201)

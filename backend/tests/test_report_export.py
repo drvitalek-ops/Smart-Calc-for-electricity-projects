@@ -58,11 +58,11 @@ def test_excel_handles_reserved_duplicate_sheet_titles():
         row['category'] = category
         report['rows'].append(row)
     wb = load_workbook(io.BytesIO(export_xlsx('Проект', report)))
-    assert len(wb.sheetnames) == 10
-    assert len({name.lower() for name in wb.sheetnames}) == 10
+    assert len(wb.sheetnames) == 11
+    assert len({name.lower() for name in wb.sheetnames}) == 11
     assert all(len(name) <= 31 for name in wb.sheetnames)
     assert all(len([row for row in ws.iter_rows(min_row=6, values_only=True) if row[7] == 12]) == 1
-               for ws in wb.worksheets[3:9])
+               for ws in wb.worksheets[4:10])
 
 
 def test_pdf_paginates_and_repeats_headers_without_losing_rows():

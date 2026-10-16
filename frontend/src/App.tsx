@@ -130,13 +130,40 @@ type Row = {
   total: number;
   parameters: string;
 };
-type ReportSummary = {
-  electrical: { name: string; quantity: number }[];
-  frames: { posts: number; quantity: number }[];
-  electrical_total: number;
-  frame_total: number;
-  post_total: number;
+type SummaryCategory = {
+  category: string;
+  items: { name: string; unit: string; quantity: number }[];
+  totals: { unit: string; quantity: number }[];
+  post_total?: number;
 };
+type ReportSummary = {
+  categories: SummaryCategory[];
+  rooms: { room: string; categories: SummaryCategory[] }[];
+};
+function ReportTotals({ categories }: { categories: SummaryCategory[] }) {
+  const quantity = (value: number) => value.toLocaleString("ru-RU", { maximumFractionDigits: 3 });
+  return (
+    <div className="summary-breakdown">
+      {categories.map((section) => (
+        <div className="summary-category" key={section.category}>
+          <h4>{section.category}</h4>
+          <div className="summary-category-totals">
+            {section.totals.map((total) => (
+              <strong key={total.unit}>{quantity(total.quantity)} {total.unit}</strong>
+            ))}
+            {section.post_total !== undefined && <span>Постов: {quantity(section.post_total)}</span>}
+          </div>
+          {section.items.map((item) => (
+            <p key={`${item.name}:${item.unit}`}>
+              <span>{item.name}</span>
+              <strong>{quantity(item.quantity)} {item.unit}</strong>
+            </p>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
 type Report = { rows: Row[]; warnings: string[]; summary: ReportSummary };
 async function api<T>(
   path: string,
@@ -806,11 +833,8 @@ export default function App() {
       rows: [],
       warnings: [],
       summary: {
-        electrical: [],
-        frames: [],
-        electrical_total: 0,
-        frame_total: 0,
-        post_total: 0,
+        categories: [],
+        rooms: [],
       },
     });
   const [zoom, setZoom] = useState(1),
@@ -3657,6 +3681,12 @@ export default function App() {
                           </tbody>
                         </table>
                       </div>
+                      {report.summary.rooms.find((item) => item.room === room) && (
+                        <div className="room-summary">
+                          <h4>Итог по помещению: {room}</h4>
+                          <ReportTotals categories={report.summary.rooms.find((item) => item.room === room)!.categories} />
+                        </div>
+                      )}
                     </section>
                   ),
                 )}
@@ -3667,65 +3697,19 @@ export default function App() {
                   </p>
                 )}
               </div>
-              <section className="report-summary">
-                <div>
+              {report.summary.categories.length > 0 && (
+                <section className="report-summary">
                   <div className="eyebrow">ПОЛНЫЙ ИТОГ</div>
-                  <h3>Электроустановки и рамки</h3>
-                </div>
-                <div className="summary-metrics">
-                  <article>
-                    <strong>{report.summary.electrical_total}</strong>
-                    <span>ЭУИ всего</span>
-                  </article>
-                  <article>
-                    <strong>{report.summary.frame_total}</strong>
-                    <span>рамок всего</span>
-                  </article>
-                  <article>
-                    <strong>{report.summary.post_total}</strong>
-                    <span>постов всего</span>
-                  </article>
-                </div>
-                <div className="summary-breakdown">
-                  <div>
-                    <h4>Электроустановки</h4>
-                    {report.summary.electrical.map((item) => (
-                      <p key={item.name}>
-                        <span>{item.name}</span>
-                        <strong>{item.quantity} шт</strong>
-                      </p>
-                    ))}
-                    {!report.summary.electrical.length && (
-                      <p className="hint">Нет электроустановок</p>
-                    )}
-                  </div>
-                  <div>
-                    <h4>Рамки</h4>
-                    {report.summary.frames.map((item) => (
-                      <p key={item.posts}>
-                        <span>
-                          Рамка на {item.posts}{" "}
-                          {item.posts === 1
-                            ? "пост"
-                            : item.posts < 5
-                              ? "поста"
-                              : "постов"}
-                        </span>
-                        <strong>{item.quantity} шт</strong>
-                      </p>
-                    ))}
-                    {!report.summary.frames.length && (
-                      <p className="hint">Нет рамок</p>
-                    )}
-                  </div>
-                </div>
-              </section>
+                  <h3>Итоги по всем помещениям</h3>
+                  <ReportTotals categories={report.summary.categories} />
+                </section>
+              )}
             </section>
           )}
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.22</span>
+        <span>SMART HOME CALC / 1.0.27</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

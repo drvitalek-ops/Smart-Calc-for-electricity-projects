@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from xml.sax.saxutils import escape
+from .report_summary import build_summary, summarize_categories
 
 PARAMETER_LABELS = {
     'ip': 'Степень защиты', 'voltage': 'Напряжение, В', 'control': 'Управление',
@@ -170,28 +171,39 @@ def export_xlsx(project_name, result):
         ws.print_area = f'A1:M{max(6, index - 1)}'
         return ws
 
-    summary = result['summary']
+    summary = build_summary(result['rows'])
     ws = create_sheet('Итоги', 4)
     ws.page_setup.orientation, ws.page_setup.paperSize = 'portrait', ws.PAPERSIZE_A4
     for key, width in {'A': 48, 'B': 18, 'C': 12, 'D': 18}.items():
         ws.column_dimensions[key].width = width
-    heading(ws, 4, 'Объёмы и комплектующие', 4)
-    header(ws, 5, ['Показатель', 'Количество', 'Ед.', ''])
-    totals = [('Строк спецификации', len(result['rows']), 'поз.'),
-              ('Помещений в спецификации', len({r['room'] for r in result['rows']}), 'шт'),
-              ('Электроустановки всего', summary['electrical_total'], 'шт'),
-              *[(item['name'], item['quantity'], 'шт') for item in summary['electrical']],
-              ('Рамки всего', summary['frame_total'], 'шт'),
-              *[(f"Рамка на {item['posts']} пост.", item['quantity'], 'шт') for item in summary['frames']],
-              ('Постов в рамках всего', summary['post_total'], 'шт')]
-    index = 6
-    for label, quantity, unit in totals:
+    heading(ws, 4, 'Итоги по всем помещениям', 4)
+    header(ws, 5, ['Позиция / показатель', 'Количество', 'Ед.', ''])
+
+    def summary_line(ws, index, label, quantity, unit, bold=False):
         for column, value in enumerate((label, quantity, unit), 1):
             item = cell(ws, index, column, value)
-            item.font = Font(name='Calibri', size=11, color=INK)
+            item.font = Font(name='Calibri', size=11, color=INK, bold=bold)
             item.alignment = Alignment(wrap_text=True, vertical='center')
-        ws.cell(index, 2).number_format = '#,##0.###' if quantity % 1 else '#,##0'
+        ws.cell(index, 2).number_format = '#,##0.000' if quantity % 1 else '#,##0'
         ws.row_dimensions[index].height = max(32, 15 * math.ceil(len(label) / 44) + 10)
+        return index + 1
+
+    def summary_sections(ws, index, sections):
+        for section in sections:
+            heading(ws, index, section['category'], 4)
+            index += 1
+            for total in section['totals']:
+                index = summary_line(ws, index, 'Всего', total['quantity'], total['unit'], bold=True)
+            for item in section['items']:
+                index = summary_line(ws, index, item['name'], item['quantity'], item['unit'])
+            if section.get('post_total'):
+                index = summary_line(ws, index, 'Постов в рамках', section['post_total'], 'шт')
+            index += 1
+        return index
+
+    index = summary_sections(ws, 6, summary['categories'])
+    if not summary['categories']:
+        cell(ws, index, 1, 'В спецификации пока нет посчитанных позиций.')
         index += 1
     index += 1
     heading(ws, index, 'Стоимость по валютам', 4)
@@ -205,6 +217,22 @@ def export_xlsx(project_name, result):
         index += 1
     ws.freeze_panes = 'B6'
     ws.print_area = f'A1:D{index}'
+    room_totals = create_sheet('Итоги по помещениям', 4)
+    room_totals.page_setup.orientation, room_totals.page_setup.paperSize = 'portrait', room_totals.PAPERSIZE_A4
+    for key, width in {'A': 48, 'B': 18, 'C': 12, 'D': 18}.items():
+        room_totals.column_dimensions[key].width = width
+    header(room_totals, 4, ['Позиция / показатель', 'Количество', 'Ед.', ''])
+    index = 5
+    for room in summary['rooms']:
+        if index > 5:
+            room_totals.row_breaks.append(Break(id=index - 1))
+        heading(room_totals, index, f"Помещение: {room['room']}", 4)
+        index = summary_sections(room_totals, index + 1, room['categories'])
+    if not summary['rooms']:
+        cell(room_totals, index, 1, 'В спецификации пока нет посчитанных позиций.')
+    room_totals.freeze_panes = 'B5'
+    room_totals.print_title_rows = '1:4'
+    room_totals.print_area = f'A1:D{index}'
     detail_sheet('Общая ведомость', result['rows'])
     detail_sheet('По помещениям', result['rows'], grouped=True)
     for category in sorted({r['category'] for r in result['rows']}):
@@ -273,17 +301,40 @@ def export_pdf(project_name, result, font_path):
         return table
 
     stamp = generated_at()
-    rows, summary = result['rows'], result['summary']
+    rows, summary = result['rows'], build_summary(result['rows'])
     story = [paragraph('Спецификация оборудования', title), paragraph(project_name, subtitle),
              paragraph(f'Сформировано: {stamp} • Строк: {len(rows)} • Помещений: {len({r["room"] for r in rows})}', small),
              Spacer(1, 12)]
-    brief = [f"Электроустановки: {number(summary['electrical_total'])} шт",
-             f"Рамки: {number(summary['frame_total'])} шт",
-             f"Постов в рамках: {number(summary['post_total'])}"]
-    box = Table([[paragraph(value) for value in brief]], colWidths=[doc.width / 3] * 3)
-    box.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), pale),
-                            ('TOPPADDING', (0, 0), (-1, -1), 12), ('BOTTOMPADDING', (0, 0), (-1, -1), 12)]))
-    story.append(box)
+    if summary['categories']:
+        brief = [paragraph(section['category'] + ': ' + '; '.join(
+            f"{number(total['quantity'])} {total['unit']}" for total in section['totals']))
+            for section in summary['categories']]
+        for start in range(0, len(brief), 3):
+            cells = brief[start:start + 3]
+            box = Table([cells], colWidths=[doc.width / len(cells)] * len(cells))
+            box.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), pale),
+                                    ('TOPPADDING', (0, 0), (-1, -1), 12), ('BOTTOMPADDING', (0, 0), (-1, -1), 12)]))
+            story.append(box)
+
+    def quantity_summary(categories, title):
+        if not categories:
+            return
+        counts = [[paragraph(value, white) for value in ('Раздел / позиция', 'Количество', 'Ед.')]]
+        category_rows = []
+        for category in categories:
+            category_rows.append(len(counts) + 1)
+            counts.append([paragraph(category['category']), paragraph(''), paragraph('')])
+            for total in category['totals']:
+                counts.append([paragraph('Всего'), paragraph(number(total['quantity']), right), paragraph(total['unit'])])
+            counts += [[paragraph(item['name']), paragraph(number(item['quantity']), right), paragraph(item['unit'])]
+                       for item in category['items']]
+            if category.get('post_total'):
+                counts.append([paragraph('Постов в рамках'), paragraph(number(category['post_total']), right), paragraph('шт')])
+        table = grid(counts, [doc.width - 145, 100, 45], (1,), room=title)
+        table.setStyle(TableStyle([command for row in category_rows for command in (
+            ('SPAN', (0, row), (-1, row)), ('BACKGROUND', (0, row), (-1, row), pale))]))
+        story.append(table)
+
     if not rows:
         story += [Spacer(1, 18), paragraph('В спецификации пока нет позиций.')]
     headers = ['№', 'Наименование / товар', 'Характеристики', 'Производитель / артикул',
@@ -306,6 +357,7 @@ def export_pdf(project_name, result, font_path):
         story.append(Spacer(1, 6))
         story.append(paragraph('Стоимость по помещению: ' + '; '.join(
             f'{number(total, money=True)} {currency}' for currency, total in currency_totals(room_rows)), small))
+        quantity_summary(summarize_categories(room_rows), f'Итог по помещению: {room}')
     story.append(paragraph('Итоги спецификации', section))
     total_data = [[paragraph('Валюта', white), paragraph('Стоимость', white)]]
     total_data += [[paragraph(currency), paragraph(number(total, money=True), right)]
@@ -313,12 +365,7 @@ def export_pdf(project_name, result, font_path):
     if len(total_data) == 1:
         total_data.append([paragraph('—'), paragraph('0,00', right)])
     story.append(grid(total_data, [150, 150], (1,)))
-    if summary['electrical'] or summary['frames']:
-        story.append(paragraph('Электроустановки и рамки', section))
-        counts = [[paragraph(value, white) for value in ('Наименование', 'Количество, шт')]]
-        counts += [[paragraph(item['name']), paragraph(number(item['quantity']), right)] for item in summary['electrical']]
-        counts += [[paragraph(f"Рамка на {item['posts']} пост."), paragraph(number(item['quantity']), right)] for item in summary['frames']]
-        story.append(grid(counts, [400, 100], (1,)))
+    quantity_summary(summary['categories'], 'Полный итог по всем помещениям')
     if result['warnings']:
         story.append(paragraph('Рекомендации по степени защиты IP', section))
         story.extend(paragraph('• ' + warning) for warning in result['warnings'])

@@ -86,7 +86,7 @@ async def lifespan(app):
         seed(db)
     yield
 
-APP_VERSION = '1.0.26'
+APP_VERSION = '1.0.27'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -1116,20 +1116,8 @@ def report_rows(db,pid):
     rows.sort(key=row_order)
     totals=defaultdict(float)
     for row in rows: totals[row['currency']]+=row['total']
-    electrical=defaultdict(float)
-    frames=defaultdict(float)
-    for row in rows:
-        if row['category']=='Электроустановки': electrical[row['name']]+=row['quantity']
-        elif row['category']=='Рамки': frames[int(json.loads(row['parameters'])['frame_posts'])]+=row['quantity']
-    electrical_rows=[{'name':name,'quantity':round(quantity,3)} for name,quantity in sorted(electrical.items())]
-    frame_rows=[{'posts':posts,'quantity':round(quantity,3)} for posts,quantity in sorted(frames.items())]
-    summary={
-        'electrical':electrical_rows,
-        'frames':frame_rows,
-        'electrical_total':round(sum(electrical.values()),3),
-        'frame_total':round(sum(frames.values()),3),
-        'post_total':round(sum(posts*quantity for posts,quantity in frames.items()),3),
-    }
+    from .report_summary import build_summary
+    summary=build_summary(rows)
     return {'rows':rows,'warnings':warnings,'totals':dict(totals),'summary':summary}
 
 @app.get('/api/projects/{pid}/report')

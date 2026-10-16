@@ -3,7 +3,6 @@ import io
 import json
 import math
 import re
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from xml.sax.saxutils import escape
 from .report_summary import build_summary, summarize_categories
@@ -49,13 +48,6 @@ def number(value, money=False):
 
 def generated_at():
     return datetime.now(timezone(timedelta(hours=3))).strftime('%d.%m.%Y %H:%M') + ' МСК'
-
-
-def currency_totals(rows):
-    result = defaultdict(float)
-    for row in rows:
-        result[row['currency']] += row['total']
-    return sorted(result.items())
 
 
 def export_xlsx(project_name, result):
@@ -257,7 +249,7 @@ def export_pdf(project_name, result, font_path):
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, LongTable, Table, TableStyle
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, LongTable, TableStyle
 
     pdfmetrics.registerFont(TTFont('CalcReport', str(font_path)))
     ink, teal, pale = (colors.HexColor('#' + value) for value in (INK, TEAL, PALE))
@@ -305,17 +297,6 @@ def export_pdf(project_name, result, font_path):
     story = [paragraph('Спецификация оборудования', title), paragraph(project_name, subtitle),
              paragraph(f'Сформировано: {stamp} • Строк: {len(rows)} • Помещений: {len({r["room"] for r in rows})}', small),
              Spacer(1, 12)]
-    if summary['categories']:
-        brief = [paragraph(section['category'] + ': ' + '; '.join(
-            f"{number(total['quantity'])} {total['unit']}" for total in section['totals']))
-            for section in summary['categories']]
-        for start in range(0, len(brief), 3):
-            cells = brief[start:start + 3]
-            box = Table([cells], colWidths=[doc.width / len(cells)] * len(cells))
-            box.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, -1), pale),
-                                    ('TOPPADDING', (0, 0), (-1, -1), 12), ('BOTTOMPADDING', (0, 0), (-1, -1), 12)]))
-            story.append(box)
-
     def quantity_summary(categories, title):
         if not categories:
             return
@@ -354,10 +335,11 @@ def export_pdf(project_name, result, font_path):
                             paragraph(row['unit']), paragraph(number(row['unit_price'], money=True), right),
                             paragraph(row['currency']), paragraph(number(row['total'], money=True), right)])
         story.append(grid(entries, widths, (5, 7, 9), room=room))
-        story.append(Spacer(1, 6))
-        story.append(paragraph('Стоимость по помещению: ' + '; '.join(
-            f'{number(total, money=True)} {currency}' for currency, total in currency_totals(room_rows)), small))
-        quantity_summary(summarize_categories(room_rows), f'Итог по помещению: {room}')
+        electrical_rows = [row for row in room_rows if row['category'] in ('Электроустановки', 'Рамки')]
+        quantity_summary(summarize_categories(electrical_rows), f'Итог по помещению: {room}')
+    if result['warnings']:
+        story.append(paragraph('Рекомендации по степени защиты IP', section))
+        story.extend(paragraph('• ' + warning) for warning in result['warnings'])
     story.append(paragraph('Итоги спецификации', section))
     total_data = [[paragraph('Валюта', white), paragraph('Стоимость', white)]]
     total_data += [[paragraph(currency), paragraph(number(total, money=True), right)]
@@ -366,9 +348,6 @@ def export_pdf(project_name, result, font_path):
         total_data.append([paragraph('—'), paragraph('0,00', right)])
     story.append(grid(total_data, [150, 150], (1,)))
     quantity_summary(summary['categories'], 'Полный итог по всем помещениям')
-    if result['warnings']:
-        story.append(paragraph('Рекомендации по степени защиты IP', section))
-        story.extend(paragraph('• ' + warning) for warning in result['warnings'])
 
     def page_decoration(canvas, document):
         canvas.saveState()

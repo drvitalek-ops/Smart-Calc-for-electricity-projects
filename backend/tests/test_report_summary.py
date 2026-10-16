@@ -69,10 +69,37 @@ def test_adaptive_export_contains_room_and_global_totals_without_empty_categorie
     with pymupdf.open(stream=export_pdf('Умный дом', report, pdf_font_path()), filetype='pdf') as pdf:
         content = ' '.join(page.get_text() for page in pdf)
         assert 'Электроустановки' not in content and 'Рамки' not in content
-        assert 'Итог по помещению: Кухня' in content
-        assert 'Итог по помещению: Гостиная' in content
+        assert 'Итог по помещению:' not in content
+        before_final, final = content.split('Полный итог по всем помещениям', 1)
+        assert 'Всего' not in before_final
+        assert 'Zigbee диммер двухканальный' in ' '.join(final.split())
         assert 'Полный итог по всем помещениям' in content
         for page in pdf:
             for x0, y0, x1, y1, *_ in page.get_text('words'):
                 assert 0 <= x0 < x1 <= page.rect.width + 1
                 assert 0 <= y0 < y1 <= page.rect.height + 1
+
+
+def test_pdf_room_subtotals_only_for_electrical_and_frames_with_all_items_at_end():
+    rows = [row('Кухня', 'Электроустановки', 'Розетка одинарная', 3),
+            row('Кухня', 'Рамки', 'Рамка на 3 поста', 1, parameters={'frame_posts': 3}),
+            row('Кухня', 'Умные устройства', 'Zigbee диммер двухканальный', 2),
+            row('Кухня', 'Освещение', 'Люстра', 2),
+            row('Кухня', 'LED-подсветка', 'LED-линия', 7.5, 'м'),
+            row('Гостиная', 'Умные устройства', 'Zigbee диммер двухканальный', 3),
+            row('Гостиная', 'LED-подсветка', 'LED-линия', 2.5, 'м')]
+    report = dict(rows=rows, totals={'RUB': 0}, summary=build_summary(rows), warnings=['Кухня: проверьте степень IP'])
+    with pymupdf.open(stream=export_pdf('Тестовый проект', report, pdf_font_path()), filetype='pdf') as pdf:
+        content = '\n'.join(page.get_text() for page in pdf)
+        assert 'Итог по помещению: Кухня' in content
+        assert 'Итог по помещению: Гостиная' not in content
+        room_summary = content.split('Итог по помещению: Кухня', 1)[1].split('Гостиная', 1)[0]
+        assert 'Электроустановки' in room_summary and 'Рамки' in room_summary
+        assert 'Постов в рамках' in room_summary
+        assert all(name not in room_summary for name in ('Умные устройства', 'Освещение', 'LED-подсветка'))
+        final = content.split('Полный итог по всем помещениям', 1)[1]
+        assert all(name in final for name in ('Электроустановки', 'Рамки', 'Умные устройства', 'Освещение', 'LED-подсветка'))
+        assert 'Zigbee диммер двухканальный' in ' '.join(final.split())
+        assert '10' in final and 'м' in final  # Both rooms' strip lengths are included.
+        assert content.index('Рекомендации по степени защиты IP') < content.index('Полный итог по всем помещениям')
+        assert 'Стоимость по помещению:' not in content

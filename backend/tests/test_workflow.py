@@ -37,7 +37,7 @@ def test_health_identifies_desktop_backend(client,monkeypatch):
     health=client.get('/api/health')
     assert health.status_code==200
     assert health.json()=={
-        'status':'ok','version':'1.0.25','instance':'test-instance',
+        'status':'ok','version':'1.0.26','instance':'test-instance',
     }
 
 def test_full_workflow_and_exports(client):
@@ -94,7 +94,8 @@ def test_layer_lock_and_export(client):
 
 def test_smart_device_catalog_and_layer(client):
     expected={
-        'Zigbee диммер','Zigbee реле одноканальное',
+        'Zigbee диммер','Zigbee диммер двухканальный','Zigbee диммер трехканальный',
+        'Zigbee реле одноканальное',
         'Zigbee реле двухканальное','Zigbee реле трехканальное',
         'Zigbee лампочка','Zigbee контроллер для ленты',
         'Zigbee электрокарниз','Zigbee терморегулятор',
@@ -108,6 +109,36 @@ def test_smart_device_catalog_and_layer(client):
     assert 'Умные устройства' in {
         layer['name'] for layer in client.get(f"/api/projects/{project['id']}").json()['layers']
     }
+    # New types are also seeded into an existing database without duplicates.
+    with main_module.Session() as db:
+        main_module.seed(db)
+    catalog=client.get('/api/types').json()
+    names=['Zigbee диммер двухканальный','Zigbee диммер трехканальный']
+    for name in names:
+        assert sum(item['name']==name and item['category']=='Умные устройства' for item in catalog)==1
+    document=pymupdf.open(); document.new_page()
+    pages=client.post(f"/api/projects/{project['id']}/pdf",files={
+        'file':('plan.pdf',document.tobytes(),'application/pdf'),
+    }).json()
+    document.close()
+    layer=next(item for item in client.get(f"/api/projects/{project['id']}").json()['layers'] if item['name']=='Умные устройства')
+    for quantity,name in enumerate(names,2):
+        kind=next(item for item in catalog if item['name']==name)
+        assert client.post(f"/api/projects/{project['id']}/elements",json={
+            'page_id':pages[0]['id'],'layer_id':layer['id'],'type_id':kind['id'],
+            'x':.2*quantity,'y':.3,'parameters':{'quantity':quantity,'ip':20},
+        }).status_code==201
+    rows=client.get(f"/api/projects/{project['id']}/report").json()['rows']
+    assert {row['name']:row['quantity'] for row in rows}==dict(zip(names,[2,3]))
+    assert all(row['category']=='Умные устройства' and row['unit']=='шт' for row in rows)
+    excel=client.get(f"/api/projects/{project['id']}/export/xlsx")
+    workbook=load_workbook(io.BytesIO(excel.content))
+    sheet=workbook['Умные устройства']
+    assert {row[2]:row[7] for row in sheet.iter_rows(min_row=6,values_only=True)}==dict(zip(names,[2,3]))
+    pdf=client.get(f"/api/projects/{project['id']}/export/pdf")
+    with pymupdf.open(stream=pdf.content,filetype='pdf') as document:
+        text=' '.join(' '.join(page.get_text() for page in document).split())
+        assert all(name in text for name in names)
 
 def test_bulk_page_deletion_is_atomic_and_renumbers_pages(client):
     pid,body=setup(client)

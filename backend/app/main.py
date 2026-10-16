@@ -86,7 +86,7 @@ async def lifespan(app):
         seed(db)
     yield
 
-APP_VERSION = '1.0.25'
+APP_VERSION = '1.0.26'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):

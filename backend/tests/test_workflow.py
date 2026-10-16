@@ -37,7 +37,7 @@ def test_health_identifies_desktop_backend(client,monkeypatch):
     health=client.get('/api/health')
     assert health.status_code==200
     assert health.json()=={
-        'status':'ok','version':'1.0.24','instance':'test-instance',
+        'status':'ok','version':'1.0.25','instance':'test-instance',
     }
 
 def test_full_workflow_and_exports(client):
@@ -52,7 +52,7 @@ def test_full_workflow_and_exports(client):
     response=client.get(f'/api/projects/{pid}/export/xlsx')
     assert response.status_code==200
     wb=load_workbook(io.BytesIO(response.content))
-    assert wb['Общая ведомость'].cell(2,8).value==3.5
+    assert wb['Общая ведомость'].cell(6,8).value==3.5
     pdf=client.get(f'/api/projects/{pid}/export/pdf')
     assert pdf.status_code==200 and pdf.content.startswith(b'%PDF')
     body['x']=.8;body['parameters']={'length':5,'ip':67}

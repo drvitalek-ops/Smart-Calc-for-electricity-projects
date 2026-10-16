@@ -1,6 +1,25 @@
 import logging
 import os
-from pathlib import Path
+import sqlite3
+from contextlib import closing
+from pathlib import Path, PureWindowsPath
+
+
+def relocate_storage_paths(root):
+    """Rebase managed PDF/PNG paths after moving desktop data to a new user/PC."""
+    database = root / 'smart-home-calc.db'
+    if not database.is_file():
+        return
+    with closing(sqlite3.connect(database)) as connection, connection:
+        if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pages'").fetchone():
+            return
+        for page_id, pdf_path, image_path in connection.execute('SELECT id,pdf_path,image_path FROM pages').fetchall():
+            for column, old_path in (('pdf_path', pdf_path), ('image_path', image_path)):
+                # Windows paths must also be understood by migration tests on Linux.
+                name = PureWindowsPath(old_path).name
+                new_path = root / 'storage' / name
+                if new_path.is_file() and str(new_path) != old_path:
+                    connection.execute(f'UPDATE pages SET {column}=? WHERE id=?', (str(new_path), page_id))
 
 
 def configure_data_directory():
@@ -10,6 +29,7 @@ def configure_data_directory():
     os.environ['DATABASE_URL'] = f"sqlite:///{(root / 'smart-home-calc.db').as_posix()}"
     os.environ['STORAGE_DIR'] = str(storage)
     os.environ['AUTO_CREATE_SCHEMA'] = '1'
+    relocate_storage_paths(root)
     return root
 
 

@@ -86,7 +86,7 @@ async def lifespan(app):
         seed(db)
     yield
 
-APP_VERSION = '1.0.24'
+APP_VERSION = '1.0.25'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -1171,73 +1171,15 @@ def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
 def export(pid: int, format: str, db: DbSession = Depends(session)):
     if format not in ('xlsx','pdf'): raise HTTPException(422,'Формат: xlsx или pdf')
     result=report_rows(db,pid)
-    output=io.BytesIO()
-    headers=['Помещение','Категория','Элемент','Товар','Артикул','Производитель','Поставщик','Количество','Ед.','Цена','Валюта','Сумма','Параметры']
-    rows=[[
-        r['room'],r['category'],r['name'],r['product'],r['sku'],r['manufacturer'],
-        r['supplier'],r['quantity'],r['unit'],r['unit_price'],r['currency'],r['total'],r['parameters'],
-    ] for r in result['rows']]
+    from .report_export import export_xlsx, export_pdf
+    project_name=require(db,Project,pid).name
     if format=='xlsx':
-        from openpyxl import Workbook
-        from openpyxl.styles import Font
-        wb=Workbook(); wb.remove(wb.active)
-        def safe(value):
-            return "'"+value if isinstance(value,str) and value.startswith(('=','+','-','@')) else value
-        def add_sheet(name,selected_rows):
-            ws=wb.create_sheet(name[:31]); ws.append(headers)
-            for cell in ws[1]: cell.font=Font(bold=True)
-            for row in selected_rows: ws.append([safe(value) for value in row])
-            ws.freeze_panes='A2'; ws.auto_filter.ref=ws.dimensions
-            widths=[22,20,27,27,16,20,20,12,8,13,10,13,55]
-            for index,width in enumerate(widths,1): ws.column_dimensions[chr(64+index)].width=width
-            return ws
-        add_sheet('Общая ведомость',rows)
-        for category in sorted({r['category'] for r in result['rows']}):
-            add_sheet(category,[row for row,item in zip(rows,result['rows']) if item['category']==category])
-        add_sheet('По помещениям',rows)
-        totals=wb.create_sheet('Итоги')
-        totals.append(['Валюта','Сумма'])
-        for currency,total in result['totals'].items(): totals.append([currency,total])
-        totals.append([])
-        totals.append(['Электроустановки всего',result['summary']['electrical_total']])
-        for item in result['summary']['electrical']: totals.append([item['name'],item['quantity']])
-        totals.append([])
-        totals.append(['Рамки всего',result['summary']['frame_total']])
-        for item in result['summary']['frames']: totals.append([f"Рамка на {item['posts']} постов",item['quantity']])
-        totals.append(['Постов в рамках всего',result['summary']['post_total']])
-        notes=wb.create_sheet('Проверки IP')
-        for warning in result['warnings']:
-            notes.append([safe(warning)])
-        wb.save(output)
+        content=export_xlsx(project_name,result)
         media='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     else:
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-        from reportlab.lib.styles import ParagraphStyle
-        from xml.sax.saxutils import escape
-        font=pdf_font_path()
-        pdfmetrics.registerFont(TTFont('Calc',str(font)))
-        style=ParagraphStyle('Calc',fontName='Calc',fontSize=9,leading=14)
-        title=ParagraphStyle('Title',parent=style,fontSize=15,leading=19,spaceAfter=12)
-        heading=ParagraphStyle('Heading',parent=style,fontSize=12,leading=16,spaceBefore=12,spaceAfter=6)
-        story=[Paragraph(escape(require(db,Project,pid).name),title)]
-        for room in dict.fromkeys(r['room'] for r in result['rows']):
-            story.append(Paragraph(escape(room),heading))
-            for r in (item for item in result['rows'] if item['room']==room):
-                product=f" · {r['manufacturer']} {r['product']} {r['sku']}" if r['product'] else ''
-                price=f" · {r['total']:.2f} {r['currency']}" if r['unit_price'] else ''
-                story.append(Paragraph(escape(f"{r['category']} · {r['name']}{product}: {r['quantity']} {r['unit']}{price} | {r['parameters']}"),style))
-                story.append(Spacer(1,6))
-        story.append(Paragraph('Общий итог',heading))
-        for item in result['summary']['electrical']:
-            story.append(Paragraph(escape(f"{item['name']}: {item['quantity']} шт"),style))
-        for item in result['summary']['frames']:
-            story.append(Paragraph(escape(f"Рамка на {item['posts']} постов: {item['quantity']} шт"),style))
-        story.append(Paragraph(escape(f"ЭУИ всего: {result['summary']['electrical_total']} шт · рамок: {result['summary']['frame_total']} шт · постов: {result['summary']['post_total']}"),style))
-        for currency,total in result['totals'].items(): story.append(Paragraph(escape(f'Стоимость: {total:.2f} {currency}'),style))
-        for warning in result['warnings']: story.append(Paragraph(escape(warning),style))
-        SimpleDocTemplate(output).build(story); media='application/pdf'
+        content=export_pdf(project_name,result,pdf_font_path())
+        media='application/pdf'
+    output=io.BytesIO(content)
     db.add(Report(project_id=pid,format=format)); db.commit()
     output.seek(0)
     return StreamingResponse(output,media_type=media,headers={'Content-Disposition':f'attachment; filename="smart-home-{pid}.{format}"'})

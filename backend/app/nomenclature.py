@@ -20,7 +20,7 @@ def nomenclature_key(name):
     variant=0
     if 'розет' in value or any(port in value for port in ('usb','rj45','hdmi')) or value=='tv':
         family=0
-        variant=1 if any(port in value for port in ("usb","rj45","hdmi")) or value=="tv" else 0
+        variant=1 if "розет" in value and ("usb" in value or "юсб" in value) else 2 if any(port in value for port in ("usb","rj45","hdmi")) or value=="tv" else 0
     elif 'терморегулятор' in value:
         family=1
     elif 'сценарн' in value:

@@ -53,6 +53,8 @@ class Layer(Base):
 
 class ElementType(Base):
     __tablename__ = 'element_types'
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default='true')
+    seed_key: Mapped[str | None] = mapped_column(String(500))
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     category: Mapped[str]

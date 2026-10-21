@@ -67,6 +67,9 @@ type Layer = {
   opacity: number;
 };
 type Kind = {
+  active: boolean;
+  seed_key: string | null;
+  wet_min_ip: number | null;
   id: number;
   name: string;
   category: string;
@@ -237,7 +240,7 @@ function isElectrical(kind?: Kind) {
   return kind?.category === "Электроустановки";
 }
 function isPowerSupply(kind?: Kind) {
-  return kind?.category === "LED-подсветка" && kind.name.toLocaleLowerCase().includes("блок питания");
+  return kind?.seed_key === "LED-подсветка:Блок питания LED-ленты" || Boolean(kind?.seed_key?.startsWith("power-supply:")) || kind?.category === "LED-подсветка" && kind.name.toLocaleLowerCase().includes("блок питания");
 }
 function isLedStrip(kind?: Kind) {
   return kind?.category === "LED-подсветка" && kind.unit === "м";
@@ -439,6 +442,57 @@ function makeLegend(
     return rank(a.name)-rank(b.name) || a.name.localeCompare(b.name,"ru",{numeric:true});
   });
 }
+function NomenclatureEditor({types,onChanged}:{types:Kind[];onChanged:()=>Promise<void>}) {
+  const empty=()=>({id:0,name:"",category:"Электроустановки",unit:"шт",color:"#f97316",wet_min_ip:"",defaults:{quantity:1} as Record<string,unknown>});
+  const [form,setForm]=useState(empty), [search,setSearch]=useState(""), [showDeleted,setShowDeleted]=useState(false),
+    [message,setMessage]=useState(""), [error,setError]=useState(""), [saving,setSaving]=useState(false), [parameter,setParameter]=useState("ip");
+  async function work(action:()=>Promise<void>) {
+    setSaving(true);setError("");setMessage("");
+    try {await action();} catch(error) {setError(error instanceof Error ? error.message : "Ошибка");} finally {setSaving(false);}
+  }
+  const visible=types.filter(item => (item.active || showDeleted) && `${item.name} ${item.category}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
+  return <section className="nomenclature-manager" aria-label="Управление номенклатурой">
+    {message && <p className="catalog-success" role="status">{message}</p>}
+    {error && <p className="catalog-error" role="alert">{error}</p>}
+    <div className="nomenclature-grid">
+      <form className="nomenclature-form" onSubmit={event => {
+        event.preventDefault();void work(async()=> {
+          const body={...form,wet_min_ip:form.wet_min_ip ? Number(form.wet_min_ip) : null,active:true};
+          await api(form.id ? `/types/${form.id}` : "/types",form.id ? "PUT" : "POST",body);
+          await onChanged();setForm(empty());setMessage(form.id ? "Позиция сохранена" : "Позиция добавлена");
+        });
+      }}>
+        <h3>{form.id ? "Редактирование позиции" : "Новая позиция"}</h3>
+        <label>Название<input aria-label="Название номенклатуры" required maxLength={200} value={form.name} onChange={event=>setForm({...form,name:event.target.value})} /></label>
+        <label>Категория<input aria-label="Категория номенклатуры" required list="nomenclature-categories" maxLength={200} value={form.category} onChange={event=>setForm({...form,category:event.target.value})} /></label>
+        <datalist id="nomenclature-categories">{[...new Set(["Электроустановки","Освещение","LED-подсветка","Датчики","Электрокарнизы","Умные устройства",...types.map(item=>item.category)])].map(category=><option key={category} value={category} />)}</datalist>
+        <label>Единица измерения<select aria-label="Единица номенклатуры" value={form.unit} onChange={event=>setForm({...form,unit:event.target.value,defaults:event.target.value === "м" ? {length:1} : {quantity:1}})}><option value="шт">Штуки</option><option value="м">Метры</option></select></label>
+        <label>Цвет на плане<input aria-label="Цвет номенклатуры" type="color" value={form.color} onChange={event=>setForm({...form,color:event.target.value})} /></label>
+        <label>Рекомендуемый IP во влажной зоне<input aria-label="Минимальный IP номенклатуры" type="number" min="0" max="69" placeholder="Не задан" value={form.wet_min_ip} onChange={event=>setForm({...form,wet_min_ip:event.target.value})} /></label>
+        <h3>Параметры по умолчанию</h3>
+        {Object.entries(form.defaults).map(([key,value])=><label key={key} className="nomenclature-param">{labels[key] ?? key}<span><input aria-label={`По умолчанию: ${labels[key] ?? key}`} type={typeof value === "number" ? "number" : "text"} step="any" value={String(value)} onChange={event=>setForm({...form,defaults:{...form.defaults,[key]:typeof value === "number" ? Number(event.target.value) : event.target.value}})} /><button type="button" aria-label={`Убрать параметр ${labels[key] ?? key}`} onClick={()=> {const defaults={...form.defaults};delete defaults[key];setForm({...form,defaults});}}>×</button></span></label>)}
+        <label>Добавить характеристику<select aria-label="Новая характеристика" value={parameter} onChange={event=>setParameter(event.target.value)}>{Object.entries(labels).filter(([key])=>!["led_strip","frame_posts","contact_type"].includes(key)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+        <button type="button" onClick={()=>setForm({...form,defaults:{...form.defaults,[parameter]:form.defaults[parameter] ?? (["quantity","length","ip","voltage","keys","power_watts","connectors","end_caps"].includes(parameter) ? 1 : "")}})}>Добавить характеристику</button>
+        <button className="primary" disabled={saving}>{form.id ? "Сохранить позицию" : "Добавить позицию"}</button>
+        {form.id>0 && <button type="button" onClick={()=>setForm(empty())}>Отменить редактирование позиции</button>}
+        <p className="hint">Название и цвет обновляются во всех проектах. Для используемой позиции категория и единица измерения защищены.</p>
+      </form>
+      <div className="nomenclature-list">
+        <label>Поиск<input aria-label="Поиск номенклатуры" type="search" value={search} onChange={event=>setSearch(event.target.value)} /></label>
+        <label className="check"><input type="checkbox" checked={showDeleted} onChange={event=>setShowDeleted(event.target.checked)} />Показывать удалённые</label>
+        <div className="nomenclature-rows">{visible.map(item=><article key={item.id} className={!item.active ? "inactive" : ""} data-type-id={item.id}>
+          <div><strong><i style={{background:item.color}} />{item.name}</strong><small>{item.category} · {item.unit}{!item.active ? " · удалена из библиотеки" : ""}</small></div>
+          <button type="button" disabled={saving} aria-label={`Редактировать ${item.name}`} onClick={()=> {setForm({id:item.id,name:item.name,category:item.category,unit:item.unit,color:item.color,wet_min_ip:item.wet_min_ip==null ? "" : String(item.wet_min_ip),defaults:{...item.defaults}});setError("");setMessage("");}}>Редактировать</button>
+          {item.active ? <button type="button" className="danger" disabled={saving} aria-label={`Удалить ${item.name}`} onClick={()=> {
+            if(!confirm(`Удалить «${item.name}» из библиотеки? Уже размещённые объекты и отчёты сохранятся.`)) return;
+            void work(async()=> {await api(`/types/${item.id}`,"DELETE");await onChanged();if(form.id===item.id)setForm(empty());setMessage("Позиция удалена из библиотеки");});
+          }}>Удалить</button> : <button type="button" disabled={saving} aria-label={`Восстановить ${item.name}`} onClick={()=>void work(async()=> {await api(`/types/${item.id}`,"PUT",{...item,active:true});await onChanged();setMessage("Позиция восстановлена");})}>Восстановить</button>}
+        </article>)}</div>
+        {!visible.length && <p className="hint">Подходящих позиций нет.</p>}
+      </div>
+    </div>
+  </section>;
+}
 function CatalogManager({
   catalog,
   types,
@@ -450,13 +504,14 @@ function CatalogManager({
   onClose: () => void;
   onChanged: () => Promise<void>;
 }) {
+  const [tab,setTab]=useState<"types"|"products">("types");
   const blank = {
     id: 0,
     name: "",
     sku: "",
     manufacturer_id: catalog.manufacturers[0]?.id ?? 0,
     supplier_id: 0,
-    type_id: types[0]?.id ?? 0,
+    type_id: types.find(item=>item.active)?.id ?? 0,
     price: 0,
     currency: "RUB",
     active: true,
@@ -546,6 +601,11 @@ function CatalogManager({
         </div>
         {localError && <p className="catalog-error">{localError}</p>}
         {message && <p className="catalog-success">{message}</p>}
+        <nav className="catalog-tabs" aria-label="Раздел каталога">
+          <button className={tab==="types" ? "active" : ""} onClick={()=>setTab("types")}>Номенклатура</button>
+          <button className={tab==="products" ? "active" : ""} onClick={()=>setTab("products")}>Товары и цены</button>
+        </nav>
+        {tab==="types" ? <NomenclatureEditor types={types} onChanged={onChanged} /> : <>
         <div className="catalog-grid">
           <div>
             <h3>Производители</h3>
@@ -717,7 +777,7 @@ function CatalogManager({
                     setForm({ ...form, type_id: +e.target.value })
                   }
                 >
-                  {types.map((item) => (
+                  {types.filter(item=>item.active || item.id===form.type_id).map((item) => (
                     <option key={item.id} value={item.id}>
                       {item.category} · {item.name} ({item.unit})
                     </option>
@@ -806,6 +866,10 @@ function CatalogManager({
                   Отменить редактирование
                 </button>
               )}
+              {form.id>0 && <button type="button" className="danger" disabled={saving} onClick={()=> {
+                if(!confirm("Удалить товар из выбора? Его данные и стоимость в проектах сохранятся."))return;
+                void work(async()=>{await api(`/products/${form.id}`,"DELETE");await onChanged();setForm(blank);setMessage("Товар удалён из выбора");});
+              }}>Удалить товар</button>}
             </form>
           </div>
           <div className="product-list">
@@ -834,6 +898,7 @@ function CatalogManager({
             )}
           </div>
         </div>
+        </>}
       </section>
     </div>
   );
@@ -994,6 +1059,7 @@ export default function App() {
       alignDrag.current = null;
     };
   }, [alignPageId]);
+  const availableTypes=types.filter(item=>item.active);
   const page = project?.pages.find((p) => p.id === pageId),
     kind = types.find((t) => t.id === typeId),
     layer = project?.layers.find((l) => l.id === layerId);
@@ -1044,9 +1110,9 @@ export default function App() {
   useEffect(() => {
     void run(async () => {
       setProjects(await api("/projects"));
-      const ts = await api<Kind[]>("/types");
+      const ts = await api<Kind[]>("/types?include_inactive=true");
       setTypes(ts);
-      setTypeId(ts[0]?.id ?? null);
+      setTypeId(ts.find(item=>item.active)?.id ?? null);
       setCatalog(await api("/catalog"));
     });
   }, []);
@@ -1131,7 +1197,7 @@ export default function App() {
         if (roomMode) return;
         event.preventDefault();
         const redo = event.shiftKey || ["y", "н"].includes(event.key.toLowerCase());
-        if (supplyPlacement) { setSupplyPlacement(null); return; }
+        if (supplyPlacement && !busy) { setSupplyPlacement(null); return; }
         if (alignPageId) { cancelAlignment(); return; }
         if (calibrationStart) { setCalibrationStart(null); return; }
         if (placing && kind?.unit === "м" && (linePoints.length || lineRedo.length)) {
@@ -1819,7 +1885,14 @@ export default function App() {
           catalog={catalog}
           types={types}
           onClose={() => setCatalogOpen(false)}
-          onChanged={async () => setCatalog(await api("/catalog"))}
+          onChanged={async () => {
+            const updatedTypes=await api<Kind[]>("/types?include_inactive=true");
+            setTypes(updatedTypes);setCatalog(await api("/catalog"));
+            if(!updatedTypes.find(item=>item.id===typeId)?.active) {
+              setTypeId(updatedTypes.find(item=>item.active)?.id ?? null);setPlacing(false);setLinePoints([]);setLineRedo([]);setLineCursor(null);
+            }
+            if(project) {const updated=await refresh(project.id);setSelected(current=>current ? updated.elements.find(item=>item.id===current.id) ?? null : null);}
+          }}
         />
       )}
       {error && (
@@ -1855,51 +1928,7 @@ export default function App() {
               className={`workspace ${leftPanelVisible ? "" : "left-collapsed"} ${rightPanelVisible ? "" : "right-collapsed"}`}
             >
               {leftPanelVisible && (
-                <aside>
-                  <h3>Слои элементов</h3>
-                  {project.layers.map((l) => (
-                    <div
-                      className={"layer " + (l.id === layerId ? "active" : "")}
-                      key={l.id}
-                    >
-                      <button onClick={() => setLayerId(l.id)}>{l.name}</button>
-                      <button
-                        title="Видимость"
-                        onClick={() => void run(() => patch(l, "visible"))}
-                      >
-                        {l.visible ? "◉" : "○"}
-                      </button>
-                      <button
-                        title="Блокировка"
-                        onClick={() => void run(() => patch(l, "locked"))}
-                      >
-                        {l.locked ? "🔒" : "◇"}
-                      </button>
-                      <input
-                        aria-label={`Экспорт ${l.name}`}
-                        type="checkbox"
-                        checked={l.export}
-                        onChange={() => void run(() => patch(l, "export"))}
-                      />
-                    </div>
-                  ))}
-                  <p className="hint">
-                    ◉ видимость · ◇ блокировка · ☑ ведомость
-                  </p>
-                  <button
-                    onClick={() => {
-                      const name = prompt("Название слоя");
-                      if (name)
-                        void run(async () => {
-                          await api(`/projects/${project.id}/layers`, "POST", {
-                            name,
-                          });
-                          await refresh(project.id);
-                        });
-                    }}
-                  >
-                    ＋ Слой
-                  </button>
+                <aside aria-label="Объекты и рамки" className="objects-panel">
                   <h3>Библиотека</h3>
                   <select
                     aria-label="Тип элемента"
@@ -1911,9 +1940,9 @@ export default function App() {
                       setLineCursor(null);
                     }}
                   >
-                    {[...new Set(types.map((t) => t.category))].map((c) => (
+                    {[...new Set(availableTypes.map((t) => t.category))].map((c) => (
                       <optgroup key={c} label={c}>
-                        {types
+                        {availableTypes
                           .filter((t) => t.category === c)
                           .map((t) => (
                             <option key={t.id} value={t.id}>
@@ -1948,7 +1977,7 @@ export default function App() {
                   </label>
                   <button
                     className="primary"
-                    disabled={!page || layer?.locked || busy}
+                    disabled={!page || !kind || layer?.locked || busy}
                     onClick={() => {
                       setPlacing(!placing);
                       setCalibrating(false);
@@ -2027,31 +2056,342 @@ export default function App() {
                       <button disabled={busy}>Добавить</button>
                     </form>
                   </details>
-                  <button
-                    className="new-type"
-                    onClick={() => {
-                      const name = prompt("Название типа");
-                      if (!name) return;
-                      const category = prompt("Категория");
-                      if (!category) return;
-                      void run(async () => {
-                        const t = await api<Kind>("/types", "POST", {
-                          name,
-                          category,
-                        });
-                        setTypes(await api("/types"));
-                        setTypeId(t.id);
-                      });
-                    }}
-                  >
-                    ＋ Новый тип оборудования
-                  </button>
+                  <button className="new-type" onClick={()=>setCatalogOpen(true)}>＋ Номенклатура: добавить / изменить</button>
                   <button
                     className="new-type"
                     onClick={() => setCatalogOpen(true)}
                   >
                     Каталог и цены
                   </button>
+                  <h3>Выбранные объекты</h3>
+                  {selectedIds.length > 0 ? (
+                    <div className="frame-editor">
+                      <strong>Выбрано: {selectedIds.length}</strong>
+                      <p className="hint">
+                        Выделяйте рамкой мыши или Ctrl + щелчок. Для рамки число
+                        объектов должно совпадать с числом постов.
+                      </p>
+                      <label>
+                        Количество постов
+                        <select
+                          aria-label="Количество постов рамки"
+                          value={framePosts}
+                          onChange={(e) => setFramePosts(+e.target.value)}
+                        >
+                          {[1, 2, 3, 4, 5, 6].map((posts) => (
+                            <option key={posts} value={posts}>
+                              {posts}{" "}
+                              {posts === 1
+                                ? "пост"
+                                : posts < 5
+                                  ? "поста"
+                                  : "постов"}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        className="primary"
+                        disabled={busy}
+                        onClick={() => void run(assignFrame)}
+                      >
+                        Назначить рамку
+                      </button>
+                      <button
+                        disabled={busy}
+                        onClick={() => void run(removeFrame)}
+                      >
+                        Убрать рамку
+                      </button>
+                      <button
+                        className="danger"
+                        disabled={busy}
+                        title="Delete"
+                        onClick={() => void run(removeSelected)}
+                      >
+                        Удалить выбранные · Del
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="hint">
+                      Выделите объекты рамкой мыши или кликами с зажатым Ctrl.
+                    </p>
+                  )}
+                  <h3>Свойства объекта</h3>
+                  {selected && selectedIds.length === 1 ? (
+                    <>
+                      <div className="object-title">
+                        <button
+                          type="button"
+                          className="object-focus"
+                          title="Показать объект на плане. Двойной щелчок — выбрать все объекты этой номенклатуры"
+                          onClick={() => focusItem(selected)}
+                          onDoubleClick={() => selectSameType(selected)}
+                        >
+                          {selectedKind?.name}
+                        </button>
+                        <button
+                          type="button"
+                          className={typeEditorOpen ? "active" : ""}
+                          aria-label="Изменить номенклатуру"
+                          title="Изменить номенклатуру"
+                          disabled={
+                            busy ||
+                            project.layers.find(
+                              (layer) => layer.id === selected.layer_id,
+                            )?.locked
+                          }
+                          onClick={() => setTypeEditorOpen((value) => !value)}
+                        >
+                          ✓
+                        </button>
+                      </div>
+                      {typeEditorOpen && (
+                        <label className="nomenclature-editor">
+                          Номенклатура для замены
+                          <select
+                            autoFocus
+                            aria-label="Номенклатура объекта"
+                            value={selected.type_id}
+                            onChange={(e) => {
+                              changeSelectedType(+e.target.value);
+                              setTypeEditorOpen(false);
+                            }}
+                          >
+                            {selectedKind?.active === false && <option value={selectedKind.id} disabled>{selectedKind.name} · удалена из библиотеки</option>}
+                            {[
+                              ...new Set(
+                                types
+                                  .filter(
+                                    (type) => type.active && type.unit === selectedKind?.unit,
+                                  )
+                                  .map((type) => type.category),
+                              ),
+                            ].map((category) => (
+                              <optgroup key={category} label={category}>
+                                {types
+                                  .filter(
+                                    (type) =>
+                                      type.active && type.unit === selectedKind?.unit &&
+                                      type.category === category,
+                                  )
+                                  .map((type) => (
+                                    <option key={type.id} value={type.id}>
+                                      {type.name}
+                                    </option>
+                                  ))}
+                              </optgroup>
+                            ))}
+                          </select>
+                          <small>
+                            При замене привязка к товару будет сброшена.
+                          </small>
+                        </label>
+                      )}
+                      <small>
+                        №{selected.id} · X {selected.x.toFixed(3)} / Y{" "}
+                        {selected.y.toFixed(3)}
+                        {selected.geometry?.points?.length
+                          ? ` · ${selected.geometry.points.length} узла`
+                          : ""}
+                      </small>
+                      {selected.geometry?.points?.length && (
+                        <p className="hint">
+                          Перетаскивайте{" "}
+                          {isTrack(selectedKind) ? "стрелочные" : "белые"} узлы
+                          линии на плане. Длина пересчитается автоматически.
+                        </p>
+                      )}
+                      <label>
+                        Помещение
+                        <select
+                          aria-label="Помещение объекта"
+                          value={selected.room_id ?? ""}
+                          onChange={(e) =>
+                            setSelected({
+                              ...selected,
+                              room_id: e.target.value ? +e.target.value : null,
+                            })
+                          }
+                        >
+                          <option value="">Без помещения</option>
+                          {project.rooms.map((r) => (
+                            <option key={r.id} value={r.id}>
+                              {r.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label>
+                        Товар
+                        <select
+                          aria-label="Товар объекта"
+                          value={selected.product_id ?? ""}
+                          onChange={(e) =>
+                            setSelected({
+                              ...selected,
+                              product_id: e.target.value
+                                ? +e.target.value
+                                : null,
+                            })
+                          }
+                        >
+                          <option value="">Без привязки к товару</option>
+                          {catalog.products
+                            .filter(
+                              (p) => p.type_id === selected.type_id && (p.active || p.id === selected.product_id),
+                            )
+                            .map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.manufacturer} · {p.name} · {p.price}{" "}
+                                {p.currency}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+                      {isElectrical(selectedKind) && (
+                        <label>
+                          Иконка на плане
+                          <input
+                            aria-label="Иконка электроустановки"
+                            list="plan-icon-options"
+                            maxLength={4}
+                            placeholder="Например: R, TV, ⚡"
+                            value={String(selected.parameters.plan_icon ?? "")}
+                            onChange={(e) =>
+                              setSelected({
+                                ...selected,
+                                parameters: {
+                                  ...selected.parameters,
+                                  plan_icon: e.target.value,
+                                },
+                              })
+                            }
+                          />
+                          <datalist id="plan-icon-options">
+                            <option value="R" />
+                            <option value="S" />
+                            <option value="TV" />
+                            <option value="USB" />
+                            <option value="HDMI" />
+                            <option value="⚡" />
+                            <option value="⊗" />
+                            <option value="◉" />
+                          </datalist>
+                        </label>
+                      )}
+                      {isElectrical(selectedKind) && (
+                        <label>
+                          Цвет точки
+                          <span className="color-editor">
+                            <input
+                              aria-label="Цвет обозначения электроустановки"
+                              type="color"
+                              value={String(
+                                selected.parameters.plan_color ??
+                                  selectedKind?.color ??
+                                  "#64748b",
+                              )}
+                              onChange={(e) =>
+                                setSelected({
+                                  ...selected,
+                                  parameters: {
+                                    ...selected.parameters,
+                                    plan_color: e.target.value,
+                                  },
+                                })
+                              }
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const parameters = { ...selected.parameters };
+                                delete parameters.plan_color;
+                                setSelected({ ...selected, parameters });
+                              }}
+                            >
+                              По умолчанию
+                            </button>
+                          </span>
+                        </label>
+                      )}
+                      {isPowerSupply(selectedKind) && <>
+                        <label>Питает LED-ленту<select aria-label="Питает LED-ленту" value={String(selected.parameters.led_strip_id ?? "")} onChange={event => setSelected({...selected,parameters:{...selected.parameters,led_strip_id:Number(event.target.value)}})}>
+                          {project.elements.filter(item => isLedStrip(types.find(type => type.id === item.type_id))).map(item => <option key={item.id} value={item.id}>{stripLabel(item)}</option>)}
+                        </select></label>
+                        <label>Мощность, Вт (необязательно)<input aria-label="Мощность блока питания, Вт" type="number" min="0.01" max="1000000" step="any" value={String(selected.parameters.power_watts ?? "")} onChange={event => {
+                          const parameters={...selected.parameters};
+                          if (event.target.value) parameters.power_watts=Number(event.target.value); else delete parameters.power_watts;
+                          setSelected({...selected,parameters});
+                        }} /></label>
+                      </>}
+                      {Object.entries(selected.parameters)
+                        .filter(
+                          ([key]) =>
+                            ![
+                              "frame_posts",
+                              "frame_group",
+                              "plan_icon",
+                              "plan_color",
+                              "led_strip_id",
+                              ...(isPowerSupply(selectedKind) ? ["power_watts"] : []),
+                            ].includes(key),
+                        )
+                        .map(([key, value]) => (
+                          <label key={key}>
+                            {labels[key] ?? key}
+                            <input
+                              value={String(value)}
+                              disabled={
+                                key === "length" &&
+                                Boolean(selected.geometry?.points?.length)
+                              }
+                              type={
+                                typeof value === "number" ? "number" : "text"
+                              }
+                              min={typeof value === "number" ? 0 : undefined}
+                              step="any"
+                              onChange={(e) =>
+                                setSelected({
+                                  ...selected,
+                                  parameters: {
+                                    ...selected.parameters,
+                                    [key]:
+                                      typeof value === "number"
+                                        ? Number(e.target.value)
+                                        : e.target.value,
+                                  },
+                                })
+                              }
+                            />
+                          </label>
+                        ))}
+                      <label>
+                        Комментарий
+                        <textarea
+                          value={selected.comment}
+                          onChange={(e) =>
+                            setSelected({
+                              ...selected,
+                              comment: e.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <p className="autosave-note">
+                        {busy ? "Сохранение…" : "Изменения сохраняются автоматически"}
+                      </p>
+                    </>
+                  ) : selectedIds.length > 1 ? (
+                    <p className="hint">
+                      Для нескольких объектов доступны операции с рамкой и
+                      удаление.
+                    </p>
+                  ) : (
+                    <p className="hint">
+                      Выберите объект на плане, чтобы изменить параметры.
+                    </p>
+                  )}
                 </aside>
               )}
               <section className="plan-area">
@@ -2189,25 +2529,6 @@ export default function App() {
                           : "Масштаб, мм"}
                       </button>
                     )}
-                    {page && (
-                      <button
-                        onClick={() => {
-                          const value = prompt(
-                            "Название листа",
-                            page.name ?? `Лист ${page.number}`,
-                          );
-                          if (value !== null)
-                            void run(async () => {
-                              await api(`/pages/${page.id}`, "PATCH", {
-                                name: value,
-                              });
-                              await refresh(project.id);
-                            });
-                        }}
-                      >
-                        Название
-                      </button>
-                    )}
                     <a
                       className="tool-link"
                       href={`/api/projects/${project.id}/backup`}
@@ -2222,30 +2543,7 @@ export default function App() {
                         План PDF
                       </a>
                     )}
-                    <label className="upload">
-                      Загрузить PDF
-                      <input
-                        type="file"
-                        accept="application/pdf"
-                        disabled={busy}
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file)
-                            void run(async () => {
-                              const form = new FormData();
-                              form.append("file", file);
-                              const pages = await api<Page[]>(
-                                `/projects/${project.id}/pdf`,
-                                "POST",
-                                form,
-                              );
-                              await refresh(project.id);
-                              setPageId(pages[0].id);
-                            });
-                          e.target.value = "";
-                        }}
-                      />
-                    </label>
+
                   </div>
                 </div>
                 <button
@@ -3218,7 +3516,94 @@ export default function App() {
                 </div>
               </section>
               {rightPanelVisible && (
-                <aside className="right">
+                <aside className="right layers-panel" aria-label="Слои и страницы">
+                  <h3>Слои элементов</h3>
+                  {project.layers.map((l) => (
+                    <div
+                      className={"layer " + (l.id === layerId ? "active" : "")}
+                      key={l.id}
+                    >
+                      <button onClick={() => setLayerId(l.id)}>{l.name}</button>
+                      <button
+                        title="Видимость"
+                        onClick={() => void run(() => patch(l, "visible"))}
+                      >
+                        {l.visible ? "◉" : "○"}
+                      </button>
+                      <button
+                        title="Блокировка"
+                        onClick={() => void run(() => patch(l, "locked"))}
+                      >
+                        {l.locked ? "🔒" : "◇"}
+                      </button>
+                      <input
+                        aria-label={`Экспорт ${l.name}`}
+                        type="checkbox"
+                        checked={l.export}
+                        onChange={() => void run(() => patch(l, "export"))}
+                      />
+                    </div>
+                  ))}
+                  <p className="hint">
+                    ◉ видимость · ◇ блокировка · ☑ ведомость
+                  </p>
+                  <button
+                    onClick={() => {
+                      const name = prompt("Название слоя");
+                      if (name)
+                        void run(async () => {
+                          await api(`/projects/${project.id}/layers`, "POST", {
+                            name,
+                          });
+                          await refresh(project.id);
+                        });
+                    }}
+                  >
+                    ＋ Слой
+                  </button>
+                  <div className="page-file-tools">                    <label className="upload">
+                      Загрузить PDF
+                      <input
+                        type="file"
+                        accept="application/pdf"
+                        disabled={busy}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file)
+                            void run(async () => {
+                              const form = new FormData();
+                              form.append("file", file);
+                              const pages = await api<Page[]>(
+                                `/projects/${project.id}/pdf`,
+                                "POST",
+                                form,
+                              );
+                              await refresh(project.id);
+                              setPageId(pages[0].id);
+                            });
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>                    {page && (
+                      <button
+                        onClick={() => {
+                          const value = prompt(
+                            "Название листа",
+                            page.name ?? `Лист ${page.number}`,
+                          );
+                          if (value !== null)
+                            void run(async () => {
+                              await api(`/pages/${page.id}`, "PATCH", {
+                                name: value,
+                              });
+                              await refresh(project.id);
+                            });
+                        }}
+                      >
+                        Название
+                      </button>
+                    )}
+</div>
                   <h3>Страницы-слои · {project.pages.length}</h3>
                   <div className="page-bulk-actions">
                     <button
@@ -3468,334 +3853,6 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                  <h3>Выбранные объекты</h3>
-                  {selectedIds.length > 0 ? (
-                    <div className="frame-editor">
-                      <strong>Выбрано: {selectedIds.length}</strong>
-                      <p className="hint">
-                        Выделяйте рамкой мыши или Ctrl + щелчок. Для рамки число
-                        объектов должно совпадать с числом постов.
-                      </p>
-                      <label>
-                        Количество постов
-                        <select
-                          aria-label="Количество постов рамки"
-                          value={framePosts}
-                          onChange={(e) => setFramePosts(+e.target.value)}
-                        >
-                          {[1, 2, 3, 4, 5, 6].map((posts) => (
-                            <option key={posts} value={posts}>
-                              {posts}{" "}
-                              {posts === 1
-                                ? "пост"
-                                : posts < 5
-                                  ? "поста"
-                                  : "постов"}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <button
-                        className="primary"
-                        disabled={busy}
-                        onClick={() => void run(assignFrame)}
-                      >
-                        Назначить рамку
-                      </button>
-                      <button
-                        disabled={busy}
-                        onClick={() => void run(removeFrame)}
-                      >
-                        Убрать рамку
-                      </button>
-                      <button
-                        className="danger"
-                        disabled={busy}
-                        title="Delete"
-                        onClick={() => void run(removeSelected)}
-                      >
-                        Удалить выбранные · Del
-                      </button>
-                    </div>
-                  ) : (
-                    <p className="hint">
-                      Выделите объекты рамкой мыши или кликами с зажатым Ctrl.
-                    </p>
-                  )}
-                  <h3>Свойства объекта</h3>
-                  {selected && selectedIds.length === 1 ? (
-                    <>
-                      <div className="object-title">
-                        <button
-                          type="button"
-                          className="object-focus"
-                          title="Показать объект на плане. Двойной щелчок — выбрать все объекты этой номенклатуры"
-                          onClick={() => focusItem(selected)}
-                          onDoubleClick={() => selectSameType(selected)}
-                        >
-                          {selectedKind?.name}
-                        </button>
-                        <button
-                          type="button"
-                          className={typeEditorOpen ? "active" : ""}
-                          aria-label="Изменить номенклатуру"
-                          title="Изменить номенклатуру"
-                          disabled={
-                            busy ||
-                            project.layers.find(
-                              (layer) => layer.id === selected.layer_id,
-                            )?.locked
-                          }
-                          onClick={() => setTypeEditorOpen((value) => !value)}
-                        >
-                          ✓
-                        </button>
-                      </div>
-                      {typeEditorOpen && (
-                        <label className="nomenclature-editor">
-                          Номенклатура для замены
-                          <select
-                            autoFocus
-                            aria-label="Номенклатура объекта"
-                            value={selected.type_id}
-                            onChange={(e) => {
-                              changeSelectedType(+e.target.value);
-                              setTypeEditorOpen(false);
-                            }}
-                          >
-                            {[
-                              ...new Set(
-                                types
-                                  .filter(
-                                    (type) => type.unit === selectedKind?.unit,
-                                  )
-                                  .map((type) => type.category),
-                              ),
-                            ].map((category) => (
-                              <optgroup key={category} label={category}>
-                                {types
-                                  .filter(
-                                    (type) =>
-                                      type.unit === selectedKind?.unit &&
-                                      type.category === category,
-                                  )
-                                  .map((type) => (
-                                    <option key={type.id} value={type.id}>
-                                      {type.name}
-                                    </option>
-                                  ))}
-                              </optgroup>
-                            ))}
-                          </select>
-                          <small>
-                            При замене привязка к товару будет сброшена.
-                          </small>
-                        </label>
-                      )}
-                      <small>
-                        №{selected.id} · X {selected.x.toFixed(3)} / Y{" "}
-                        {selected.y.toFixed(3)}
-                        {selected.geometry?.points?.length
-                          ? ` · ${selected.geometry.points.length} узла`
-                          : ""}
-                      </small>
-                      {selected.geometry?.points?.length && (
-                        <p className="hint">
-                          Перетаскивайте{" "}
-                          {isTrack(selectedKind) ? "стрелочные" : "белые"} узлы
-                          линии на плане. Длина пересчитается автоматически.
-                        </p>
-                      )}
-                      <label>
-                        Помещение
-                        <select
-                          aria-label="Помещение объекта"
-                          value={selected.room_id ?? ""}
-                          onChange={(e) =>
-                            setSelected({
-                              ...selected,
-                              room_id: e.target.value ? +e.target.value : null,
-                            })
-                          }
-                        >
-                          <option value="">Без помещения</option>
-                          {project.rooms.map((r) => (
-                            <option key={r.id} value={r.id}>
-                              {r.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label>
-                        Товар
-                        <select
-                          aria-label="Товар объекта"
-                          value={selected.product_id ?? ""}
-                          onChange={(e) =>
-                            setSelected({
-                              ...selected,
-                              product_id: e.target.value
-                                ? +e.target.value
-                                : null,
-                            })
-                          }
-                        >
-                          <option value="">Без привязки к товару</option>
-                          {catalog.products
-                            .filter(
-                              (p) => p.type_id === selected.type_id && p.active,
-                            )
-                            .map((p) => (
-                              <option key={p.id} value={p.id}>
-                                {p.manufacturer} · {p.name} · {p.price}{" "}
-                                {p.currency}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                      {isElectrical(selectedKind) && (
-                        <label>
-                          Иконка на плане
-                          <input
-                            aria-label="Иконка электроустановки"
-                            list="plan-icon-options"
-                            maxLength={4}
-                            placeholder="Например: R, TV, ⚡"
-                            value={String(selected.parameters.plan_icon ?? "")}
-                            onChange={(e) =>
-                              setSelected({
-                                ...selected,
-                                parameters: {
-                                  ...selected.parameters,
-                                  plan_icon: e.target.value,
-                                },
-                              })
-                            }
-                          />
-                          <datalist id="plan-icon-options">
-                            <option value="R" />
-                            <option value="S" />
-                            <option value="TV" />
-                            <option value="USB" />
-                            <option value="HDMI" />
-                            <option value="⚡" />
-                            <option value="⊗" />
-                            <option value="◉" />
-                          </datalist>
-                        </label>
-                      )}
-                      {isElectrical(selectedKind) && (
-                        <label>
-                          Цвет точки
-                          <span className="color-editor">
-                            <input
-                              aria-label="Цвет обозначения электроустановки"
-                              type="color"
-                              value={String(
-                                selected.parameters.plan_color ??
-                                  selectedKind?.color ??
-                                  "#64748b",
-                              )}
-                              onChange={(e) =>
-                                setSelected({
-                                  ...selected,
-                                  parameters: {
-                                    ...selected.parameters,
-                                    plan_color: e.target.value,
-                                  },
-                                })
-                              }
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const parameters = { ...selected.parameters };
-                                delete parameters.plan_color;
-                                setSelected({ ...selected, parameters });
-                              }}
-                            >
-                              По умолчанию
-                            </button>
-                          </span>
-                        </label>
-                      )}
-                      {isPowerSupply(selectedKind) && <>
-                        <label>Питает LED-ленту<select aria-label="Питает LED-ленту" value={String(selected.parameters.led_strip_id ?? "")} onChange={event => setSelected({...selected,parameters:{...selected.parameters,led_strip_id:Number(event.target.value)}})}>
-                          {project.elements.filter(item => isLedStrip(types.find(type => type.id === item.type_id))).map(item => <option key={item.id} value={item.id}>{stripLabel(item)}</option>)}
-                        </select></label>
-                        <label>Мощность, Вт (необязательно)<input aria-label="Мощность блока питания, Вт" type="number" min="0.01" max="1000000" step="any" value={String(selected.parameters.power_watts ?? "")} onChange={event => {
-                          const parameters={...selected.parameters};
-                          if (event.target.value) parameters.power_watts=Number(event.target.value); else delete parameters.power_watts;
-                          setSelected({...selected,parameters});
-                        }} /></label>
-                      </>}
-                      {Object.entries(selected.parameters)
-                        .filter(
-                          ([key]) =>
-                            ![
-                              "frame_posts",
-                              "frame_group",
-                              "plan_icon",
-                              "plan_color",
-                              "led_strip_id",
-                              ...(isPowerSupply(selectedKind) ? ["power_watts"] : []),
-                            ].includes(key),
-                        )
-                        .map(([key, value]) => (
-                          <label key={key}>
-                            {labels[key] ?? key}
-                            <input
-                              value={String(value)}
-                              disabled={
-                                key === "length" &&
-                                Boolean(selected.geometry?.points?.length)
-                              }
-                              type={
-                                typeof value === "number" ? "number" : "text"
-                              }
-                              min={typeof value === "number" ? 0 : undefined}
-                              step="any"
-                              onChange={(e) =>
-                                setSelected({
-                                  ...selected,
-                                  parameters: {
-                                    ...selected.parameters,
-                                    [key]:
-                                      typeof value === "number"
-                                        ? Number(e.target.value)
-                                        : e.target.value,
-                                  },
-                                })
-                              }
-                            />
-                          </label>
-                        ))}
-                      <label>
-                        Комментарий
-                        <textarea
-                          value={selected.comment}
-                          onChange={(e) =>
-                            setSelected({
-                              ...selected,
-                              comment: e.target.value,
-                            })
-                          }
-                        />
-                      </label>
-                      <p className="autosave-note">
-                        {busy ? "Сохранение…" : "Изменения сохраняются автоматически"}
-                      </p>
-                    </>
-                  ) : selectedIds.length > 1 ? (
-                    <p className="hint">
-                      Для нескольких объектов доступны операции с рамкой и
-                      удаление.
-                    </p>
-                  ) : (
-                    <p className="hint">
-                      Выберите объект на плане, чтобы изменить параметры.
-                    </p>
-                  )}
                 </aside>
               )}
             </main>
@@ -3936,7 +3993,7 @@ export default function App() {
         </section>
       </div>}
       <footer>
-        <span>SMART HOME CALC / 1.0.30</span>
+        <span>SMART HOME CALC / 1.0.31</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

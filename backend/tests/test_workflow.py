@@ -37,7 +37,7 @@ def test_health_identifies_desktop_backend(client,monkeypatch):
     health=client.get('/api/health')
     assert health.status_code==200
     assert health.json()=={
-        'status':'ok','version':'1.0.30','instance':'test-instance',
+        'status':'ok','version':'1.0.31','instance':'test-instance',
     }
 
 def test_full_workflow_and_exports(client):
@@ -592,7 +592,7 @@ def test_nomenclature_is_grouped_and_momentary_switches_export_as_devices(client
         main_module.seed(db)  # Updating an existing catalogue must not duplicate types.
     kinds=client.get('/api/types').json()
     from app.catalog import MOMENTARY_SWITCH_DEFAULTS
-    assert len(MOMENTARY_SWITCH_DEFAULTS)==16
+    assert len(MOMENTARY_SWITCH_DEFAULTS)==10
     for name,defaults in MOMENTARY_SWITCH_DEFAULTS.items():
         matches=[item for item in kinds if item['name']==name and item['category']=='Электроустановки']
         assert len(matches)==1 and matches[0]['unit']=='шт'
@@ -616,7 +616,7 @@ def test_nomenclature_is_grouped_and_momentary_switches_export_as_devices(client
         }).status_code==201
     ordered=[item['name'] for item in client.get('/api/types').json()]
     assert ordered.index('Выключатель тест 1-клавишный')<ordered.index('Выключатель тест 2-клавишный')<ordered.index('Выключатель тест 3-клавишный')
-    selected=next(item for item in kinds if item['name']=='Звонковый выключатель трехклавишный (НО/НЗ)')
+    selected=next(item for item in kinds if item['name']=='Звонковый выключатель трехклавишный')
     project=client.get(f'/api/projects/{pid}').json()
     body.update(type_id=selected['id'],layer_id=project['layers'][0]['id'],parameters={'quantity':2,'ip':44})
     response=client.post(f'/api/projects/{pid}/elements',json=body)
@@ -628,7 +628,7 @@ def test_nomenclature_is_grouped_and_momentary_switches_export_as_devices(client
     assert 'Механизм: Самовозвратный' in xlsx['Электроустановки']['M6'].value
     with pymupdf.open(stream=client.get(f'/api/projects/{pid}/export/pdf').content,filetype='pdf') as pdf:
         content=' '.join(' '.join(page.get_text() for page in pdf).split())
-        assert 'Самовозвратный' in content and 'НО/НЗ' in content
+        assert 'Самовозвратный' in content and 'НО/НЗ' not in content
 
 
 def test_concave_room_contours_and_invalid_polygons_are_validated(client):
@@ -720,3 +720,100 @@ def test_undo_redo_room_changes_restores_assignments_and_new_action_clears_redo(
     assert client.post(f'/api/projects/{pid}/elements/redo').json()=={'undone':False}
     assert client.post(f'/api/projects/{pid}/elements/undo').json()['undone']
     assert any(item['name']=='Контур' for item in client.get(f'/api/projects/{pid}').json()['rooms'])
+
+
+def test_usb_socket_order_and_nomenclature_crud_persist_without_losing_objects(client):
+    pid,body=setup(client)
+    kinds=client.get('/api/types').json()
+    names=[item['name'] for item in kinds if item['category']=='Электроустановки']
+    assert names.index('Розетка двойная')<names.index('Розетка с USB (2 в 1)')<names.index('USB')<names.index('Диммер')
+    usb=next(item for item in kinds if item['name']=='Розетка с USB (2 в 1)')
+    body.update(type_id=usb['id'],parameters={'quantity':1,'ip':44})
+    element=client.post(f'/api/projects/{pid}/elements',json=body).json()
+    changed={**usb,'name':'Розетка с USB-C (2 в 1)','color':'#112233','defaults':{'quantity':1,'ip':44}}
+    assert client.put(f"/api/types/{usb['id']}",json=changed).status_code==200
+    assert client.put(f"/api/types/{usb['id']}",json={**changed,'unit':'м'}).status_code==409
+    assert client.delete(f"/api/types/{usb['id']}").status_code==200
+    assert usb['id'] not in [item['id'] for item in client.get('/api/types').json()]
+    assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==409
+    assert client.put(f"/api/elements/{element['id']}",json={**body,'x':.75}).status_code==200
+    for _ in range(2):
+        with main_module.Session() as db: main_module.seed(db)
+    hidden=next(item for item in client.get('/api/types?include_inactive=true').json() if item['id']==usb['id'])
+    assert hidden['name']==changed['name'] and hidden['color']=='#112233' and hidden['active'] is False
+    assert not any(item['name']=='Розетка с USB (2 в 1)' for item in client.get('/api/types').json())
+    report=client.get(f'/api/projects/{pid}/report').json()
+    assert report['rows'][0]['name']==changed['name'] and report['rows'][0]['quantity']==1
+    backup=client.get(f'/api/projects/{pid}/backup').content
+    restored=client.post('/api/projects/import',files={'file':('backup.zip',backup,'application/zip')})
+    assert restored.status_code==201
+    assert client.get(f"/api/projects/{restored.json()['id']}/report").json()['rows'][0]['name']==changed['name']
+    assert client.put(f"/api/types/{usb['id']}",json={**hidden,'active':True}).status_code==200
+    assert any(item['id']==usb['id'] for item in client.get('/api/types').json())
+    custom=client.post('/api/types',json={'name':'  Розетка тестовая  ','category':'Электроустановки','defaults':{'quantity':1}})
+    assert custom.status_code==201 and custom.json()['name']=='Розетка тестовая'
+    assert client.post('/api/types',json={'name':'розетка тестовая','category':'Электроустановки'}).status_code==409
+    assert client.post('/api/types',json={'name':'  ','category':'Электроустановки'}).status_code==422
+    assert client.delete(f"/api/types/{custom.json()['id']}").status_code==200
+    # Even a deliberately chosen legacy colour must survive later starts.
+    assert client.put(f"/api/types/{usb['id']}",json={**hidden,'active':True,'color':'#fb923c'}).status_code==200
+    with main_module.Session() as db: main_module.seed(db)
+    assert next(item for item in client.get('/api/types').json() if item['id']==usb['id'])['color']=='#fb923c'
+
+
+def test_legacy_contact_variants_merge_preserving_placement_products_and_frames(client):
+    pid,body=setup(client)
+    category='Электроустановки'
+    manufacturer=client.post('/api/manufacturers',json={'name':'Legacy'}).json()
+    legacy_ids=[]
+    for index,contact in enumerate(('НО','НЗ','НО/НЗ')):
+        typ=client.post('/api/types',json={'name':f'Звонковый выключатель одноклавишный ({contact})','category':category,'defaults':{'quantity':1,'keys':1,'contact_type':contact,'switch_action':'Самовозвратный'}}).json()
+        legacy_ids.append(typ['id'])
+        product=client.post('/api/products',json={'name':f'Звонковый {index}','manufacturer_id':manufacturer['id'],'type_id':typ['id'],'unit':'шт','price':100}).json()
+        created=client.post(f'/api/projects/{pid}/elements',json={**body,'type_id':typ['id'],'product_id':product['id'],'x':.1+index*.1,'parameters':{'quantity':1,'ip':44,'contact_type':contact,'frame_group':'legacy-frame','frame_posts':3}})
+        assert created.status_code==201
+    before=client.get(f'/api/projects/{pid}').json()['elements']
+    for _ in range(2):
+        with main_module.Session() as db: main_module.seed(db)
+    kinds=client.get('/api/types').json()
+    assert not any('(НО' in item['name'] or '(НЗ' in item['name'] for item in kinds)
+    canonical=next(item for item in kinds if item['name']=='Звонковый выключатель одноклавишный')
+    after=client.get(f'/api/projects/{pid}').json()['elements']
+    assert [(item['id'],item['x'],item['room_id']) for item in after]==[(item['id'],item['x'],item['room_id']) for item in before]
+    assert all(item['type_id']==canonical['id'] and 'contact_type' not in item['parameters'] and item['parameters']['frame_group']=='legacy-frame' for item in after)
+    assert all(item['type_id']==canonical['id'] for item in client.get('/api/catalog').json()['products'])
+    rows=client.get(f'/api/projects/{pid}/report').json()['rows']
+    assert sum(row['quantity'] for row in rows if row['category']==category)==3
+    assert next(row for row in rows if row['category']=='Рамки')['quantity']==1
+
+
+def test_removed_product_keeps_assigned_cost_and_renamed_power_supply_keeps_shape_in_backup(client):
+    pid,body=setup(client)
+    strip=client.post(f'/api/projects/{pid}/elements',json=body).json()
+    typ=next(item for item in client.get('/api/types').json() if item['name']=='Блок питания LED-ленты')
+    manufacturer=client.post('/api/manufacturers',json={'name':'Источник'}).json()
+    product=client.post('/api/products',json={'name':'БП 100 Вт','manufacturer_id':manufacturer['id'],'type_id':typ['id'],'unit':'шт','price':1250}).json()
+    power_body={**body,'type_id':typ['id'],'product_id':product['id'],'parameters':{'led_strip_id':strip['id'],'power_watts':100}}
+    power=client.post(f'/api/projects/{pid}/elements',json=power_body).json()
+    assert client.delete(f"/api/products/{product['id']}").status_code==200
+    assert client.put(f"/api/elements/{power['id']}",json={**power_body,'x':.6}).status_code==200
+    assert client.post(f'/api/projects/{pid}/elements',json=power_body).status_code==422
+    assert client.put(f"/api/types/{typ['id']}",json={**typ,'name':'Источник питания LED'}).status_code==200
+    assert client.delete(f"/api/types/{typ['id']}").status_code==200
+    assert client.get(f'/api/projects/{pid}/report').json()['totals']['RUB']==1250
+    backup=client.get(f'/api/projects/{pid}/backup').content
+    # Import under a different type name to force creation instead of global type reuse.
+    with zipfile.ZipFile(io.BytesIO(backup)) as archive:
+        files={name:archive.read(name) for name in archive.namelist()}
+    manifest=json.loads(files['manifest.json'])
+    next(item for item in manifest['types'] if item['backup_id']==typ['id'])['name']='Силовой источник LED'
+    files['manifest.json']=json.dumps(manifest,ensure_ascii=False).encode()
+    output=io.BytesIO()
+    with zipfile.ZipFile(output,'w') as archive:
+        for name,content in files.items(): archive.writestr(name,content)
+    restored=client.post('/api/projects/import',files={'file':('backup.zip',output.getvalue(),'application/zip')})
+    assert restored.status_code==201,restored.text
+    project=client.get(f"/api/projects/{restored.json()['id']}").json()
+    with pymupdf.open(stream=client.get(f"/api/projects/{project['id']}/pages/{project['pages'][0]['id']}/export.pdf").content,filetype='pdf') as document:
+        assert any(item[0]=='re' for drawing in document[0].get_drawings() for item in drawing['items'])
+    assert client.get(f"/api/projects/{project['id']}/report").json()['totals']['RUB']==1250

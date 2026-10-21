@@ -80,6 +80,12 @@ async def lifespan(app):
             for column,definition in page_upgrades.items():
                 if column not in page_columns:
                     connection.execute(text(f'ALTER TABLE pages ADD COLUMN {column} {definition}'))
+        type_columns={column['name'] for column in inspect(engine).get_columns('element_types')}
+        with engine.begin() as connection:
+            if 'active' not in type_columns:
+                connection.execute(text('ALTER TABLE element_types ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE'))
+            if 'seed_key' not in type_columns:
+                connection.execute(text('ALTER TABLE element_types ADD COLUMN seed_key VARCHAR(500)'))
         room_columns={column['name'] for column in inspect(engine).get_columns('rooms')}
         with engine.begin() as connection:
             if 'page_id' not in room_columns:
@@ -92,7 +98,7 @@ async def lifespan(app):
         db.commit()
     yield
 
-APP_VERSION = '1.0.30'
+APP_VERSION = '1.0.31'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -170,6 +176,7 @@ class CalibrationInput(BaseModel):
         return self.real_length_mm / 1000 if self.real_length_mm is not None else self.real_length_m
 
 class TypeInput(NameInput):
+    active: bool = True
     category: str = Field(min_length=1, max_length=200)
     unit: str = Field(default='шт', pattern='^(шт|м)$')
     color: str = Field(default='#38bdf8', pattern='^#[0-9a-fA-F]{6}$')
@@ -228,6 +235,8 @@ class BackupRoom(BaseModel):
     polygon: list[PolygonPoint] | None = None
 
 class BackupType(BaseModel):
+    active: bool = True
+    power_supply: bool = False
     backup_id: int
     name: str = Field(min_length=1,max_length=200)
     category: str = Field(min_length=1,max_length=200)
@@ -380,12 +389,12 @@ def recalculate_all_project_lines(db):
         select(Page).where(Page.meters_per_point.is_not(None))))
 
 def is_power_supply(typ):
-    return typ.category=='LED-подсветка' and 'блок питания' in typ.name.casefold()
+    return (typ.seed_key or '').startswith('power-supply:') or typ.seed_key=='LED-подсветка:Блок питания LED-ленты' or typ.category=='LED-подсветка' and 'блок питания' in typ.name.casefold()
 
 def is_led_strip(typ):
     return typ.category=='LED-подсветка' and typ.unit=='м'
 
-def validate_element(db, project_id, body, check_locked=True):
+def validate_element(db, project_id, body, check_locked=True, existing_type_id=None, existing_product_id=None):
     for model, id in [(Page,body.page_id),(Layer,body.layer_id),(Room,body.room_id)]:
         if id is not None:
             obj = require(db, model, id)
@@ -395,9 +404,11 @@ def validate_element(db, project_id, body, check_locked=True):
     if check_locked and layer.locked:
         raise HTTPException(409, 'Слой заблокирован')
     typ = require(db,ElementType,body.type_id)
+    if not typ.active and check_locked and existing_type_id!=typ.id:
+        raise HTTPException(409,'Позиция удалена из библиотеки; сначала восстановите её')
     if body.product_id is not None:
         product=require(db,Product,body.product_id)
-        if product.type_id != typ.id or not product.active:
+        if product.type_id != typ.id or not product.active and check_locked and existing_product_id!=product.id:
             raise HTTPException(422, 'Товар не соответствует типу элемента')
     parameters = {**typ.defaults, **body.parameters}
     points=geometry_points(body.geometry)
@@ -475,7 +486,7 @@ def create_project(body: NameInput, db: DbSession = Depends(session)):
     return data(p)
 
 @app.get('/api/types')
-def types(db: DbSession = Depends(session)):
+def types(include_inactive: bool = False, db: DbSession = Depends(session)):
     category_order={name:index for index,name in enumerate(LAYERS)}
     items=list(db.scalars(select(ElementType).order_by(ElementType.id)))
     items.sort(key=lambda item:(
@@ -484,12 +495,49 @@ def types(db: DbSession = Depends(session)):
         nomenclature_key(item.name),
         item.id,
     ))
-    return [data(item) for item in items]
+    return [data(item) for item in items if (item.active or include_inactive) and not (item.seed_key or '').startswith('legacy-momentary:')]
+
+def type_values(db,body,item=None):
+    values=body.model_dump()
+    values['name']=values['name'].strip()
+    values['category']=values['category'].strip()
+    if not values['name'] or not values['category']: raise HTTPException(422,'Укажите название и категорию')
+    if any(other.id!=(item.id if item else None) and other.name.casefold()==values['name'].casefold() and other.category.casefold()==values['category'].casefold()
+           for other in db.scalars(select(ElementType).where(ElementType.active.is_(True)))):
+        raise HTTPException(409,'Позиция с таким названием уже существует в этой категории')
+    for key in ('quantity','length','ip','voltage','keys'):
+        if key not in values['defaults']: continue
+        try:
+            value=float(values['defaults'][key])
+            if not math.isfinite(value) or value<0 or value>1000000 or key in ('quantity','keys','ip') and not value.is_integer(): raise ValueError()
+            if key=='ip' and value>69: raise ValueError()
+        except (ValueError,TypeError): raise HTTPException(422,f'Некорректный параметр: {key}')
+    if item:
+        used=db.scalar(select(Element.id).where(Element.type_id==item.id).limit(1)) or db.scalar(select(Product.id).where(Product.type_id==item.id).limit(1))
+        if used and (values['unit']!=item.unit or values['category']!=item.category):
+            raise HTTPException(409,'Категория и единица измерения используемой позиции защищены; создайте новую позицию')
+        if is_power_supply(item) and (values['unit']!='шт' or values['category']!='LED-подсветка'):
+            raise HTTPException(422,'Для блока питания используйте категорию LED-подсветка и единицу шт')
+    return values
 
 @app.post('/api/types',status_code=201)
 def add_type(body: TypeInput, db: DbSession = Depends(session)):
-    t=ElementType(**body.model_dump()); db.add(t); db.commit()
+    t=ElementType(**type_values(db,body)); db.add(t); db.commit()
     return data(t)
+
+@app.put('/api/types/{type_id}')
+def edit_type(type_id: int, body: TypeInput, db: DbSession = Depends(session)):
+    item=require(db,ElementType,type_id)
+    for key,value in type_values(db,body,item).items(): setattr(item,key,value)
+    db.commit()
+    return data(item)
+
+@app.delete('/api/types/{type_id}')
+def remove_type(type_id: int, db: DbSession = Depends(session)):
+    item=require(db,ElementType,type_id)
+    item.active=False
+    db.commit()
+    return data(item)
 
 @app.get('/api/catalog')
 def catalog(db: DbSession = Depends(session)):
@@ -522,6 +570,7 @@ def edit_supplier(item_id: int, body: SupplierInput, db: DbSession = Depends(ses
 def add_product(body: ProductInput, db: DbSession = Depends(session)):
     require(db,Manufacturer,body.manufacturer_id)
     typ=require(db,ElementType,body.type_id)
+    if not typ.active: raise HTTPException(409,'Сначала восстановите позицию в библиотеке')
     if body.unit != typ.unit: raise HTTPException(422,'Единица товара должна совпадать с типом элемента')
     if body.supplier_id is not None: require(db,Supplier,body.supplier_id)
     item=Product(**body.model_dump()); db.add(item); db.commit(); return catalog_product(db,item)
@@ -529,12 +578,22 @@ def add_product(body: ProductInput, db: DbSession = Depends(session)):
 @app.put('/api/products/{product_id}')
 def edit_product(product_id: int, body: ProductInput, db: DbSession = Depends(session)):
     item=require(db,Product,product_id)
+    if (body.type_id!=item.type_id or body.unit!=item.unit) and db.scalar(select(Element.id).where(Element.product_id==product_id).limit(1)):
+        raise HTTPException(409,'Тип и единица измерения используемого товара защищены')
     require(db,Manufacturer,body.manufacturer_id)
     typ=require(db,ElementType,body.type_id)
+    if not typ.active and body.type_id!=item.type_id: raise HTTPException(409,'Сначала восстановите позицию в библиотеке')
     if body.unit != typ.unit: raise HTTPException(422,'Единица товара должна совпадать с типом элемента')
     if body.supplier_id is not None: require(db,Supplier,body.supplier_id)
     for key,value in body.model_dump().items(): setattr(item,key,value)
     db.commit(); return catalog_product(db,item)
+
+@app.delete('/api/products/{product_id}')
+def remove_product(product_id: int, db: DbSession = Depends(session)):
+    item=require(db,Product,product_id)
+    item.active=False
+    db.commit()
+    return catalog_product(db,item)
 
 @app.get('/api/catalog/import-template.csv')
 def catalog_import_template():
@@ -567,7 +626,7 @@ async def import_catalog(file: UploadFile, db: DbSession = Depends(session)):
     required={'name','type','manufacturer','price'}
     if not required.issubset(headers):
         raise HTTPException(422,'Обязательные столбцы: name, type, manufacturer, price')
-    types_by_name={item.name.strip().casefold():item for item in db.scalars(select(ElementType))}
+    types_by_name={item.name.strip().casefold():item for item in db.scalars(select(ElementType).where(ElementType.active.is_(True)))}
     manufacturers={item.name.strip().casefold():item for item in db.scalars(select(Manufacturer))}
     suppliers={item.name.strip().casefold():item for item in db.scalars(select(Supplier))}
     created=updated=0
@@ -651,7 +710,7 @@ def backup_project(pid: int, db: DbSession = Depends(session)):
             backup_id=item.id,name=item.name,wet=item.wet,
             page_backup_id=item.page_id,polygon=item.polygon,
         ) for item in rooms],
-        types=[BackupType(backup_id=item.id,name=item.name,category=item.category,unit=item.unit,color=item.color,defaults=item.defaults,wet_min_ip=item.wet_min_ip) for item in types],
+        types=[BackupType(active=item.active,power_supply=is_power_supply(item),backup_id=item.id,name=item.name,category=item.category,unit=item.unit,color=item.color,defaults=item.defaults,wet_min_ip=item.wet_min_ip) for item in types],
         products=[BackupProduct(
             backup_id=item.id,type_backup_id=item.type_id,name=item.name,sku=item.sku,
             manufacturer=require(db,Manufacturer,item.manufacturer_id).name,
@@ -770,9 +829,9 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
         type_map={}
         for item in manifest.types:
             candidates=db.scalars(select(ElementType).where(ElementType.name==item.name,ElementType.category==item.category,ElementType.unit==item.unit))
-            obj=next((candidate for candidate in candidates if candidate.color==item.color and candidate.defaults==item.defaults and candidate.wet_min_ip==item.wet_min_ip),None)
+            obj=next((candidate for candidate in candidates if candidate.color==item.color and candidate.defaults==item.defaults and candidate.wet_min_ip==item.wet_min_ip and candidate.active==item.active and is_power_supply(candidate)==(item.power_supply or item.category=='LED-подсветка' and 'блок питания' in item.name.casefold())),None)
             if obj is None:
-                obj=ElementType(name=item.name,category=item.category,unit=item.unit,color=item.color,defaults=item.defaults,wet_min_ip=item.wet_min_ip)
+                obj=ElementType(name=item.name,category=item.category,unit=item.unit,color=item.color,defaults=item.defaults,wet_min_ip=item.wet_min_ip,active=item.active,seed_key=f"power-supply:{uuid.uuid4().hex}" if item.power_supply else None)
                 db.add(obj); db.flush()
             type_map[item.backup_id]=obj
         product_map={}
@@ -1068,7 +1127,7 @@ def edit_element(eid: int, body: ElementInput, db: DbSession = Depends(session))
     if not is_led_strip(require(db,ElementType,body.type_id)) and any(item.parameters.get('led_strip_id')==eid for item in db.scalars(select(Element).where(Element.project_id==e.project_id))):
         raise HTTPException(409,'Этот элемент связан с блоком питания: сначала переназначьте блок питания')
     old_frame_group=e.parameters.get('frame_group')
-    values=body.model_dump(); values['parameters']=validate_element(db,e.project_id,body)
+    values=body.model_dump(); values['parameters']=validate_element(db,e.project_id,body,existing_type_id=e.type_id,existing_product_id=e.product_id)
     new_frame_group=values['parameters'].get('frame_group')
     automatic_room=room_at_point(db,e.project_id,body.page_id,body.x,body.y)
     if automatic_room: values['room_id']=automatic_room.id

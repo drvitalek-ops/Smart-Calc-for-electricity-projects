@@ -192,7 +192,7 @@ footer{display:flex;justify-content:space-between;padding:16px 28px;color:#8a97a
 .welcome h2{font-size:60px;line-height:1.1;letter-spacing:-3px;margin:25px 0}
 .welcome p{max-width:500px;font-size:16px;line-height:1.8;color:#7c8996}
 .steps{margin-top:55px;color:#2d766b}
-.modal-backdrop{position:fixed;inset:0;z-index:20;background:#13212dcc;display:flex;align-items:center;justify-content:center;padding:24px}
+.modal-backdrop{position:fixed;inset:0;z-index:400;background:#13212dcc;display:flex;align-items:center;justify-content:center;padding:24px}
 .catalog-modal{background:#f8fafb;border-radius:12px;width:min(1120px,100%);max-height:calc(100vh - 48px);overflow:auto;padding:24px;box-shadow:0 24px 80px #0005}
 .catalog-title{display:flex;justify-content:space-between;align-items:flex-start}
 .catalog-title h2{font-size:25px;margin:5px 0 18px}
@@ -281,3 +281,12 @@ footer{flex-direction:column;gap:6px}
 .summary-category p>span{overflow-wrap:anywhere}
 
 .summary-category h4{overflow-wrap:anywhere}
+.saved-room-contour{pointer-events:none}
+.saved-room-contour polygon{fill:#0ea5e908;stroke:#0284c7;stroke-width:1.5;vector-effect:non-scaling-stroke}
+.saved-room-contour text{font-size:13px;font-weight:700;fill:#0369a1;stroke:white;stroke-width:3;paint-order:stroke}
+.room-polygon-editor polygon{pointer-events:none}
+.room-polygon-editor ellipse{fill:white;stroke:#15803d;stroke-width:2;vector-effect:non-scaling-stroke;cursor:move}
+.room-polygon-editor .room-edge-handle{fill:#d1fae5;stroke:#16a34a;cursor:copy}
+.room-polygon-editor .room-close-node{stroke-width:3}
+
+.supply-modal{max-width:620px}.supply-modal form{display:grid;gap:16px}.supply-modal>button{margin-top:12px}

@@ -1,6 +1,7 @@
 """Quantity summaries shared by the report screen, PDF and Excel."""
 import json
 from collections import defaultdict
+from .nomenclature import nomenclature_key
 
 CATEGORY_ORDER = {name: index for index, name in enumerate((
     'Электроустановки', 'Рамки', 'Умные устройства', 'Освещение',
@@ -20,7 +21,7 @@ def summarize_categories(rows):
     categories = []
     for category in sorted(grouped, key=lambda name: (CATEGORY_ORDER.get(name, 99), name.casefold())):
         items = [{'name': name, 'unit': unit, 'quantity': round(quantity, 3)}
-                 for (name, unit), quantity in sorted(grouped[category].items(), key=lambda item: (item[0][0].casefold(), item[0][1]))
+                 for (name, unit), quantity in sorted(grouped[category].items(), key=lambda item: (nomenclature_key(item[0][0]), item[0][1]))
                  if round(quantity, 3) > 0]
         if not items:
             continue

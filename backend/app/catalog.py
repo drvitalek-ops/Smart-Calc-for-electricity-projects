@@ -23,6 +23,23 @@ SMART_DEVICE_COLORS = {
     'Zigbee координатор':'#475569',
 }
 
+# Standard momentary mechanisms; contact behaviour is explicit in the catalogue.
+MOMENTARY_SWITCH_DEFAULTS = {}
+for keys,prefix in ((1,'одноклавишный'),(2,'двухклавишный'),(3,'трехклавишный')):
+    for contact in ('НО','НЗ','НО/НЗ'):
+        MOMENTARY_SWITCH_DEFAULTS[f'Звонковый выключатель {prefix} ({contact})'] = {
+            'keys':keys,'contact_type':contact,'switch_action':'Самовозвратный',
+        }
+    MOMENTARY_SWITCH_DEFAULTS[f'Звонковый выключатель {prefix} с подсветкой'] = {
+        'keys':keys,'contact_type':'НО','switch_action':'Самовозвратный','backlight':'Да',
+    }
+MOMENTARY_SWITCH_DEFAULTS.update({
+    'Звонковый выключатель с символом звонка': {'keys':1,'contact_type':'НО','switch_action':'Самовозвратный'},
+    'Звонковый выключатель влагозащищенный IP44': {'keys':1,'contact_type':'НО','switch_action':'Самовозвратный','ip':44},
+    'Звонковый выключатель влагозащищенный IP55': {'keys':1,'contact_type':'НО','switch_action':'Самовозвратный','ip':55},
+    'Выключатель самовозвратный для жалюзи, двухклавишный': {'keys':2,'contact_type':'НО','switch_action':'Самовозвратный','control':'Вверх / вниз'},
+})
+
 ELECTRICAL_COLORS = {
     'Розетка одинарная':'#f97316',
     'Розетка двойная':'#ea580c',
@@ -43,6 +60,9 @@ ELECTRICAL_COLORS = {
     'Влагозащищенная розетка':'#dc2626',
 }
 
+ELECTRICAL_COLORS.update({name: {1:"#15803d",2:"#16a34a",3:"#22c55e"}[values["keys"]]
+                          for name,values in MOMENTARY_SWITCH_DEFAULTS.items()})
+
 def seed(db):
     groups = [
         ('Электроустановки', list(ELECTRICAL_COLORS), '#fb923c', 44),
@@ -53,6 +73,7 @@ def seed(db):
     for category, names, color, ip in groups:
         for name in names:
             defaults={'quantity':1,'ip':44 if name=='Влагозащищенная розетка' else 20}
+            defaults.update(MOMENTARY_SWITCH_DEFAULTS.get(name,{}))
             existing=db.scalar(select(ElementType).where(ElementType.name==name,ElementType.category==category))
             if existing:
                 if category=='Электроустановки' and 'frame_posts' in existing.defaults:
@@ -62,6 +83,7 @@ def seed(db):
                 continue
             db.add(ElementType(name=name, category=category, color=ELECTRICAL_COLORS.get(name,SMART_DEVICE_COLORS.get(name,color)), wet_min_ip=ip, defaults=defaults))
     extras = [
+        dict(name='Блок питания LED-ленты',category='LED-подсветка',unit='шт',color='#dc2626',defaults={'quantity':1}),
         dict(name='Трек',category='Освещение',unit='м',color='#facc15',defaults={'length':1,'track_type':'магнитный','color':'черный','mount':'накладной','connectors':0,'end_caps':2}),
         dict(name='LED-линия',category='LED-подсветка',unit='м',color='#34d399',wet_min_ip=65,defaults={'length':1,'zone':'','strip_type':'','voltage':24,'ip':20,'profile':'','control':''}),
         dict(name='Электрокарниз',category='Электрокарнизы',color='#60a5fa',defaults={'quantity':1,'length':1,'control':'Zigbee'}),

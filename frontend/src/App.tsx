@@ -194,6 +194,8 @@ async function api<T>(
   return r.status === 204 ? (undefined as T) : r.json();
 }
 const labels: Record<string, string> = {
+  power_watts: "Мощность, Вт",
+  led_strip: "Питает ленту",
   quantity: "Количество",
   length: "Длина, м",
   ip: "Степень IP",
@@ -208,6 +210,10 @@ const labels: Record<string, string> = {
   connectors: "Соединители",
   end_caps: "Заглушки",
   frame_posts: "Постов в рамке",
+  keys: "Клавиш",
+  contact_type: "Контакт",
+  switch_action: "Механизм",
+  backlight: "Подсветка",
 };
 const symbolScaleKey = (projectId: number) =>
   `smart-home-calc:symbol-scale:${projectId}`;
@@ -229,6 +235,12 @@ function sameItem(first: Item, second: Item) {
 }
 function isElectrical(kind?: Kind) {
   return kind?.category === "Электроустановки";
+}
+function isPowerSupply(kind?: Kind) {
+  return kind?.category === "LED-подсветка" && kind.name.toLocaleLowerCase().includes("блок питания");
+}
+function isLedStrip(kind?: Kind) {
+  return kind?.category === "LED-подсветка" && kind.unit === "м";
 }
 function isTrack(kind?: Kind) {
   return kind?.name.toLocaleLowerCase().includes("трек") ?? false;
@@ -267,7 +279,9 @@ function nearestVertex(point: Point, polygon: Point[]) {
   });
   return { index, distance };
 }
-function nearestSegmentInsertion(point: Point, polygon: Point[]) {
+function nearestSegmentInsertion(point: Point, polygon: Point[], dimensions = { x: 1, y: 1 }) {
+  point = { x: point.x * dimensions.x, y: point.y * dimensions.y };
+  polygon = polygon.map(vertex => ({ x: vertex.x * dimensions.x, y: vertex.y * dimensions.y }));
   let insertion = polygon.length,
     distance = Infinity;
   for (let index = 0; index < polygon.length; index++) {
@@ -300,12 +314,19 @@ function orientation(a: Point, b: Point, c: Point) {
   return Math.abs(value) < 1e-10 ? 0 : value > 0 ? 1 : 2;
 }
 function segmentsIntersect(a: Point, b: Point, c: Point, d: Point) {
-  return (
-    orientation(a, b, c) !== orientation(a, b, d) &&
-    orientation(c, d, a) !== orientation(c, d, b)
-  );
+  const on = (p: Point, q: Point, r: Point) => orientation(p, q, r) === 0 &&
+    r.x >= Math.min(p.x, q.x) - 1e-10 && r.x <= Math.max(p.x, q.x) + 1e-10 &&
+    r.y >= Math.min(p.y, q.y) - 1e-10 && r.y <= Math.max(p.y, q.y) + 1e-10;
+  return (orientation(a, b, c) !== orientation(a, b, d) &&
+    orientation(c, d, a) !== orientation(c, d, b)) ||
+    on(a, b, c) || on(a, b, d) || on(c, d, a) || on(c, d, b);
 }
 function polygonSelfIntersects(points: Point[]) {
+  const area = points.reduce((sum, point, index) => {
+    const next = points[(index + 1) % points.length];
+    return sum + point.x * next.y - next.x * point.y;
+  }, 0);
+  if (Math.abs(area) <= 1e-10 || new Set(points.map(point => `${point.x}:${point.y}`)).size !== points.length) return true;
   for (let first = 0; first < points.length; first++) {
     const firstNext = (first + 1) % points.length;
     for (let second = first + 1; second < points.length; second++) {
@@ -330,7 +351,9 @@ function PointMarker({
   color,
   selected,
   icon,
+  powerSupply = false,
 }: {
+  powerSupply?: boolean;
   scale: number;
   color: string;
   selected: boolean;
@@ -342,7 +365,7 @@ function PointMarker({
         <>
           <circle
             className="selection-halo"
-            r={24 * scale}
+            r={(powerSupply ? 32 : 24) * scale}
             fill="#38bdf8"
             fillOpacity=".2"
             stroke="#0284c7"
@@ -351,7 +374,7 @@ function PointMarker({
           />
           <circle
             className="selection-ring"
-            r={17 * scale}
+            r={(powerSupply ? 26 : 17) * scale}
             fill="none"
             stroke="white"
             strokeWidth="3"
@@ -359,13 +382,13 @@ function PointMarker({
           />
         </>
       )}
-      <circle
+      {powerSupply ? <rect className="power-supply-symbol" x={-22*scale} y={-8*scale} width={44*scale} height={16*scale} rx={2*scale} fill="#dc2626" stroke={selected ? "#0f172a" : "white"} strokeWidth={selected ? 5 : 3} vectorEffect="non-scaling-stroke" /> : <circle
         r={12 * scale}
         fill={color}
         stroke={selected ? "#0f172a" : "white"}
         strokeWidth={selected ? 5 : 3}
         vectorEffect="non-scaling-stroke"
-      />
+      />}
       {icon && (
         <text
           className="custom-icon"
@@ -396,8 +419,8 @@ function makeLegend(
     const kind = types.find((type) => type.id === item.type_id);
     if (!kind) continue;
     const icon = String(item.parameters.plan_icon ?? "").trim(),
-      symbol = icon || (isTrack(kind) ? "➜" : kind.unit === "м" ? "━" : "●"),
-      color = String(item.parameters.plan_color ?? kind.color),
+      symbol = isPowerSupply(kind) ? "▭" : icon || (isTrack(kind) ? "➜" : kind.unit === "м" ? "━" : "●"),
+      color = isPowerSupply(kind) ? "#dc2626" : String(item.parameters.plan_color ?? kind.color),
       key = `${kind.id}:${symbol}:${color}`;
     entries.set(key, { key, name: kind.name, color, symbol });
     if (item.parameters.frame_group) {
@@ -411,7 +434,10 @@ function makeLegend(
       });
     }
   }
-  return [...entries.values()];
+  return [...entries.values()].sort((a,b) => {
+    const rank=(name:string) => { const index=types.findIndex(type => type.name === name); return index < 0 ? types.length : index; };
+    return rank(a.name)-rank(b.name) || a.name.localeCompare(b.name,"ru",{numeric:true});
+  });
 }
 function CatalogManager({
   catalog,
@@ -858,6 +884,9 @@ export default function App() {
   const [leftPanelVisible, setLeftPanelVisible] = useState(true),
     [rightPanelVisible, setRightPanelVisible] = useState(true),
     [checkedPageIds, setCheckedPageIds] = useState<number[]>([]);
+  const [supplyPlacement, setSupplyPlacement] = useState<{body: Record<string, unknown>; stripId: string; watts: string; editId?: number} | null>(null);
+  const [lineRedo, setLineRedo] = useState<Point[]>([]);
+  const pendingHistory = useRef<boolean[]>([]);
   const [linePoints, setLinePoints] = useState<Point[]>([]),
     [lineCursor, setLineCursor] = useState<Point | null>(null),
     [calibrationStart, setCalibrationStart] = useState<Point | null>(null);
@@ -866,6 +895,11 @@ export default function App() {
     current: Point;
     additive: boolean;
   } | null>(null);
+  const [roomUndo, setRoomUndo] = useState<Point[][]>([]),
+    [roomRedo, setRoomRedo] = useState<Point[][]>([]),
+    [showRoomContours, setShowRoomContours] = useState(true),
+    [roomSnap, setRoomSnap] = useState(true);
+  const roomDragStart = useRef<Point[] | null>(null);
   const [roomMode, setRoomMode] = useState<"new" | "edit" | null>(null),
     [roomPoints, setRoomPoints] = useState<Point[]>([]),
     [roomCursor, setRoomCursor] = useState<Point | null>(null),
@@ -991,6 +1025,8 @@ export default function App() {
     setTypeEditorOpen(false);
     setView("plan");
     setCheckedPageIds([]);
+    setSupplyPlacement(null);
+    pendingHistory.current = [];
     setAlignPageId(null);
     setAlignOriginal(null);
     setRoomMode(null);
@@ -999,6 +1035,7 @@ export default function App() {
     setRoomMenu(null);
     setRoomPointMenu(null);
     setLinePoints([]);
+    setLineRedo([]);
     setLineCursor(null);
     setCalibrationStart(null);
     setElementsVisible(true);
@@ -1023,28 +1060,31 @@ export default function App() {
     );
     await refresh(project!.id);
   }
+  function stripLabel(item: Item) {
+    const sheet=project?.pages.find(sheet => sheet.id === item.page_id);
+    const room=project?.rooms.find(room => room.id === item.room_id);
+    return `LED-линия №${item.id} · ${room?.name ?? "Без помещения"} · ${Number(item.parameters.length ?? 0).toLocaleString("ru-RU")} м · ${sheet?.name || `Лист ${sheet?.number}`}`;
+  }
   async function removeSelected() {
-    for (const id of selectedIds.length
-      ? selectedIds
-      : selected
-        ? [selected.id]
-        : [])
+    const ids = selectedIds.length ? selectedIds : selected ? [selected.id] : [];
+    // Remove dependent supplies before their strips when both are selected.
+    for (const id of [...ids].sort((a,b) => Number(Boolean(project?.elements.find(item => item.id === b)?.parameters.led_strip_id)) - Number(Boolean(project?.elements.find(item => item.id === a)?.parameters.led_strip_id))))
       await api(`/elements/${id}`, "DELETE");
     setSelected(null);
     setSelectedIds([]);
     setTypeEditorOpen(false);
     await refresh(project!.id);
   }
-  async function undoLast() {
+  async function undoLast(redo = false) {
     if (!project) return;
     const stored =
       selected && project.elements.find((item) => item.id === selected.id);
-    if (selected && stored && !sameItem(selected, stored)) {
+    if (!redo && selected && stored && !sameItem(selected, stored)) {
       setSelected(stored);
       return;
     }
     const result = await api<{ undone: boolean }>(
-      `/projects/${project.id}/elements/undo`,
+      `/projects/${project.id}/elements/${redo ? "redo" : "undo"}`,
       "POST",
     );
     if (!result.undone) return;
@@ -1077,17 +1117,37 @@ export default function App() {
         setElementsVisible((value) => !value);
         return;
       }
+      if (event.key === "Escape" && supplyPlacement) {
+        setSupplyPlacement(null);
+        return;
+      }
       if (event.key === "Escape" && alignPageId) {
         cancelAlignment();
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+      const target = event.target as HTMLElement | null;
+      if ((event.ctrlKey || event.metaKey) && ["z", "y", "я", "н"].includes(event.key.toLowerCase())) {
+        if (target?.matches('input:not([type="checkbox"]):not([type="range"]),textarea,[contenteditable="true"]')) return;
         if (roomMode) return;
         event.preventDefault();
-        if (!busy) void run(undoLast);
+        const redo = event.shiftKey || ["y", "н"].includes(event.key.toLowerCase());
+        if (supplyPlacement) { setSupplyPlacement(null); return; }
+        if (alignPageId) { cancelAlignment(); return; }
+        if (calibrationStart) { setCalibrationStart(null); return; }
+        if (placing && kind?.unit === "м" && (linePoints.length || lineRedo.length)) {
+          if (redo) {
+            const point = lineRedo.at(-1);
+            if (point) { setLinePoints([...linePoints,point]); setLineRedo(lineRedo.slice(0,-1)); }
+          } else if (linePoints.length) {
+            setLineRedo([...lineRedo,linePoints.at(-1)!]); setLinePoints(linePoints.slice(0,-1));
+          }
+          setLineCursor(null);
+          return;
+        }
+        if (busy) { pendingHistory.current.push(redo); pendingHistory.current = pendingHistory.current.slice(-50); }
+        else void run(() => undoLast(redo));
         return;
       }
-      const target = event.target as HTMLElement | null;
       if (
         event.key !== "Delete" ||
         (!selected && selectedIds.length === 0) ||
@@ -1100,7 +1160,13 @@ export default function App() {
     }
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [selected, selectedIds, busy, project, alignPageId, roomMode]);
+  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyPlacement]);
+  useEffect(() => {
+    if (!busy && pendingHistory.current.length) {
+      const redo = pendingHistory.current.shift()!;
+      void run(() => undoLast(redo));
+    }
+  }, [busy, selected, project]);
   useEffect(() => {
     function wheel(event: WheelEvent) {
       if (!event.ctrlKey) return;
@@ -1142,6 +1208,7 @@ export default function App() {
       });
       setSelected(item);
       setLinePoints([]);
+      setLineRedo([]);
       setLineCursor(null);
       await refresh(project.id);
     });
@@ -1258,7 +1325,30 @@ export default function App() {
     setSelected(null);
     setSelectedIds([]);
   }
+  function changeRoomPoints(points: Point[]) {
+    if (points.length > 1000) { setError("В контуре допускается до 1000 вершин"); return; }
+    setRoomUndo(history => [...history, roomPoints]);
+    setRoomRedo([]);
+    setRoomPoints(points);
+  }
+  function undoRoomPoint(redo = false) {
+    const history = redo ? roomRedo : roomUndo;
+    const points = history.at(-1);
+    if (!points) return;
+    if (redo) {
+      setRoomRedo(history.slice(0, -1));
+      setRoomUndo(history => [...history, roomPoints]);
+    } else {
+      setRoomUndo(history.slice(0, -1));
+      setRoomRedo(history => [...history, roomPoints]);
+    }
+    setRoomPoints(points);
+    setRoomCursor(null);
+  }
   function cancelRoom() {
+    setRoomUndo([]);
+    setRoomRedo([]);
+    roomDragStart.current = null;
     setRoomMode(null);
     setRoomPoints([]);
     setRoomCursor(null);
@@ -1298,7 +1388,7 @@ export default function App() {
         !roomMode ||
         busy ||
         (event.target as HTMLElement | null)?.matches(
-          'input,textarea,select,[contenteditable="true"]',
+          'input:not([type="checkbox"]):not([type="range"]),textarea,[contenteditable="true"]',
         )
       )
         return;
@@ -1310,17 +1400,22 @@ export default function App() {
         void run(finishRoom);
       } else if (
         event.key === "Backspace" ||
-        (event.ctrlKey && event.key.toLowerCase() === "z")
+        ((event.ctrlKey || event.metaKey) && ["z", "я"].includes(event.key.toLowerCase()))
       ) {
         event.preventDefault();
-        setRoomPoints((points) => points.slice(0, -1));
-        setRoomCursor(null);
+        undoRoomPoint(event.shiftKey);
+      } else if ((event.ctrlKey || event.metaKey) && ["y", "н"].includes(event.key.toLowerCase())) {
+        event.preventDefault();
+        undoRoomPoint(true);
       }
     }
     window.addEventListener("keydown", roomKeys);
     return () => window.removeEventListener("keydown", roomKeys);
-  }, [roomMode, roomPoints, busy, project, page, editingRoomId]);
+  }, [roomMode, roomPoints, roomUndo, roomRedo, busy, project, page, editingRoomId]);
   function editRoomArea(room: Room) {
+    setRoomUndo([]);
+    setRoomRedo([]);
+    setCalibrating(false);
     setPageId(room.page_id);
     setRoomMode("edit");
     setEditingRoomId(room.id);
@@ -1331,6 +1426,7 @@ export default function App() {
     setObjectMenu(null);
     setPlacing(false);
     setLinePoints([]);
+    setLineRedo([]);
   }
   async function renameRoom(room: Room) {
     const name = prompt("Название помещения", room.name)?.trim();
@@ -1377,13 +1473,25 @@ export default function App() {
       ),
     };
   }
-  function roomCandidate(point: Point, orthogonal = false) {
-    const candidate = sourcePoint(point, page!.id),
-      last = roomPoints.at(-1);
-    if (!orthogonal || !last) return candidate;
-    return Math.abs(candidate.x - last.x) >= Math.abs(candidate.y - last.y)
-      ? { x: candidate.x, y: last.y }
-      : { x: last.x, y: candidate.y };
+  function roomCandidate(point: Point, orthogonal = false, moving: number | null = null) {
+    let candidate = sourcePoint(point, page!.id);
+    const anchor = moving === null ? roomPoints.at(-1) : roomPoints[(moving - 1 + roomPoints.length) % roomPoints.length];
+    const width = 850 * zoom * (page?.scale ?? 1), height = width * page!.height / page!.width;
+    if (orthogonal && anchor) {
+      candidate = Math.abs((candidate.x - anchor.x) * width) >= Math.abs((candidate.y - anchor.y) * height)
+        ? { x: candidate.x, y: anchor.y } : { x: anchor.x, y: candidate.y };
+    }
+    if (roomSnap) {
+      const vertices = [
+        ...roomPoints.filter((_, index) => index !== moving && (moving !== null || index !== roomPoints.length - 1)),
+        ...(project?.rooms.filter(room => room.page_id === page!.id && room.id !== editingRoomId)
+          .flatMap(room => room.polygon ?? []) ?? []),
+      ];
+      const target = vertices.find(vertex => Math.hypot((vertex.x - candidate.x) * width, (vertex.y - candidate.y) * height) <= 8 &&
+        (!orthogonal || !anchor || vertex.x === anchor.x || vertex.y === anchor.y));
+      if (target) candidate = target;
+    }
+    return candidate;
   }
   function showObjectMenu(item: Item, event: React.MouseEvent<SVGGElement>) {
     event.preventDefault();
@@ -1417,6 +1525,7 @@ export default function App() {
     setTypeEditorOpen(false);
     setPlacing(false);
     setLinePoints([]);
+    setLineRedo([]);
     setLineCursor(null);
   }
   function focusItem(item: Item) {
@@ -1487,6 +1596,16 @@ export default function App() {
       ]) {
         if (key in selected.parameters)
           parameters[key] = selected.parameters[key];
+      }
+    }
+    if (isPowerSupply(nextKind)) {
+      if (isPowerSupply(currentKind)) {
+        parameters.led_strip_id = selected.parameters.led_strip_id;
+        if (selected.parameters.power_watts) parameters.power_watts = selected.parameters.power_watts;
+      } else {
+        const strips=project?.elements.filter(item => isLedStrip(types.find(type => type.id === item.type_id))) ?? [];
+        setSupplyPlacement({body:{...selected,type_id:typeId,product_id:null,parameters,geometry:{}},editId:selected.id,stripId:String(strips.find(item => item.page_id===selected.page_id)?.id ?? strips[0]?.id ?? ""),watts:""});
+        return;
       }
     }
     setSelected({ ...selected, type_id: typeId, product_id: null, parameters });
@@ -1788,6 +1907,7 @@ export default function App() {
                     onChange={(e) => {
                       setTypeId(+e.target.value);
                       setLinePoints([]);
+                      setLineRedo([]);
                       setLineCursor(null);
                     }}
                   >
@@ -1834,6 +1954,7 @@ export default function App() {
                       setCalibrating(false);
                       setCalibrationStart(null);
                       setLinePoints([]);
+                      setLineRedo([]);
                       setLineCursor(null);
                     }}
                   >
@@ -1857,6 +1978,7 @@ export default function App() {
                       className="danger"
                       onClick={() => {
                         setLinePoints([]);
+                        setLineRedo([]);
                         setLineCursor(null);
                       }}
                     >
@@ -1986,20 +2108,21 @@ export default function App() {
                             Замкнуть область · Enter
                           </button>
                           <button
-                            disabled={!roomPoints.length}
-                            onClick={() => {
-                              setRoomPoints((points) => points.slice(0, -1));
-                              setRoomCursor(null);
-                            }}
+                            disabled={!roomUndo.length || busy}
+                            onClick={() => undoRoomPoint()}
                           >
-                            ↶ Последняя точка
+                            ↶ Отменить точку
                           </button>
+                          <button disabled={!roomRedo.length || busy} onClick={() => undoRoomPoint(true)}>↷ Вернуть</button>
+                          <label><input type="checkbox" checked={roomSnap} onChange={event => setRoomSnap(event.target.checked)} /> Привязка углов</label>
                           <button onClick={cancelRoom}>Отмена · Esc</button>
                         </>
                       ) : (
                         <button
                           onClick={() => {
                             setRoomMode("new");
+                            setRoomUndo([]);
+                            setRoomRedo([]);
                             setRoomPoints([]);
                             setRoomCursor(null);
                             setEditingRoomId(null);
@@ -2013,6 +2136,7 @@ export default function App() {
                           ◇ Область помещения
                         </button>
                       ))}
+                    {page && <button aria-pressed={showRoomContours} onClick={() => setShowRoomContours(value => !value)}>Контуры помещений</button>}
                     <button
                       className={elementsVisible ? "" : "active clean-plan-toggle"}
                       aria-pressed={!elementsVisible}
@@ -2054,6 +2178,7 @@ export default function App() {
                           setCalibrationStart(null);
                           setPlacing(false);
                           setLinePoints([]);
+                          setLineRedo([]);
                           setLineCursor(null);
                         }}
                       >
@@ -2189,11 +2314,12 @@ export default function App() {
                         const index = nearestSegmentInsertion(
                           roomPointMenu.point,
                           roomPoints,
+                          { x: page!.width, y: page!.height },
                         );
-                        setRoomPoints((points) => [
-                          ...points.slice(0, index),
+                        changeRoomPoints([
+                          ...roomPoints.slice(0, index),
                           roomPointMenu.point,
-                          ...points.slice(index),
+                          ...roomPoints.slice(index),
                         ]);
                         setRoomPointMenu(null);
                       }}
@@ -2208,9 +2334,7 @@ export default function App() {
                           roomPointMenu.point,
                           roomPoints,
                         ).index;
-                        setRoomPoints((points) =>
-                          points.filter((_, itemIndex) => itemIndex !== index),
-                        );
+                        changeRoomPoints(roomPoints.filter((_, itemIndex) => itemIndex !== index));
                         setRoomPointMenu(null);
                       }}
                     >
@@ -2365,6 +2489,9 @@ export default function App() {
                         />
                       ))}
                       <svg
+                        tabIndex={0}
+                        aria-label="План проекта"
+                        onPointerDownCapture={event => event.currentTarget.focus({preventScroll:true})}
                         viewBox="0 0 1000 1000"
                         preserveAspectRatio="none"
                         className={
@@ -2405,21 +2532,25 @@ export default function App() {
                           setRoomMenu(null);
                           setRoomPointMenu(null);
                           setObjectMenu(null);
-                          if (roomMode) {
+                          if (roomMode && !busy) {
                             const candidate = roomCandidate(pos, e.shiftKey),
                               first =
                                 roomPoints[0] &&
                                 pagePoint(roomPoints[0], page.id);
                             if (
-                              roomPoints.length >= 3 &&
-                              first &&
-                              Math.hypot(pos.x - first.x, pos.y - first.y) <=
-                                Math.max(0.012, 0.018 * symbolScale)
+                              roomMode === "new" && roomPoints.length >= 3 && first &&
+                              Math.hypot((pos.x - first.x) * 850 * zoom,
+                                (pos.y - first.y) * 850 * zoom * page.height / page.width) <= 9
                             ) {
                               void run(finishRoom);
                               return;
                             }
-                            setRoomPoints((points) => [...points, candidate]);
+                            if (roomMode === "edit") {
+                              const index = nearestSegmentInsertion(candidate, roomPoints, { x: page.width, y: page.height });
+                              changeRoomPoints([...roomPoints.slice(0, index), candidate, ...roomPoints.slice(index)]);
+                            } else if (!roomPoints.some(point => point.x === candidate.x && point.y === candidate.y)) {
+                              changeRoomPoints([...roomPoints, candidate]);
+                            }
                             setRoomCursor(candidate);
                             return;
                           }
@@ -2471,7 +2602,13 @@ export default function App() {
                           ) {
                             if (kind.unit === "м") {
                               setLinePoints([...linePoints, pos]);
+                              setLineRedo([]);
                               setLineCursor(pos);
+                              return;
+                            }
+                            if (isPowerSupply(kind)) {
+                              const strips = project.elements.filter(item => isLedStrip(types.find(type => type.id === item.type_id)));
+                              setSupplyPlacement({body:{page_id:page.id,layer_id:layer.id,type_id:kind.id,product_id:null,room_id:roomId,x:pos.x,y:pos.y,geometry:{},parameters:kind.defaults},stripId:String(strips.find(item => item.page_id === page.id)?.id ?? strips[0]?.id ?? ""),watts:""});
                               return;
                             }
                             void run(async () => {
@@ -2516,7 +2653,7 @@ export default function App() {
                             setRoomPoints((points) =>
                               points.map((point, itemIndex) =>
                                 itemIndex === index
-                                  ? sourcePoint(pos, page.id)
+                                  ? roomCandidate(pos, e.shiftKey, index)
                                   : point,
                               ),
                             );
@@ -2563,6 +2700,12 @@ export default function App() {
                         }}
                         onPointerUp={() => {
                           if (roomNodeDrag.current !== null) {
+                            const start = roomDragStart.current;
+                            if (start && JSON.stringify(start) !== JSON.stringify(roomPoints)) {
+                              setRoomUndo(history => [...history, start]);
+                              setRoomRedo([]);
+                            }
+                            roomDragStart.current = null;
                             roomNodeDrag.current = null;
                             return;
                           }
@@ -2638,11 +2781,23 @@ export default function App() {
                           drag.current = null;
                           nodeDrag.current = null;
                           roomNodeDrag.current = null;
+                          if (roomDragStart.current) setRoomPoints(roomDragStart.current);
+                          roomDragStart.current = null;
                           setSelectionBox(null);
                           setLineCursor(null);
                           setRoomCursor(null);
                         }}
                       >
+                        {(showRoomContours || roomMode) && pageRooms.filter(room => room.id !== editingRoomId).map(room => (
+                          <g className="saved-room-contour" key={room.id} data-room-id={room.id}>
+                            <polygon points={room.polygon!.map(point => {
+                              const display = pagePoint(point, room.page_id!);
+                              return `${display.x * 1000},${display.y * 1000}`;
+                            }).join(" ")} />
+                            <text x={pagePoint(room.polygon![0], room.page_id!).x * 1000 + 7}
+                              y={pagePoint(room.polygon![0], room.page_id!).y * 1000 - 8}>{room.name}</text>
+                          </g>
+                        ))}
                         {roomMode && roomPoints.length > 0 && (
                           <g className="room-polygon-editor">
                             <polygon
@@ -2653,7 +2808,7 @@ export default function App() {
                                 })
                                 .join(" ")}
                             />
-                            {roomCursor &&
+                            {roomCursor && roomMode === "new" &&
                               (() => {
                                 const last = pagePoint(
                                     roomPoints.at(-1)!,
@@ -2670,20 +2825,42 @@ export default function App() {
                                   />
                                 );
                               })()}
+                            {roomMode === "edit" && roomPoints.map((point, index) => {
+                              const next = roomPoints[(index + 1) % roomPoints.length];
+                              const midpoint = { x: (point.x + next.x) / 2, y: (point.y + next.y) / 2 };
+                              const display = pagePoint(midpoint, page.id);
+                              const width = 850 * zoom, height = width * page.height / page.width;
+                              return <ellipse className="room-edge-handle" key={`edge-${index}`} aria-label={`Добавить вершину на ребре ${index + 1}`}
+                                cx={display.x * 1000} cy={display.y * 1000} rx={5 * 1000 / width} ry={5 * 1000 / height}
+                                onPointerDown={event => {
+                                  if (event.button !== 0 || busy) return;
+                                  event.preventDefault(); event.stopPropagation();
+                                  const insertion = index + 1;
+                                  changeRoomPoints([...roomPoints.slice(0, insertion), midpoint, ...roomPoints.slice(insertion)]);
+                                  // Insertion has its own undo entry; dragging it continues the same edit.
+                                  roomNodeDrag.current = insertion;
+                                  roomDragStart.current = null;
+                                  event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
+                                }} />;
+                            })}
                             {roomPoints.map((point, index) => {
                               const display = pagePoint(point, page.id),
-                                radius = Math.max(5, 11 * symbolScale);
+                                radius = 7 * 1000 / (850 * zoom),
+                                radiusY = radius * page.width / page.height;
                               return (
                                 <g key={index}>
-                                  <circle
+                                  <ellipse
+                                    aria-label={`Вершина ${index + 1}`}
                                     className={
-                                      index === 0 ? "room-close-node" : ""
+                                      index === 0 ? "room-close-node room-vertex" : "room-vertex"
                                     }
                                     cx={display.x * 1000}
                                     cy={display.y * 1000}
-                                    r={radius}
+                                    rx={radius}
+                                    ry={radiusY}
                                     onPointerDown={(e) => {
-                                      if (e.button !== 0) return;
+                                      if (e.button !== 0 || busy) return;
+                                      e.preventDefault();
                                       e.stopPropagation();
                                       if (
                                         roomMode === "new" &&
@@ -2696,6 +2873,7 @@ export default function App() {
                                       e.currentTarget.ownerSVGElement?.setPointerCapture(
                                         e.pointerId,
                                       );
+                                      roomDragStart.current = roomPoints;
                                       roomNodeDrag.current = index;
                                     }}
                                   />
@@ -2713,8 +2891,8 @@ export default function App() {
                               {editingRoomId
                                 ? `Редактирование: ${project.rooms.find((room) => room.id === editingRoomId)?.name}`
                                 : "Новая область помещения"}{" "}
-                              · точек: {roomPoints.length} · Shift — строго по
-                              оси · клик по точке 1 — замкнуть
+                              · вершин: {roomPoints.length} · Shift — по оси · Enter — сохранить
+                              {roomMode === "edit" ? " · точки на рёбрах — добавить вершину" : " · точка 1 — замкнуть"}
                             </text>
                           </g>
                         )}
@@ -2741,6 +2919,7 @@ export default function App() {
                             vectorEffect="non-scaling-stroke"
                           />
                         ))}
+                        <g className="plan-elements" style={{ pointerEvents: roomMode ? "none" : undefined }}>
                         {visibleElements.map((original) => {
                           const item =
                               selected?.id === original.id
@@ -2867,7 +3046,7 @@ export default function App() {
                                     strokeWidth="3"
                                     paintOrder="stroke"
                                   >
-                                    {t?.name} #{item.id} ·{" "}
+                                    {t?.name} #{item.id}{isPowerSupply(t) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""} ·{" "}
                                     {String(item.parameters.length)} м
                                   </text>
                                 )}
@@ -2912,6 +3091,7 @@ export default function App() {
                             >
                               <PointMarker
                                 scale={symbolScale}
+                                powerSupply={isPowerSupply(t)}
                                 color={String(
                                   item.parameters.plan_color ??
                                     t?.color ??
@@ -2923,7 +3103,7 @@ export default function App() {
                               {labelsVisible && (
                                 <text
                                   className="object-label"
-                                  x={17 * symbolScale}
+                                  x={(isPowerSupply(t) ? 27 : 17) * symbolScale}
                                   y="5"
                                   fontSize="14"
                                   fill="#0f172a"
@@ -2931,12 +3111,13 @@ export default function App() {
                                   strokeWidth="3"
                                   paintOrder="stroke"
                                 >
-                                  {t?.name} #{item.id}
+                                  {t?.name} #{item.id}{isPowerSupply(t) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""}
                                 </text>
                               )}
                             </g>
                           );
                         })}
+                        </g>
                         {selectionBox && (
                           <rect
                             className="selection-box"
@@ -3097,6 +3278,7 @@ export default function App() {
                             setSelected(null);
                             setSelectedIds([]);
                             setLinePoints([]);
+                            setLineRedo([]);
                             setLineCursor(null);
                             setCalibrationStart(null);
                           }}
@@ -3537,6 +3719,16 @@ export default function App() {
                           </span>
                         </label>
                       )}
+                      {isPowerSupply(selectedKind) && <>
+                        <label>Питает LED-ленту<select aria-label="Питает LED-ленту" value={String(selected.parameters.led_strip_id ?? "")} onChange={event => setSelected({...selected,parameters:{...selected.parameters,led_strip_id:Number(event.target.value)}})}>
+                          {project.elements.filter(item => isLedStrip(types.find(type => type.id === item.type_id))).map(item => <option key={item.id} value={item.id}>{stripLabel(item)}</option>)}
+                        </select></label>
+                        <label>Мощность, Вт (необязательно)<input aria-label="Мощность блока питания, Вт" type="number" min="0.01" max="1000000" step="any" value={String(selected.parameters.power_watts ?? "")} onChange={event => {
+                          const parameters={...selected.parameters};
+                          if (event.target.value) parameters.power_watts=Number(event.target.value); else delete parameters.power_watts;
+                          setSelected({...selected,parameters});
+                        }} /></label>
+                      </>}
                       {Object.entries(selected.parameters)
                         .filter(
                           ([key]) =>
@@ -3545,6 +3737,8 @@ export default function App() {
                               "frame_group",
                               "plan_icon",
                               "plan_color",
+                              "led_strip_id",
+                              ...(isPowerSupply(selectedKind) ? ["power_watts"] : []),
                             ].includes(key),
                         )
                         .map(([key, value]) => (
@@ -3719,8 +3913,30 @@ export default function App() {
           )}
         </>
       )}
+      {supplyPlacement && project && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="supply-title">
+        <section className="catalog-modal supply-modal">
+          <h2 id="supply-title">К какой LED-ленте относится блок питания?</h2>
+          {project.elements.some(item => isLedStrip(types.find(type => type.id === item.type_id))) ? <form onSubmit={event => {
+            event.preventDefault();
+            const placement=supplyPlacement;
+            void run(async () => {
+              const parameters={...(placement.body.parameters as Record<string,unknown>),led_strip_id:Number(placement.stripId),...(placement.watts ? {power_watts:Number(placement.watts)} : {})};
+              const item=await api<Item>(placement.editId ? `/elements/${placement.editId}` : `/projects/${project.id}/elements`,placement.editId ? "PUT" : "POST",{...placement.body,parameters});
+              setSelected(item); setSelectedIds([item.id]); setSupplyPlacement(null);
+              await refresh(project.id);
+            });
+          }}>
+            <label>LED-лента<select autoFocus required aria-label="LED-лента блока питания" value={supplyPlacement.stripId} onChange={event => setSupplyPlacement({...supplyPlacement,stripId:event.target.value})}>
+              {project.elements.filter(item => isLedStrip(types.find(type => type.id === item.type_id))).map(item => <option key={item.id} value={item.id}>{stripLabel(item)}</option>)}
+            </select></label>
+            <label>Мощность, Вт (необязательно)<input type="number" aria-label="Мощность при размещении, Вт" min="0.01" max="1000000" step="any" value={supplyPlacement.watts} onChange={event => setSupplyPlacement({...supplyPlacement,watts:event.target.value})} placeholder="Не указана" /></label>
+            <button className="primary" disabled={busy || !supplyPlacement.stripId}>{supplyPlacement.editId ? "Применить" : "Разместить блок питания"}</button>
+          </form> : <p>Сначала разместите LED-ленту на плане, затем добавьте её блок питания.</p>}
+          <button disabled={busy} onClick={() => setSupplyPlacement(null)}>Отмена</button>
+        </section>
+      </div>}
       <footer>
-        <span>SMART HOME CALC / 1.0.29</span>
+        <span>SMART HOME CALC / 1.0.30</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

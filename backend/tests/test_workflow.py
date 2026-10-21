@@ -37,7 +37,7 @@ def test_health_identifies_desktop_backend(client,monkeypatch):
     health=client.get('/api/health')
     assert health.status_code==200
     assert health.json()=={
-        'status':'ok','version':'1.0.29','instance':'test-instance',
+        'status':'ok','version':'1.0.30','instance':'test-instance',
     }
 
 def test_full_workflow_and_exports(client):
@@ -329,6 +329,8 @@ def test_element_actions_can_be_undone_in_order(client):
     assert client.get(f'/api/projects/{pid}').json()['elements'][0]['x']==original_x
     assert client.post(f'/api/projects/{pid}/elements/undo').json()['undone'] is True
     assert client.get(f'/api/projects/{pid}').json()['elements']==[]
+    assert client.post(f'/api/projects/{pid}/elements/undo').json()['undone'] is True
+    assert client.get(f'/api/projects/{pid}').json()['rooms']==[]
     assert client.post(f'/api/projects/{pid}/elements/undo').json()=={'undone':False}
 
 def test_calibrated_geometry_catalog_and_plan_export(client):
@@ -533,8 +535,13 @@ def test_millimeter_calibration_recalculates_existing_lines_in_meters(client):
     report=client.get(f'/api/projects/{pid}/report').json()
     assert all(row['unit']=='м' for row in report['rows'])
     assert next(row for row in report['rows'] if row['name']=='LED-линия')['quantity']==4.5
-    # Old undo snapshots must not put obsolete lengths back after recalibration.
-    assert client.post(f'/api/projects/{pid}/elements/undo').json()=={'undone':False}
+    # Calibration and cached lengths are restored together, then can be reapplied.
+    assert client.post(f'/api/projects/{pid}/elements/undo').json()['undone'] is True
+    before=client.get(f'/api/projects/{pid}').json()
+    assert before['pages'][0]['meters_per_point']==pytest.approx(5/before['pages'][0]['width'])
+    assert next(row for row in client.get(f'/api/projects/{pid}/report').json()['rows'] if row['name']=='LED-линия')['quantity']==7
+    assert client.post(f'/api/projects/{pid}/elements/redo').json()['undone'] is True
+    assert next(row for row in client.get(f'/api/projects/{pid}/report').json()['rows'] if row['name']=='LED-линия')['quantity']==4.5
     for value in (0,-1,10_000_001,'NaN','Infinity'):
         assert client.post(url,json={**calibration,'real_length_mm':value}).status_code==422
     assert client.post(url,json={**calibration,'real_length_m':2.5}).status_code==422
@@ -577,3 +584,139 @@ def test_startup_recalculates_all_projects_without_changing_meter_scales(client)
                 report=reopened.get(f'/api/projects/{pid}/report').json()
                 assert all(row['unit']=='м' for row in report['rows'])
                 assert sum(row['quantity'] for row in report['rows'])==sum(lengths.values())
+
+
+def test_nomenclature_is_grouped_and_momentary_switches_export_as_devices(client):
+    pid,body=setup(client)
+    with main_module.Session() as db:
+        main_module.seed(db)  # Updating an existing catalogue must not duplicate types.
+    kinds=client.get('/api/types').json()
+    from app.catalog import MOMENTARY_SWITCH_DEFAULTS
+    assert len(MOMENTARY_SWITCH_DEFAULTS)==16
+    for name,defaults in MOMENTARY_SWITCH_DEFAULTS.items():
+        matches=[item for item in kinds if item['name']==name and item['category']=='Электроустановки']
+        assert len(matches)==1 and matches[0]['unit']=='шт'
+        assert matches[0]['defaults']['switch_action']=='Самовозвратный'
+        assert all(matches[0]['defaults'][key]==value for key,value in defaults.items())
+    for category in ('Электроустановки','Умные устройства'):
+        names=[item['name'] for item in kinds if item['category']==category]
+        indices=[index for index,name in enumerate(names) if 'диммер' in name.casefold()]
+        assert indices==list(range(min(indices),max(indices)+1))
+        indices=[index for index,name in enumerate(names) if 'выключател' in name.casefold()]
+        assert indices==list(range(min(indices),max(indices)+1))
+    smart=[item['name'] for item in kinds if item['category']=='Умные устройства']
+    assert [name for name in smart if 'диммер' in name]==[
+        'Zigbee диммер','Zigbee диммер двухканальный','Zigbee диммер трехканальный']
+    assert [name for name in smart if 'реле' in name]==[
+        'Zigbee реле одноканальное','Zigbee реле двухканальное','Zigbee реле трехканальное']
+    for count in (3,2,1):
+        assert client.post('/api/types',json={
+            'name':f'Выключатель тест {count}-клавишный','category':'Электроустановки',
+            'unit':'шт','color':'#22c55e','defaults':{'quantity':1},
+        }).status_code==201
+    ordered=[item['name'] for item in client.get('/api/types').json()]
+    assert ordered.index('Выключатель тест 1-клавишный')<ordered.index('Выключатель тест 2-клавишный')<ordered.index('Выключатель тест 3-клавишный')
+    selected=next(item for item in kinds if item['name']=='Звонковый выключатель трехклавишный (НО/НЗ)')
+    project=client.get(f'/api/projects/{pid}').json()
+    body.update(type_id=selected['id'],layer_id=project['layers'][0]['id'],parameters={'quantity':2,'ip':44})
+    response=client.post(f'/api/projects/{pid}/elements',json=body)
+    assert response.status_code==201
+    rows=client.get(f'/api/projects/{pid}/report').json()['rows']
+    assert len(rows)==1 and rows[0]['name']==selected['name'] and rows[0]['quantity']==2
+    xlsx=load_workbook(io.BytesIO(client.get(f'/api/projects/{pid}/export/xlsx').content))
+    assert xlsx['Электроустановки']['H6'].value==2
+    assert 'Механизм: Самовозвратный' in xlsx['Электроустановки']['M6'].value
+    with pymupdf.open(stream=client.get(f'/api/projects/{pid}/export/pdf').content,filetype='pdf') as pdf:
+        content=' '.join(' '.join(page.get_text() for page in pdf).split())
+        assert 'Самовозвратный' in content and 'НО/НЗ' in content
+
+
+def test_concave_room_contours_and_invalid_polygons_are_validated(client):
+    pid,body=setup(client)
+    points=lambda values:[dict(x=x,y=y) for x,y in values]
+    contour=points([(.1,.1),(.6,.1),(.6,.6),(.4,.6),(.4,.3),(.1,.3)])
+    response=client.post(f'/api/projects/{pid}/rooms',json={
+        'name':'Г-образное помещение','page_id':body['page_id'],'polygon':contour,
+    })
+    assert response.status_code==201 and response.json()['polygon']==contour
+    # Extra collinear vertices are permitted when tracing straight wall sections.
+    segmented=points([(.1,.1),(.3,.1),(.6,.1),(.6,.6),(.4,.6),(.4,.3),(.1,.3)])
+    edited=client.put(f"/api/rooms/{response.json()['id']}",json={
+        'name':'Г-образное помещение','page_id':body['page_id'],'polygon':segmented,
+    })
+    assert edited.status_code==200 and len(edited.json()['polygon'])==7
+    invalid=[[(.1,.1),(.5,.5),(.1,.5),(.5,.1)],  # Crossing edges.
+             [(.1,.1),(.2,.2),(.3,.3)],  # No surface area.
+             [(.1,.1),(.5,.1),(.3,.1),(.5,.5),(.1,.5)],  # A wall doubles back.
+             [(.1,.1),(.5,.1),(.5,.5),(.1,.1)]]  # Repeated vertex.
+    for values in invalid:
+        rejected=client.post(f'/api/projects/{pid}/rooms',json={
+            'name':'Некорректный контур','page_id':body['page_id'],'polygon':points(values),
+        })
+        assert rejected.status_code==422
+    rooms=client.get(f'/api/projects/{pid}').json()['rooms']
+    assert not any(room['name']=='Некорректный контур' for room in rooms)
+
+
+def test_power_supplies_link_validation_optional_watts_exports_and_backup(client):
+    pid,body=setup(client)
+    strip=client.post(f'/api/projects/{pid}/elements',json=body).json()
+    kinds=client.get('/api/types').json()
+    supply_type=next(kind for kind in kinds if kind['name']=='Блок питания LED-ленты')
+    supply_body={**body,'type_id':supply_type['id'],'parameters':{'led_strip_id':strip['id']},'x':.65}
+    supply=client.post(f'/api/projects/{pid}/elements',json=supply_body)
+    assert supply.status_code==201
+    supply=supply.json()
+    assert 'power_watts' not in supply['parameters']
+    for params in ({},{'led_strip_id':str(strip['id'])},{'led_strip_id':supply['id']},{'led_strip_id':strip['id'],'power_watts':0},{'led_strip_id':strip['id'],'power_watts':'NaN'}):
+        assert client.post(f'/api/projects/{pid}/elements',json={**supply_body,'parameters':params}).status_code==422
+    foreign_pid,foreign_body=setup(client)
+    foreign_strip=client.post(f'/api/projects/{foreign_pid}/elements',json=foreign_body).json()
+    assert client.post(f'/api/projects/{pid}/elements',json={**supply_body,'parameters':{'led_strip_id':foreign_strip['id']}}).status_code==422
+    supply_body['parameters']['power_watts']=120
+    edited=client.put(f"/api/elements/{supply['id']}",json=supply_body)
+    assert edited.status_code==200 and edited.json()['parameters']['power_watts']==120
+    row=next(row for row in client.get(f'/api/projects/{pid}/report').json()['rows'] if row['name']==supply_type['name'])
+    params=json.loads(row['parameters'])
+    assert params['power_watts']==120 and f"№{strip['id']}" in params['led_strip'] and 'Ванная' in params['led_strip']
+    assert 'led_strip_id' not in params and row['unit']=='шт' and row['quantity']==1
+    xlsx=load_workbook(io.BytesIO(client.get(f'/api/projects/{pid}/export/xlsx').content))
+    text=' '.join(str(cell.value) for sheet in xlsx for row in sheet for cell in row if cell.value)
+    assert 'Мощность, Вт: 120' in text and 'Питает ленту: LED-линия' in text
+    plan=client.get(f"/api/projects/{pid}/pages/{body['page_id']}/export.pdf")
+    with pymupdf.open(stream=plan.content,filetype='pdf') as document:
+        assert any(item[0]=='re' for drawing in document[0].get_drawings() for item in drawing['items'])
+        assert '120 Вт' in document[0].get_text()
+    assert client.delete(f"/api/elements/{strip['id']}").status_code==409
+    socket=next(kind for kind in kinds if kind['name']=='Розетка одинарная')
+    assert client.put(f"/api/elements/{strip['id']}",json={**body,'type_id':socket['id']}).status_code==409
+    client.patch(f"/api/layers/{body['layer_id']}",json={'locked':True})
+    backup=client.get(f'/api/projects/{pid}/backup')
+    restored=client.post('/api/projects/import',files={'file':('project.zip',backup.content,'application/zip')})
+    assert restored.status_code==201,restored.text
+    restored_project=client.get(f"/api/projects/{restored.json()['id']}").json()
+    new_strip=next(item for item in restored_project['elements'] if item['type_id']==strip['type_id'])
+    new_supply=next(item for item in restored_project['elements'] if item['type_id']==supply_type['id'])
+    assert new_strip['id']!=strip['id']
+    assert new_supply['parameters']['led_strip_id']==new_strip['id'] and new_supply['parameters']['power_watts']==120
+
+
+def test_undo_redo_room_changes_restores_assignments_and_new_action_clears_redo(client):
+    pid,body=setup(client)
+    element=client.post(f'/api/projects/{pid}/elements',json=body).json()
+    room_body={'name':'Контур','page_id':body['page_id'],'polygon':[{'x':0,'y':0},{'x':.5,'y':0},{'x':.5,'y':.8},{'x':0,'y':.8}]}
+    room=client.post(f'/api/projects/{pid}/rooms',json=room_body).json()
+    assert client.get(f'/api/projects/{pid}').json()['elements'][0]['room_id']==room['id']
+    assert client.post(f'/api/projects/{pid}/elements/undo').json()['undone']
+    project=client.get(f'/api/projects/{pid}').json()
+    assert len(project['rooms'])==1 and project['elements'][0]['room_id']==element['room_id']
+    assert client.post(f'/api/projects/{pid}/elements/redo').json()['undone']
+    assert len(client.get(f'/api/projects/{pid}').json()['rooms'])==2
+    assert client.delete(f"/api/rooms/{room['id']}").status_code==204
+    assert client.post(f'/api/projects/{pid}/elements/undo').json()['undone']
+    project=client.get(f'/api/projects/{pid}').json()
+    assert project['elements'][0]['room_id']==room['id']
+    assert client.put(f"/api/rooms/{room['id']}",json={**room_body,'name':'Новое имя'}).status_code==200
+    assert client.post(f'/api/projects/{pid}/elements/redo').json()=={'undone':False}
+    assert client.post(f'/api/projects/{pid}/elements/undo').json()['undone']
+    assert any(item['name']=='Контур' for item in client.get(f'/api/projects/{pid}').json()['rooms'])

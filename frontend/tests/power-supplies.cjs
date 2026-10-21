@@ -1,0 +1,80 @@
+// Run with Playwright in NODE_PATH and an isolated backend on port 8014.
+const { chromium } = require('playwright');
+const assert = require('node:assert/strict');
+const frontend = process.env.FRAME_TEST_FRONTEND || 'http://127.0.0.1:5174';
+const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
+(async () => {
+ const browser = await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium',headless:true,args:['--no-sandbox']});
+ try {
+  const context=await browser.newContext({viewport:{width:1800,height:1800}});
+  const page=await context.newPage(), errors=[];
+  page.on('pageerror',error=>errors.push(String(error)));
+  
+  await page.route('**/api/**',route=>route.continue({url:route.request().url().replace(frontend,backend)}));
+  const api=context.request, base=backend+'/api';
+  const pid=(await (await api.post(base+'/projects',{data:{name:'Room contour '+Date.now()}})).json()).id;
+  const sheets=await (await api.post(base+`/projects/${pid}/pdf`,{multipart:{file:{name:'plan.pdf',mimeType:'application/pdf',buffer:Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFIvSW5mbzw8L1Byb2R1Y2VyKE11UERGIDEuMjguMik+Pj4+CmVuZG9iagoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0NvdW50IDEvS2lkc1s0IDAgUl0+PgplbmRvYmoKCjMgMCBvYmoKPDw+PgplbmRvYmoKCjQgMCBvYmoKPDwvVHlwZS9QYWdlL01lZGlhQm94WzAgMCA1OTUgODQyXS9Sb3RhdGUgMC9SZXNvdXJjZXMgMyAwIFIvUGFyZW50IDIgMCBSPj4KZW5kb2JqCgp4cmVmCjAgNQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwNDIgMDAwMDAgbiAKMDAwMDAwMDEyMCAwMDAwMCBuIAowMDAwMDAwMTcyIDAwMDAwIG4gCjAwMDAwMDAxOTMgMDAwMDAgbiAKCnRyYWlsZXIKPDwvU2l6ZSA1L1Jvb3QgMSAwIFIvSURbPEMyOUIyMEMyQjRDMkJDNTZDMzhBMkIxMjE4QzI4M0MyPjwxMUMwRDIyMDM3NzE0QkMxRjgyRDE0RDA3ODUxNUM1Mj5dPj4Kc3RhcnR4cmVmCjI4NAolJUVPRgo=','base64')}}})).json();
+  const sheetId=sheets[0].id;
+  const kinds=await (await api.get(base+'/types')).json();
+  const led=kinds.find(item=>item.name==='LED-линия'), supply=kinds.find(item=>item.name==='Блок питания LED-ленты');
+  const project=await (await api.get(base+`/projects/${pid}`)).json();
+  assert.equal((await api.post(base+`/pages/${sheetId}/calibrate`,{data:{x1:0,y1:0,x2:1,y2:0,real_length_mm:5000}})).status(),200);
+  await page.goto(frontend);await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));
+  const svg=page.locator('.sheet > svg');await svg.waitFor();
+  const click=async(x,y)=>{const rect=await svg.boundingBox();await svg.click({position:{x:rect.width*x,y:rect.height*y}})};
+  const writeResponse=(path,method='POST')=>page.waitForResponse(response=>response.url().endsWith(path)&&response.request().method()===method);
+  await page.getByLabel('Тип элемента',{exact:true}).selectOption(String(supply.id));
+  await page.getByRole('button',{name:'＋ Разместить элемент',exact:true}).click();
+  await click(.7,.2);
+  await page.getByRole('dialog').waitFor();
+  assert.ok(await page.getByRole('dialog').innerText().then(text=>text.includes('Сначала разместите LED-ленту')));
+  await page.getByRole('button',{name:'Отмена',exact:true}).click();
+  assert.equal((await (await api.get(base+`/projects/${pid}`)).json()).elements.length,0);
+  await page.getByLabel('Тип элемента',{exact:true}).selectOption(String(led.id));
+  await click(.1,.5);await click(.4,.5);await click(.8,.5);
+  assert.equal(await page.locator('.line-preview circle').count(),3);
+  await page.keyboard.press('Control+z');assert.equal(await page.locator('.line-preview circle').count(),2);
+  await page.keyboard.press('Control+z');await page.keyboard.press('Control+z');
+  assert.equal(await page.locator('.line-preview').count(),0);
+  await page.keyboard.press('Control+y');await page.keyboard.press('Control+Shift+z');
+  assert.equal(await page.locator('.line-preview circle').count(),2);
+  await click(.8,.5);await page.keyboard.press('Control+z');await page.keyboard.press('Control+y');
+  assert.equal(await page.locator('.line-preview circle').count(),3);
+  let response=writeResponse(`/projects/${pid}/elements`);
+  await page.getByRole('button',{name:'Завершить линию',exact:true}).click();assert.equal((await response).status(),201);
+  await page.locator('.line-preview').waitFor({state:'detached'});
+  await page.getByLabel('Тип элемента',{exact:true}).selectOption(String(supply.id));
+  await click(.7,.2);await page.getByRole('dialog').waitFor();
+  const select=page.getByLabel('LED-лента блока питания',{exact:true});
+  assert.equal(await select.locator('option').count(),1);
+  assert.ok((await select.innerText()).includes('LED-линия №'));
+  await page.getByLabel('Мощность при размещении, Вт',{exact:true}).fill('120');
+  response=writeResponse(`/projects/${pid}/elements`);
+  await page.getByRole('button',{name:'Разместить блок питания',exact:true}).click();assert.equal((await response).status(),201);
+  await page.getByRole('dialog').waitFor({state:'detached'});
+  await page.locator('.power-supply-symbol').waitFor();
+  assert.equal(await page.locator('.power-supply-symbol').getAttribute('fill'),'#dc2626');
+  assert.ok(await page.getByLabel('Питает LED-ленту',{exact:true}).inputValue());
+  let updated=await (await api.get(base+`/projects/${pid}`)).json();
+  let power=updated.elements.find(item=>item.type_id===supply.id);
+  assert.equal(power.parameters.led_strip_id,updated.elements.find(item=>item.type_id===led.id).id);
+  assert.equal(power.parameters.power_watts,120);
+  await page.getByLabel('Мощность блока питания, Вт',{exact:true}).fill('');
+  response=writeResponse(`/elements/${power.id}`,'PUT');assert.equal((await response).status(),200);
+  // Undo from plan focus first restores omitted optional watts, then removes placement.
+  await svg.focus();response=writeResponse(`/projects/${pid}/elements/undo`);
+  await page.keyboard.press('Control+z');await response;
+  await page.waitForFunction(()=>document.querySelector('input[aria-label="Мощность блока питания, Вт"]')?.value==='120');
+  response=writeResponse(`/projects/${pid}/elements/undo`);await page.keyboard.press('Control+z');await response;
+  await page.locator('.power-supply-symbol').waitFor({state:'detached'});
+  response=writeResponse(`/projects/${pid}/elements/redo`);await page.keyboard.press('Control+y');await response;
+  await page.locator('.power-supply-symbol').waitFor();
+  if(process.env.POWER_SCREENSHOT)await page.screenshot({path:process.env.POWER_SCREENSHOT,fullPage:true});
+  // Modal cancellation must not undo the last committed supply.
+  await click(.3,.2);await page.getByRole('dialog').waitFor();await page.keyboard.press('Control+z');
+  await page.getByRole('dialog').waitFor({state:'detached'});
+  assert.equal(await page.locator('.power-supply-symbol').count(),1);
+  assert.deepEqual(errors,[]);
+  console.log('PASS: all draft line points undo/redo, no-strip prompt, supply chooser, red rectangle, optional watts autosave, committed undo/redo and modal cancellation');
+ } finally {await browser.close();}
+})().catch(error=>{console.error(error);process.exitCode=1;});

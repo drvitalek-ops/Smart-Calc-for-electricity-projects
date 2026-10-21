@@ -26,6 +26,8 @@ from .models import (
     Product, Report,
 )
 from .catalog import LAYERS, seed
+from .nomenclature import nomenclature_key
+from .polygons import polygon_error
 
 STORAGE = Path(os.getenv('STORAGE_DIR', 'storage')).resolve()
 STORAGE.mkdir(parents=True, exist_ok=True)
@@ -35,7 +37,8 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 PDF_IMAGE_LOCK = Lock()
 PDF_IMAGE_MAX_PIXELS = 16_000_000
 ELEMENT_HISTORY_LIMIT = 50
-ELEMENT_HISTORY: dict[int, list[list[dict]]] = defaultdict(list)
+ELEMENT_HISTORY: dict[int, list[dict]] = defaultdict(list)
+ELEMENT_REDO: dict[int, list[dict]] = defaultdict(list)
 ELEMENT_HISTORY_LOCK = Lock()
 
 PDF_FONT_CANDIDATES = [
@@ -59,6 +62,7 @@ def pdf_font_path():
 async def lifespan(app):
     with ELEMENT_HISTORY_LOCK:
         ELEMENT_HISTORY.clear()
+        ELEMENT_REDO.clear()
     if os.getenv('AUTO_CREATE_SCHEMA') == '1':
         Base.metadata.create_all(engine)
         if 'opacity' not in {column['name'] for column in inspect(engine).get_columns('layers')}:
@@ -88,7 +92,7 @@ async def lifespan(app):
         db.commit()
     yield
 
-APP_VERSION = '1.0.29'
+APP_VERSION = '1.0.30'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -101,10 +105,14 @@ def data(obj):
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns if c.name not in ('pdf_path','image_path')}
 
 def element_snapshot(db: DbSession, project_id: int):
-    return [
-        copy.deepcopy({column.name:getattr(item,column.name) for column in Element.__table__.columns})
-        for item in db.scalars(select(Element).where(Element.project_id==project_id).order_by(Element.id))
-    ]
+    snapshot={}
+    for key,model in [('elements',Element),('rooms',Room),('layers',Layer)]:
+        snapshot[key]=[
+            copy.deepcopy({column.name:getattr(item,column.name) for column in model.__table__.columns})
+            for item in db.scalars(select(model).where(model.project_id==project_id).order_by(model.id))
+        ]
+    snapshot['pages']={page.id:{key:copy.deepcopy(getattr(page,key)) for key in ('name','meters_per_point','overlay_visible','opacity','offset_x','offset_y','scale')} for page in db.scalars(select(Page).where(Page.project_id==project_id))}
+    return snapshot
 
 def remember_elements(db: DbSession, project_id: int):
     snapshot=element_snapshot(db,project_id)
@@ -112,6 +120,7 @@ def remember_elements(db: DbSession, project_id: int):
         history=ELEMENT_HISTORY[project_id]
         history.append(snapshot)
         del history[:-ELEMENT_HISTORY_LIMIT]
+        ELEMENT_REDO.pop(project_id,None)
 
 class NameInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -123,7 +132,7 @@ class PolygonPoint(BaseModel):
 class RoomInput(NameInput):
     wet: bool = False
     page_id: int | None = None
-    polygon: list[PolygonPoint] | None = None
+    polygon: list[PolygonPoint] | None = Field(default=None,max_length=1000)
 
 class LayerInput(BaseModel):
     visible: bool | None = None
@@ -255,6 +264,7 @@ class BackupPage(BaseModel):
     pdf_file: str = Field(min_length=5,max_length=200)
 
 class BackupElement(BaseModel):
+    backup_id: int | None = None
     page_backup_id: int
     layer_backup_id: int
     type_backup_id: int
@@ -331,8 +341,9 @@ def validate_room(db, project_id: int, body: RoomInput):
     if (values['page_id'] is None)!=(polygon is None):
         raise HTTPException(422,'Для области помещения укажите страницу и минимум три точки')
     if polygon is not None:
-        if len(polygon)<3:
-            raise HTTPException(422,'Для области помещения нужны минимум три точки')
+        error=polygon_error(polygon)
+        if error:
+            raise HTTPException(422,error)
         page=require(db,Page,values['page_id'])
         if page.project_id!=project_id:
             raise HTTPException(422,'Страница принадлежит другому проекту')
@@ -368,14 +379,20 @@ def recalculate_all_project_lines(db):
     return sum(recalculate_page_lines(db,page) for page in db.scalars(
         select(Page).where(Page.meters_per_point.is_not(None))))
 
-def validate_element(db, project_id, body):
+def is_power_supply(typ):
+    return typ.category=='LED-подсветка' and 'блок питания' in typ.name.casefold()
+
+def is_led_strip(typ):
+    return typ.category=='LED-подсветка' and typ.unit=='м'
+
+def validate_element(db, project_id, body, check_locked=True):
     for model, id in [(Page,body.page_id),(Layer,body.layer_id),(Room,body.room_id)]:
         if id is not None:
             obj = require(db, model, id)
             if obj.project_id != project_id:
                 raise HTTPException(422, 'Объект принадлежит другому проекту')
     layer = require(db,Layer,body.layer_id)
-    if layer.locked:
+    if check_locked and layer.locked:
         raise HTTPException(409, 'Слой заблокирован')
     typ = require(db,ElementType,body.type_id)
     if body.product_id is not None:
@@ -391,6 +408,24 @@ def validate_element(db, project_id, body):
         if not page.meters_per_point:
             raise HTTPException(422, 'Сначала откалибруйте масштаб листа')
         parameters['length']=geometry_length_m(page,points)
+    if is_power_supply(typ):
+        if points: raise HTTPException(422,'Блок питания размещается точкой с прямоугольным обозначением')
+        strip_id=parameters.get('led_strip_id')
+        if isinstance(strip_id,bool) or not isinstance(strip_id,int):
+            raise HTTPException(422,'Укажите LED-ленту для блока питания')
+        strip=db.get(Element,strip_id)
+        if not strip or strip.project_id!=project_id or not is_led_strip(require(db,ElementType,strip.type_id)):
+            raise HTTPException(422,'Выберите LED-ленту этого проекта')
+    if parameters.get('power_watts') in ('',None):
+        parameters.pop('power_watts',None)
+    if 'power_watts' in parameters:
+        try:
+            power=float(parameters['power_watts'])
+            if isinstance(parameters['power_watts'],bool) or not 0<power<=1000000:
+                raise ValueError()
+            parameters['power_watts']=power
+        except (ValueError,TypeError):
+            raise HTTPException(422,'Мощность должна быть положительным числом ватт')
     for key in ('length','quantity','connectors','end_caps','frame_posts'):
         if key in parameters:
             try:
@@ -445,7 +480,8 @@ def types(db: DbSession = Depends(session)):
     items=list(db.scalars(select(ElementType).order_by(ElementType.id)))
     items.sort(key=lambda item:(
         category_order.get(item.category,len(category_order)),
-        1 if item.category=='Электроустановки' and 'выключатель' in item.name.casefold() else 0,
+        item.category.casefold(),
+        nomenclature_key(item.name),
         item.id,
     ))
     return [data(item) for item in items]
@@ -630,6 +666,7 @@ def backup_project(pid: int, db: DbSession = Depends(session)):
             pdf_file=pdf_files[item.pdf_path],
         ) for item in pages],
         elements=[BackupElement(
+            backup_id=item.id,
             page_backup_id=item.page_id,layer_backup_id=item.layer_id,type_backup_id=item.type_id,
             product_backup_id=item.product_id,room_backup_id=item.room_id,x=item.x,y=item.y,
             parameters=item.parameters,geometry=item.geometry or {},comment=item.comment,
@@ -784,18 +821,31 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
                 polygon=[point.model_dump() for point in item.polygon] if item.polygon is not None else None,
             )
             db.add(obj); db.flush(); room_map[item.backup_id]=obj
+        element_map={}
         for item in manifest.elements:
             product=product_map.get(item.product_backup_id) if item.product_backup_id is not None else None
             typ=type_map[item.type_backup_id]
             if product and product.type_id!=typ.id:
                 raise ValueError('Товар не соответствует типу элемента')
-            db.add(Element(
+            obj=Element(
                 project_id=project.id,page_id=page_map[item.page_backup_id].id,
                 layer_id=layer_map[item.layer_backup_id].id,type_id=typ.id,
                 product_id=product.id if product else None,
                 room_id=room_map[item.room_backup_id].id if item.room_backup_id is not None else None,
                 x=item.x,y=item.y,parameters=item.parameters,geometry=item.geometry,comment=item.comment,
-            ))
+            )
+            db.add(obj); db.flush()
+            if item.backup_id is not None:
+                if item.backup_id in element_map: raise ValueError('Повторяющийся идентификатор элемента')
+                element_map[item.backup_id]=obj
+        for obj in db.scalars(select(Element).where(Element.project_id==project.id)):
+            typ=require(db,ElementType,obj.type_id)
+            if is_power_supply(typ):
+                strip=element_map.get(obj.parameters.get('led_strip_id'))
+                if strip is None or not is_led_strip(require(db,ElementType,strip.type_id)):
+                    raise ValueError('Отсутствует LED-лента для блока питания')
+                obj.parameters={**obj.parameters,'led_strip_id':strip.id}
+                validate_element(db,project.id,ElementInput(**data(obj)),check_locked=False)
         db.commit()
         result=data(project); result['pages']=len(page_map); result['elements']=len(manifest.elements)
         return result
@@ -816,6 +866,7 @@ def project(pid: int, db: DbSession = Depends(session)):
 def add_room(pid: int, body: RoomInput, db: DbSession = Depends(session)):
     require(db,Project,pid)
     values=validate_room(db,pid,body)
+    remember_elements(db,pid)
     r=Room(project_id=pid,**values); db.add(r); db.flush()
     if r.page_id is not None: reassign_page_rooms(db,pid,r.page_id)
     db.commit()
@@ -826,6 +877,7 @@ def edit_room(room_id: int, body: RoomInput, db: DbSession = Depends(session)):
     room=require(db,Room,room_id)
     old_page_id=room.page_id
     values=validate_room(db,room.project_id,body)
+    remember_elements(db,room.project_id)
     for key,value in values.items(): setattr(room,key,value)
     db.flush()
     for page_id in {old_page_id,room.page_id}-{None}:
@@ -836,6 +888,7 @@ def edit_room(room_id: int, body: RoomInput, db: DbSession = Depends(session)):
 def remove_room(room_id: int, db: DbSession = Depends(session)):
     room=require(db,Room,room_id)
     project_id,page_id=room.project_id,room.page_id
+    remember_elements(db,project_id)
     for element in db.scalars(select(Element).where(Element.room_id==room.id)):
         element.room_id=None
     db.delete(room); db.flush()
@@ -845,12 +898,14 @@ def remove_room(room_id: int, db: DbSession = Depends(session)):
 @app.post('/api/projects/{pid}/layers',status_code=201)
 def add_layer(pid: int, body: NameInput, db: DbSession = Depends(session)):
     require(db,Project,pid)
+    remember_elements(db,pid)
     layer=Layer(project_id=pid,name=body.name); db.add(layer); db.commit()
     return data(layer)
 
 @app.patch('/api/layers/{lid}')
 def edit_layer(lid: int, body: LayerInput, db: DbSession = Depends(session)):
     layer=require(db,Layer,lid)
+    remember_elements(db,layer.project_id)
     for key,value in body.model_dump(exclude_none=True).items():
         setattr(layer,key,value)
     db.commit(); return data(layer)
@@ -858,6 +913,7 @@ def edit_layer(lid: int, body: LayerInput, db: DbSession = Depends(session)):
 @app.patch('/api/pages/{page_id}')
 def edit_page(page_id: int, body: PageInput, db: DbSession = Depends(session)):
     page=require(db,Page,page_id)
+    remember_elements(db,page.project_id)
     for key,value in body.model_dump(exclude_unset=True).items():
         if key=='name': value=value.strip() if value and value.strip() else None
         setattr(page,key,value)
@@ -876,6 +932,9 @@ def delete_project_pages(db: DbSession, project_id: int, page_ids: list[int]):
     ))) if type_ids else set()
     if any(element.type_id in protected_type_ids for element in elements):
         raise HTTPException(409,'Нельзя удалить выбранные страницы: на них есть электроустановки или освещение')
+    removed_ids={element.id for element in elements}
+    if any(element.parameters.get('led_strip_id') in removed_ids and element.id not in removed_ids for element in db.scalars(select(Element).where(Element.project_id==project_id))):
+        raise HTTPException(409,'На другом листе есть блок питания удаляемой LED-ленты: переназначьте или удалите его')
     image_paths=[Path(page.image_path) for page in pages]
     pdf_paths={Path(page.pdf_path) for page in pages}
     for room in db.scalars(select(Room).where(Room.project_id==project_id,Room.page_id.in_(unique_ids))):
@@ -887,6 +946,9 @@ def delete_project_pages(db: DbSession, project_id: int, page_ids: list[int]):
     for number,item in enumerate(remaining,1): item.number=number
     unused_pdf_paths=[path for path in pdf_paths if not db.scalar(select(Page.id).where(Page.pdf_path==str(path)).limit(1))]
     db.commit()
+    with ELEMENT_HISTORY_LOCK:
+        ELEMENT_HISTORY.pop(project_id,None)
+        ELEMENT_REDO.pop(project_id,None)
     for path in image_paths:
         path.unlink(missing_ok=True)
         for level in (1024,2048,4096,8192):
@@ -911,11 +973,10 @@ def calibrate_page(page_id: int, body: CalibrationInput, db: DbSession = Depends
     distance=math.hypot((body.x2-body.x1)*page.width,(body.y2-body.y1)*page.height)
     if distance < 1:
         raise HTTPException(422,'Точки калибровки расположены слишком близко')
+    remember_elements(db,page.project_id)
     page.meters_per_point=body.length_m/distance
     updated=recalculate_page_lines(db,page)
     db.commit()
-    with ELEMENT_HISTORY_LOCK:
-        ELEMENT_HISTORY.pop(page.project_id,None)
     result=data(page)
     result['calibration_length_m']=body.length_m
     result['calibration_length_mm']=body.length_m*1000
@@ -1004,6 +1065,8 @@ def edit_element(eid: int, body: ElementInput, db: DbSession = Depends(session))
     e=require(db,Element,eid)
     if require(db,Layer,e.layer_id).locked:
         raise HTTPException(409,'Слой заблокирован')
+    if not is_led_strip(require(db,ElementType,body.type_id)) and any(item.parameters.get('led_strip_id')==eid for item in db.scalars(select(Element).where(Element.project_id==e.project_id))):
+        raise HTTPException(409,'Этот элемент связан с блоком питания: сначала переназначьте блок питания')
     old_frame_group=e.parameters.get('frame_group')
     values=body.model_dump(); values['parameters']=validate_element(db,e.project_id,body)
     new_frame_group=values['parameters'].get('frame_group')
@@ -1022,6 +1085,8 @@ def remove_element(eid: int, db: DbSession = Depends(session)):
     e=require(db,Element,eid)
     if require(db,Layer,e.layer_id).locked:
         raise HTTPException(409,'Слой заблокирован')
+    if any(item.parameters.get('led_strip_id')==eid for item in db.scalars(select(Element).where(Element.project_id==e.project_id))):
+        raise HTTPException(409,'Сначала переназначьте или удалите блоки питания этой LED-ленты')
     remember_elements(db,e.project_id)
     group=e.parameters.get('frame_group')
     if group:
@@ -1077,27 +1142,57 @@ def remove_frames(pid: int, body: ElementSelection, db: DbSession = Depends(sess
     db.commit()
     return {'element_ids':[item.id for item in elements]}
 
-@app.post('/api/projects/{pid}/elements/undo')
-def undo_elements(pid: int, db: DbSession = Depends(session)):
+def restore_edit_history(pid,db,redo=False):
     require(db,Project,pid)
+    source=ELEMENT_REDO if redo else ELEMENT_HISTORY
+    destination=ELEMENT_HISTORY if redo else ELEMENT_REDO
+    current=element_snapshot(db,pid)
     with ELEMENT_HISTORY_LOCK:
-        history=ELEMENT_HISTORY.get(pid,[])
-        if not history:
-            return {'undone':False}
-        snapshot=history.pop()
+        if not source.get(pid): return {'undone':False}
+        snapshot=source[pid].pop()
     try:
-        for item in db.scalars(select(Element).where(Element.project_id==pid)):
-            db.delete(item)
+        for item in db.scalars(select(Element).where(Element.project_id==pid)): db.delete(item)
         db.flush()
-        for values in snapshot:
-            db.add(Element(**values))
+        rooms={item.id:item for item in db.scalars(select(Room).where(Room.project_id==pid))}
+        keep={values['id'] for values in snapshot['rooms']}
+        for room_id,item in rooms.items():
+            if room_id not in keep: db.delete(item)
+        for values in snapshot['rooms']:
+            item=rooms.get(values['id'])
+            if item:
+                for key,value in values.items(): setattr(item,key,value)
+            else: db.add(Room(**values))
+        db.flush()
+        layers={item.id:item for item in db.scalars(select(Layer).where(Layer.project_id==pid))}
+        keep_layers={values['id'] for values in snapshot['layers']}
+        for layer_id,item in layers.items():
+            if layer_id not in keep_layers: db.delete(item)
+        for values in snapshot['layers']:
+            item=layers.get(values['id'])
+            if item:
+                for key,value in values.items(): setattr(item,key,value)
+            else: db.add(Layer(**values))
+        db.flush()
+        for page in db.scalars(select(Page).where(Page.project_id==pid)):
+            for key,value in snapshot['pages'].get(page.id,{}).items(): setattr(page,key,value)
+        for values in snapshot['elements']: db.add(Element(**values))
         db.commit()
     except Exception:
         db.rollback()
-        with ELEMENT_HISTORY_LOCK:
-            ELEMENT_HISTORY[pid].append(snapshot)
+        with ELEMENT_HISTORY_LOCK: source[pid].append(snapshot)
         raise
-    return {'undone':True,'elements':len(snapshot)}
+    with ELEMENT_HISTORY_LOCK:
+        destination[pid].append(current)
+        del destination[pid][:-ELEMENT_HISTORY_LIMIT]
+    return {'undone':True,'elements':len(snapshot['elements'])}
+
+@app.post('/api/projects/{pid}/elements/undo')
+def undo_elements(pid: int, db: DbSession = Depends(session)):
+    return restore_edit_history(pid,db)
+
+@app.post('/api/projects/{pid}/elements/redo')
+def redo_elements(pid: int, db: DbSession = Depends(session)):
+    return restore_edit_history(pid,db,True)
 
 def report_rows(db,pid):
     require(db,Project,pid)
@@ -1112,6 +1207,12 @@ def report_rows(db,pid):
         manufacturer=db.get(Manufacturer,product.manufacturer_id) if product else None
         supplier=db.get(Supplier,product.supplier_id) if product and product.supplier_id else None
         group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity','frame_posts','frame_group','plan_icon','plan_color')}
+        if is_power_supply(t):
+            strip=db.get(Element,e.parameters.get('led_strip_id'))
+            strip_room=db.get(Room,strip.room_id) if strip and strip.room_id else None
+            strip_page=db.get(Page,strip.page_id) if strip else None
+            group_parameters.pop('led_strip_id',None)
+            group_parameters['led_strip']=f"LED-линия №{strip.id} · {strip_room.name if strip_room else 'Без помещения'} · лист {strip_page.number}" if strip else 'Лента не найдена'
         key=(
             room.name if room else 'Без помещения',t.category,t.name,t.unit,
             json.dumps(group_parameters,ensure_ascii=False,sort_keys=True),
@@ -1154,7 +1255,7 @@ def report_rows(db,pid):
     def row_order(row):
         room_order=(row['room']=='Без помещения',row['room'].casefold())
         category_order={'Электроустановки':0,'Рамки':1}.get(row['category'],2)
-        return (*room_order,category_order,row['category'],row['name'],row['product'])
+        return (*room_order,category_order,row['category'],nomenclature_key(row['name']),row['product'])
     rows.sort(key=row_order)
     totals=defaultdict(float)
     for row in rows: totals[row['currency']]+=row['total']
@@ -1179,7 +1280,7 @@ def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
     query=(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id)
            .join(Layer,Element.layer_id==Layer.id).where(Element.page_id==page_id,Layer.export.is_(True)))
     for element,typ,layer in db.execute(query):
-        plan_color=element.parameters.get('plan_color',typ.color)
+        plan_color='#dc2626' if is_power_supply(typ) else element.parameters.get('plan_color',typ.color)
         color=tuple(int(plan_color[index:index+2],16)/255 for index in (1,3,5))
         points=geometry_points(element.geometry or {})
         if points:
@@ -1189,8 +1290,10 @@ def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
             anchor=pdf_points[0]
         else:
             anchor=pymupdf.Point(element.x*page.width,element.y*page.height)
-            sheet.draw_circle(anchor,5,color=color,fill=color)
-        sheet.insert_text((anchor.x+7,anchor.y-4),f'{typ.name} #{element.id}',fontsize=7,fontname='CalcPlan',color=color)
+            if is_power_supply(typ):
+                sheet.draw_rect(pymupdf.Rect(anchor.x-8,anchor.y-5,anchor.x+8,anchor.y+5),color=color,fill=color)
+            else: sheet.draw_circle(anchor,5,color=color,fill=color)
+        sheet.insert_text((anchor.x+7,anchor.y-4),f"{typ.name} #{element.id}"+(f" · {element.parameters['power_watts']:g} Вт" if element.parameters.get('power_watts') else ''),fontsize=7,fontname='CalcPlan',color=color)
     content=document.tobytes(deflate=True); document.close()
     return StreamingResponse(
         io.BytesIO(content),media_type='application/pdf',

@@ -1019,6 +1019,7 @@ export default function App() {
   } | null>(null);
   const [leftPanelVisible, setLeftPanelVisible] = useState(true),
     [rightPanelVisible, setRightPanelVisible] = useState(true),
+    [elementLayersExpanded, setElementLayersExpanded] = useState(false),
     [checkedPageIds, setCheckedPageIds] = useState<number[]>([]);
   const [supplyLinking,setSupplyLinking]=useState<{body:Record<string,unknown>;editId?:number;stripIds:number[];undo:number[][];redo:number[][];resumePlacing:boolean}|null>(null);
   const [lineRedo, setLineRedo] = useState<Point[]>([]);
@@ -1190,6 +1191,7 @@ export default function App() {
     setSelectedIds([]);
     setTypeEditorOpen(false);
     setView("plan");
+    setElementLayersExpanded(false);
     setCheckedPageIds([]);
     setSupplyLinking(null);
     pendingHistory.current = [];
@@ -3750,7 +3752,13 @@ export default function App() {
               </section>
               {rightPanelVisible && (
                 <aside className="right layers-panel" aria-label="Слои и страницы">
-                  <h3>Слои элементов</h3>
+                  <h3 className="element-layers-heading">
+                    <button type="button" aria-expanded={elementLayersExpanded} aria-controls="element-layers-list" onClick={()=>setElementLayersExpanded(expanded=>!expanded)} title={elementLayersExpanded ? "Свернуть список слоёв" : "Развернуть список слоёв"}>
+                      <span>Слои элементов</span>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                    </button>
+                  </h3>
+                  <div id="element-layers-list" hidden={!elementLayersExpanded}>
                   {project.layers.map((l) => (
                     <div
                       className={"layer " + (l.id === layerId ? "active" : "")}
@@ -3794,6 +3802,7 @@ export default function App() {
                   >
                     ＋ Слой
                   </button>
+                  </div>
                   <div className="page-file-tools">                    <label className="upload">
                       Загрузить PDF
                       <input
@@ -4204,7 +4213,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.34</span>
+        <span>SMART HOME CALC / 1.0.35</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

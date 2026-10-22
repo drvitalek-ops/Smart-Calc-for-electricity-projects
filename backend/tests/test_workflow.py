@@ -37,7 +37,7 @@ def test_health_identifies_desktop_backend(client,monkeypatch):
     health=client.get('/api/health')
     assert health.status_code==200
     assert health.json()=={
-        'status':'ok','version':'1.0.34','instance':'test-instance',
+        'status':'ok','version':'1.0.35','instance':'test-instance',
     }
 
 def test_full_workflow_and_exports(client):

@@ -37,7 +37,7 @@ def test_health_identifies_desktop_backend(client,monkeypatch):
     health=client.get('/api/health')
     assert health.status_code==200
     assert health.json()=={
-        'status':'ok','version':'1.0.32','instance':'test-instance',
+        'status':'ok','version':'1.0.33','instance':'test-instance',
     }
 
 def test_full_workflow_and_exports(client):
@@ -682,7 +682,7 @@ def test_power_supplies_link_validation_optional_watts_exports_and_backup(client
     assert 'led_strip_id' not in params and row['unit']=='шт' and row['quantity']==1
     xlsx=load_workbook(io.BytesIO(client.get(f'/api/projects/{pid}/export/xlsx').content))
     text=' '.join(str(cell.value) for sheet in xlsx for row in sheet for cell in row if cell.value)
-    assert 'Мощность, Вт: 120' in text and 'Питает ленту: LED-линия' in text
+    assert 'Мощность, Вт: 120' in text and 'Питает ленты: LED-линия' in text
     plan=client.get(f"/api/projects/{pid}/pages/{body['page_id']}/export.pdf")
     with pymupdf.open(stream=plan.content,filetype='pdf') as document:
         assert any(item[0]=='re' for drawing in document[0].get_drawings() for item in drawing['items'])
@@ -698,7 +698,7 @@ def test_power_supplies_link_validation_optional_watts_exports_and_backup(client
     new_strip=next(item for item in restored_project['elements'] if item['type_id']==strip['type_id'])
     new_supply=next(item for item in restored_project['elements'] if item['type_id']==supply_type['id'])
     assert new_strip['id']!=strip['id']
-    assert new_supply['parameters']['led_strip_id']==new_strip['id'] and new_supply['parameters']['power_watts']==120
+    assert new_supply['parameters']['led_strip_ids']==[new_strip['id']] and new_supply['parameters']['power_watts']==120
 
 
 def test_undo_redo_room_changes_restores_assignments_and_new_action_clears_redo(client):
@@ -883,3 +883,74 @@ def test_settings_open_only_desktop_data_directory_with_matching_instance(client
     def unavailable(path,operation): raise OSError('Explorer unavailable')
     monkeypatch.setattr(integration.os,'startfile',unavailable)
     assert client.post('/api/settings/open-data-folder',json={'instance':info['instance']}).status_code==500
+
+
+def test_power_supply_can_feed_multiple_strips_and_restore_all_links(client):
+    pid,body=setup(client)
+    first=client.post(f'/api/projects/{pid}/elements',json=body).json()
+    second_page=client.get(f'/api/projects/{pid}').json()['pages'][1]['id']
+    second=client.post(f'/api/projects/{pid}/elements',json={**body,'page_id':second_page,'x':.7,'parameters':{'length':4,'ip':65}}).json()
+    typ=next(item for item in client.get('/api/types').json() if item['name']=='Блок питания LED-ленты')
+    power_body={**body,'type_id':typ['id'],'parameters':{'led_strip_ids':[first['id'],second['id'],first['id']],'power_watts':200}}
+    power=client.post(f'/api/projects/{pid}/elements',json=power_body)
+    assert power.status_code==201,power.text
+    power=power.json()
+    assert power['parameters']['led_strip_ids']==[first['id'],second['id']]
+    assert 'led_strip_id' not in power['parameters']
+    for invalid in ([],[True],[str(first['id'])],[first['id'],power['id']]):
+        assert client.put(f"/api/elements/{power['id']}",json={**power_body,'parameters':{'led_strip_ids':invalid}}).status_code==422
+    for strip in (first,second): assert client.delete(f"/api/elements/{strip['id']}").status_code==409
+    assert client.delete(f'/api/pages/{second_page}').status_code==409
+    assert client.put(f"/api/elements/{second['id']}",json={**body,'x':second['x'],'parameters':{'length':4,'ip':65,'power_watts':80}}).status_code==200
+    report=client.get(f'/api/projects/{pid}/report').json()
+    row=next(row for row in report['rows'] if row['name']==typ['name'])
+    assert f"№{first['id']}" in json.loads(row['parameters'])['led_strip']
+    assert f"№{second['id']}" in json.loads(row['parameters'])['led_strip']
+    assert any(json.loads(row['parameters']).get('power_watts')==80 for row in report['rows'] if row['name']=='LED-линия')
+    backup=client.get(f'/api/projects/{pid}/backup').content
+    restored=client.post('/api/projects/import',files={'file':('backup.zip',backup,'application/zip')})
+    assert restored.status_code==201,restored.text
+    project=client.get(f"/api/projects/{restored.json()['id']}").json()
+    new_power=next(item for item in project['elements'] if item['type_id']==typ['id'])
+    strips=[item for item in project['elements'] if item['type_id']==body['type_id']]
+    assert set(new_power['parameters']['led_strip_ids'])=={item['id'] for item in strips}
+    assert not set(new_power['parameters']['led_strip_ids']) & {first['id'],second['id']}
+    changed=client.put(f"/api/elements/{power['id']}",json={**power_body,'parameters':{'led_strip_ids':[first['id']]}})
+    assert changed.status_code==200
+    assert client.delete(f"/api/elements/{second['id']}").status_code==204
+    assert client.post(f'/api/projects/{pid}/elements/undo').json()['undone']
+    assert client.post(f'/api/projects/{pid}/elements/undo').json()['undone']
+    current=client.get(f'/api/projects/{pid}').json()
+    assert next(item for item in current['elements'] if item['id']==power['id'])['parameters']['led_strip_ids']==[first['id'],second['id']]
+
+
+def test_existing_single_strip_link_migrates_on_startup_and_legacy_backup_still_imports(client):
+    pid,body=setup(client)
+    strip=client.post(f'/api/projects/{pid}/elements',json=body).json()
+    typ=next(item for item in client.get('/api/types').json() if item['name']=='Блок питания LED-ленты')
+    power=client.post(f'/api/projects/{pid}/elements',json={**body,'type_id':typ['id'],'parameters':{'led_strip_id':strip['id'],'power_watts':120}}).json()
+    with main_module.Session() as db:
+        row=db.get(main_module.Element,power['id'])
+        row.parameters={**row.parameters,'led_strip_id':strip['id']}
+        del row.parameters['led_strip_ids']
+        # Assign a fresh dict so JSON persistence sees the legacy shape.
+        row.parameters={key:value for key,value in row.parameters.items() if key!='led_strip_ids'}
+        db.commit()
+    for _ in range(2):
+        with TestClient(app) as reopened:
+            element=next(item for item in reopened.get(f'/api/projects/{pid}').json()['elements'] if item['id']==power['id'])
+            assert element['parameters']['led_strip_ids']==[strip['id']] and 'led_strip_id' not in element['parameters']
+            assert element['parameters']['power_watts']==120
+    backup=client.get(f'/api/projects/{pid}/backup').content
+    with zipfile.ZipFile(io.BytesIO(backup)) as archive: files={name:archive.read(name) for name in archive.namelist()}
+    manifest=json.loads(files['manifest.json'])
+    element=next(item for item in manifest['elements'] if item['type_backup_id']==typ['id'])
+    element['parameters']['led_strip_id']=element['parameters'].pop('led_strip_ids')[0]
+    files['manifest.json']=json.dumps(manifest).encode()
+    output=io.BytesIO()
+    with zipfile.ZipFile(output,'w') as archive:
+        for name,content in files.items(): archive.writestr(name,content)
+    restored=client.post('/api/projects/import',files={'file':('legacy.zip',output.getvalue(),'application/zip')})
+    assert restored.status_code==201,restored.text
+    elements=client.get(f"/api/projects/{restored.json()['id']}").json()['elements']
+    assert next(item for item in elements if item['type_id']==typ['id'])['parameters']['led_strip_ids']==[next(item for item in elements if item['type_id']==body['type_id'])['id']]

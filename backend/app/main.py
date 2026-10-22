@@ -95,11 +95,12 @@ async def lifespan(app):
                 connection.execute(text('ALTER TABLE rooms ADD COLUMN polygon JSON'))
     with Session() as db:
         seed(db)
+        migrate_power_links(db)
         recalculate_all_project_lines(db)
         db.commit()
     yield
 
-APP_VERSION = '1.0.32'
+APP_VERSION = '1.0.33'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -399,6 +400,22 @@ def is_power_supply(typ):
 def is_led_strip(typ):
     return typ.category=='LED-подсветка' and typ.unit=='м'
 
+def linked_strip_ids(parameters):
+    ids=parameters.get('led_strip_ids')
+    if ids is None:
+        legacy=parameters.get('led_strip_id')
+        return [legacy] if type(legacy) is int else []
+    return [value for value in ids if type(value) is int] if isinstance(ids,list) else []
+
+
+def migrate_power_links(db):
+    for element,typ in db.execute(select(Element,ElementType).join(ElementType,Element.type_id==ElementType.id)):
+        if is_power_supply(typ) and 'led_strip_id' in element.parameters:
+            values={**element.parameters,'led_strip_ids':linked_strip_ids(element.parameters)}
+            values.pop('led_strip_id',None)
+            element.parameters=values
+
+
 def validate_element(db, project_id, body, check_locked=True, existing_type_id=None, existing_product_id=None):
     for model, id in [(Page,body.page_id),(Layer,body.layer_id),(Room,body.room_id)]:
         if id is not None:
@@ -426,12 +443,15 @@ def validate_element(db, project_id, body, check_locked=True, existing_type_id=N
         parameters['length']=geometry_length_m(page,points)
     if is_power_supply(typ):
         if points: raise HTTPException(422,'Блок питания размещается точкой с прямоугольным обозначением')
-        strip_id=parameters.get('led_strip_id')
-        if isinstance(strip_id,bool) or not isinstance(strip_id,int):
-            raise HTTPException(422,'Укажите LED-ленту для блока питания')
-        strip=db.get(Element,strip_id)
-        if not strip or strip.project_id!=project_id or not is_led_strip(require(db,ElementType,strip.type_id)):
-            raise HTTPException(422,'Выберите LED-ленту этого проекта')
+        ids=parameters.get('led_strip_ids',linked_strip_ids(parameters))
+        if not isinstance(ids,list) or not 1<=len(ids)<=1000 or any(isinstance(value,bool) or not isinstance(value,int) for value in ids):
+            raise HTTPException(422,'Выберите одну или несколько LED-лент для блока питания')
+        for strip_id in ids:
+            strip=db.get(Element,strip_id)
+            if not strip or strip.project_id!=project_id or not is_led_strip(require(db,ElementType,strip.type_id)):
+                raise HTTPException(422,'Выберите LED-ленты этого проекта')
+        parameters.pop('led_strip_id',None)
+        parameters['led_strip_ids']=list(dict.fromkeys(ids))
     if parameters.get('power_watts') in ('',None):
         parameters.pop('power_watts',None)
     if 'power_watts' in parameters:
@@ -930,11 +950,12 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
         for obj in db.scalars(select(Element).where(Element.project_id==project.id)):
             typ=require(db,ElementType,obj.type_id)
             if is_power_supply(typ):
-                strip=element_map.get(obj.parameters.get('led_strip_id'))
-                if strip is None or not is_led_strip(require(db,ElementType,strip.type_id)):
+                strips=[element_map.get(strip_id) for strip_id in linked_strip_ids(obj.parameters)]
+                if not strips or any(strip is None or not is_led_strip(require(db,ElementType,strip.type_id)) for strip in strips):
                     raise ValueError('Отсутствует LED-лента для блока питания')
-                obj.parameters={**obj.parameters,'led_strip_id':strip.id}
-                validate_element(db,project.id,ElementInput(**data(obj)),check_locked=False)
+                parameters={**obj.parameters,'led_strip_ids':[strip.id for strip in strips]}
+                parameters.pop('led_strip_id',None)
+                obj.parameters=validate_element(db,project.id,ElementInput(**{**data(obj),'parameters':parameters}),check_locked=False)
         db.commit()
         result=data(project); result['pages']=len(page_map); result['elements']=len(manifest.elements)
         return result
@@ -1022,7 +1043,7 @@ def delete_project_pages(db: DbSession, project_id: int, page_ids: list[int]):
     if any(element.type_id in protected_type_ids for element in elements):
         raise HTTPException(409,'Нельзя удалить выбранные страницы: на них есть электроустановки или освещение')
     removed_ids={element.id for element in elements}
-    if any(element.parameters.get('led_strip_id') in removed_ids and element.id not in removed_ids for element in db.scalars(select(Element).where(Element.project_id==project_id))):
+    if any(bool(set(linked_strip_ids(element.parameters)) & removed_ids) and element.id not in removed_ids for element in db.scalars(select(Element).where(Element.project_id==project_id))):
         raise HTTPException(409,'На другом листе есть блок питания удаляемой LED-ленты: переназначьте или удалите его')
     image_paths=[Path(page.image_path) for page in pages]
     pdf_paths={Path(page.pdf_path) for page in pages}
@@ -1157,7 +1178,7 @@ def edit_element(eid: int, body: ElementInput, db: DbSession = Depends(session))
     e=require(db,Element,eid)
     if require(db,Layer,e.layer_id).locked:
         raise HTTPException(409,'Слой заблокирован')
-    if not is_led_strip(require(db,ElementType,body.type_id)) and any(item.parameters.get('led_strip_id')==eid for item in db.scalars(select(Element).where(Element.project_id==e.project_id))):
+    if not is_led_strip(require(db,ElementType,body.type_id)) and any(eid in linked_strip_ids(item.parameters) for item in db.scalars(select(Element).where(Element.project_id==e.project_id))):
         raise HTTPException(409,'Этот элемент связан с блоком питания: сначала переназначьте блок питания')
     old_frame_group=e.parameters.get('frame_group')
     values=body.model_dump(); values['parameters']=validate_element(db,e.project_id,body,existing_type_id=e.type_id,existing_product_id=e.product_id)
@@ -1177,7 +1198,7 @@ def remove_element(eid: int, db: DbSession = Depends(session)):
     e=require(db,Element,eid)
     if require(db,Layer,e.layer_id).locked:
         raise HTTPException(409,'Слой заблокирован')
-    if any(item.parameters.get('led_strip_id')==eid for item in db.scalars(select(Element).where(Element.project_id==e.project_id))):
+    if any(eid in linked_strip_ids(item.parameters) for item in db.scalars(select(Element).where(Element.project_id==e.project_id))):
         raise HTTPException(409,'Сначала переназначьте или удалите блоки питания этой LED-ленты')
     remember_elements(db,e.project_id)
     group=e.parameters.get('frame_group')
@@ -1300,11 +1321,15 @@ def report_rows(db,pid):
         supplier=db.get(Supplier,product.supplier_id) if product and product.supplier_id else None
         group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity','frame_posts','frame_group','plan_icon','plan_color')}
         if is_power_supply(t):
-            strip=db.get(Element,e.parameters.get('led_strip_id'))
-            strip_room=db.get(Room,strip.room_id) if strip and strip.room_id else None
-            strip_page=db.get(Page,strip.page_id) if strip else None
+            descriptions=[]
+            for strip_id in sorted(linked_strip_ids(e.parameters)):
+                strip=db.get(Element,strip_id)
+                strip_room=db.get(Room,strip.room_id) if strip and strip.room_id else None
+                strip_page=db.get(Page,strip.page_id) if strip else None
+                descriptions.append(f"LED-линия №{strip.id} · {strip_room.name if strip_room else 'Без помещения'} · лист {strip_page.number}" if strip else f'Лента №{strip_id} не найдена')
             group_parameters.pop('led_strip_id',None)
-            group_parameters['led_strip']=f"LED-линия №{strip.id} · {strip_room.name if strip_room else 'Без помещения'} · лист {strip_page.number}" if strip else 'Лента не найдена'
+            group_parameters.pop('led_strip_ids',None)
+            group_parameters['led_strip']='; '.join(descriptions)
         key=(
             room.name if room else 'Без помещения',t.category,t.name,t.unit,
             json.dumps(group_parameters,ensure_ascii=False,sort_keys=True),

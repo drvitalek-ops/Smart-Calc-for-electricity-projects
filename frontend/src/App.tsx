@@ -198,7 +198,7 @@ async function api<T>(
 }
 const labels: Record<string, string> = {
   power_watts: "Мощность, Вт",
-  led_strip: "Питает ленту",
+  led_strip: "Питает ленты",
   quantity: "Количество",
   length: "Длина, м",
   ip: "Степень IP",
@@ -241,6 +241,9 @@ function isElectrical(kind?: Kind) {
 }
 function isPowerSupply(kind?: Kind) {
   return kind?.seed_key === "LED-подсветка:Блок питания LED-ленты" || Boolean(kind?.seed_key?.startsWith("power-supply:")) || kind?.category === "LED-подсветка" && kind.name.toLocaleLowerCase().includes("блок питания");
+}
+function powerStripIds(parameters:Record<string,unknown>):number[] {
+  return Array.isArray(parameters.led_strip_ids) ? parameters.led_strip_ids.map(Number) : parameters.led_strip_id ? [Number(parameters.led_strip_id)] : [];
 }
 function isLedStrip(kind?: Kind) {
   return kind?.category === "LED-подсветка" && kind.unit === "м";
@@ -1015,7 +1018,7 @@ export default function App() {
   const [leftPanelVisible, setLeftPanelVisible] = useState(true),
     [rightPanelVisible, setRightPanelVisible] = useState(true),
     [checkedPageIds, setCheckedPageIds] = useState<number[]>([]);
-  const [supplyPlacement, setSupplyPlacement] = useState<{body: Record<string, unknown>; stripId: string; watts: string; editId?: number} | null>(null);
+  const [supplyLinking,setSupplyLinking]=useState<{body:Record<string,unknown>;editId?:number;stripIds:number[];undo:number[][];redo:number[][];resumePlacing:boolean}|null>(null);
   const [lineRedo, setLineRedo] = useState<Point[]>([]);
   const pendingHistory = useRef<boolean[]>([]);
   const [linePoints, setLinePoints] = useState<Point[]>([]),
@@ -1142,7 +1145,8 @@ export default function App() {
   }
   function requestPdfImport(files:File[]) {
     if(busy) {setError("Дождитесь завершения сохранения или загрузки");return;}
-    if(settingsOpen || catalogOpen || supplyPlacement || pdfImport) {setError("Закройте открытое окно перед импортом PDF");return;}
+    if(supplyLinking){setError("Сначала завершите или отмените привязку LED-лент");return;}
+    if(settingsOpen || catalogOpen || pdfImport) {setError("Закройте открытое окно перед импортом PDF");return;}
     if(files.length!==1) {setError("Перетащите один PDF-файл проекта");return;}
     const file=files[0];
     if(!/\.pdf$/i.test(file.name) && file.type!=="application/pdf") {setError("Для нового проекта нужен PDF-файл");return;}
@@ -1185,7 +1189,7 @@ export default function App() {
     setTypeEditorOpen(false);
     setView("plan");
     setCheckedPageIds([]);
-    setSupplyPlacement(null);
+    setSupplyLinking(null);
     pendingHistory.current = [];
     setAlignPageId(null);
     setAlignOriginal(null);
@@ -1228,12 +1232,54 @@ export default function App() {
   async function removeSelected() {
     const ids = selectedIds.length ? selectedIds : selected ? [selected.id] : [];
     // Remove dependent supplies before their strips when both are selected.
-    for (const id of [...ids].sort((a,b) => Number(Boolean(project?.elements.find(item => item.id === b)?.parameters.led_strip_id)) - Number(Boolean(project?.elements.find(item => item.id === a)?.parameters.led_strip_id))))
+    for (const id of [...ids].sort((a,b) => Number(isPowerSupply(types.find(type=>type.id===project?.elements.find(item=>item.id===b)?.type_id))) - Number(isPowerSupply(types.find(type=>type.id===project?.elements.find(item=>item.id===a)?.type_id)))))
       await api(`/elements/${id}`, "DELETE");
     setSelected(null);
     setSelectedIds([]);
     setTypeEditorOpen(false);
     await refresh(project!.id);
+  }
+  function startSupplyLinking(body:Record<string,unknown>,editId?:number) {
+    if(roomMode){setError("Сначала завершите или отмените редактирование контура помещения");return;}
+    cancelAlignment();
+    setSupplyLinking({body,editId,stripIds:powerStripIds((body.parameters ?? {}) as Record<string,unknown>),undo:[],redo:[],resumePlacing:!editId && placing});
+    setPlacing(false);setCalibrating(false);setCalibrationStart(null);setElementsVisible(true);
+    setObjectMenu(null);setTypeEditorOpen(false);setSelectionBox(null);drag.current=null;nodeDrag.current=null;
+  }
+  function cancelSupplyLinking() {if(!supplyLinking)return;setPlacing(supplyLinking.resumePlacing);setSupplyLinking(null);}
+  function toggleSupplyStrip(id:number) {
+    if(!supplyLinking || busy)return;
+    const ids=supplyLinking.stripIds.includes(id) ? supplyLinking.stripIds.filter(value=>value!==id) : [...supplyLinking.stripIds,id];
+    if(ids.length>1000){setError("К блоку можно привязать до 1000 LED-лент");return;}
+    setSupplyLinking({...supplyLinking,stripIds:ids,undo:[...supplyLinking.undo,supplyLinking.stripIds],redo:[]});
+  }
+  function undoSupplyLinking(redo=false) {
+    if(!supplyLinking)return;
+    const history=redo ? supplyLinking.redo : supplyLinking.undo,ids=history.at(-1);
+    if(!ids){if(!redo)cancelSupplyLinking();return;}
+    setSupplyLinking({...supplyLinking,stripIds:ids,undo:redo ? [...supplyLinking.undo,supplyLinking.stripIds] : history.slice(0,-1),redo:redo ? history.slice(0,-1) : [...supplyLinking.redo,supplyLinking.stripIds]});
+  }
+  async function finishSupplyLinking() {
+    if(!project || !supplyLinking || !supplyLinking.stripIds.length)return;
+    const draft=supplyLinking,parameters={...(draft.body.parameters as Record<string,unknown>),led_strip_ids:draft.stripIds};
+    delete (parameters as Record<string,unknown>).led_strip_id;
+    const item=await api<Item>(draft.editId ? `/elements/${draft.editId}` : `/projects/${project.id}/elements`,draft.editId ? "PUT" : "POST",{...draft.body,parameters});
+    setSelected(item);setSelectedIds([item.id]);setPageId(item.page_id);setSupplyLinking(null);setPlacing(draft.resumePlacing);
+    await refresh(project.id);
+  }
+  function editPowerWatts(item:Item) {
+    const current=selected?.id===item.id ? selected : item;
+    const input=prompt("Укажите мощность W (в ваттах). Пустое поле — убрать мощность.",String(current.parameters.power_watts ?? ""));
+    if(input===null)return;
+    const parameters={...current.parameters},value=input.trim().replace(/\s/g,"").replace(",",".");
+    if(!value)delete parameters.power_watts;
+    else {
+      const watts=Number(value);
+      if(!Number.isFinite(watts) || watts<=0 || watts>1000000){setError("Мощность должна быть положительным числом ватт");return;}
+      parameters.power_watts=watts;
+    }
+    const changed={...current,parameters};setObjectMenu(null);setSelected(changed);setSelectedIds([changed.id]);
+    void run(()=>save(changed));
   }
   async function undoLast(redo = false) {
     if (!project) return;
@@ -1273,13 +1319,20 @@ export default function App() {
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
       if (settingsOpen || pdfImport) return;
+      if(supplyLinking) {
+        if((event.target as HTMLElement|null)?.matches('input,textarea,[contenteditable="true"]'))return;
+        const modifier=event.ctrlKey || event.metaKey,key=event.key.toLowerCase();
+        if(event.key==="Escape") {event.preventDefault();if(!busy)cancelSupplyLinking();}
+        else if(event.key==="Enter") {event.preventDefault();if(!busy && supplyLinking.stripIds.length)void run(finishSupplyLinking);}
+        else if(modifier && ["z","я","y","н"].includes(key)) {
+          event.preventDefault();const redo=event.shiftKey || ["y","н"].includes(key);
+          if(busy)pendingHistory.current.push(redo);else undoSupplyLinking(redo);
+        }
+        return;
+      }
       if (event.key === "F7") {
         event.preventDefault();
         setElementsVisible((value) => !value);
-        return;
-      }
-      if (event.key === "Escape" && supplyPlacement) {
-        setSupplyPlacement(null);
         return;
       }
       if (event.key === "Escape" && alignPageId) {
@@ -1292,7 +1345,6 @@ export default function App() {
         if (roomMode) return;
         event.preventDefault();
         const redo = event.shiftKey || ["y", "н"].includes(event.key.toLowerCase());
-        if (supplyPlacement && !busy) { setSupplyPlacement(null); return; }
         if (alignPageId) { cancelAlignment(); return; }
         if (calibrationStart) { setCalibrationStart(null); return; }
         if (placing && kind?.unit === "м" && (linePoints.length || lineRedo.length)) {
@@ -1321,7 +1373,7 @@ export default function App() {
     }
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyPlacement, settingsOpen, pdfImport]);
+  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport]);
   useEffect(() => {
     if (!busy && pendingHistory.current.length) {
       const redo = pendingHistory.current.shift()!;
@@ -1547,7 +1599,7 @@ export default function App() {
     function roomKeys(event: KeyboardEvent) {
       if (
         !roomMode ||
-        settingsOpen || pdfImport ||
+        settingsOpen || pdfImport || supplyLinking ||
         busy ||
         (event.target as HTMLElement | null)?.matches(
           'input:not([type="checkbox"]):not([type="range"]),textarea,[contenteditable="true"]',
@@ -1573,7 +1625,7 @@ export default function App() {
     }
     window.addEventListener("keydown", roomKeys);
     return () => window.removeEventListener("keydown", roomKeys);
-  }, [roomMode, roomPoints, roomUndo, roomRedo, busy, project, page, editingRoomId, settingsOpen, pdfImport]);
+  }, [roomMode, roomPoints, roomUndo, roomRedo, busy, project, page, editingRoomId, settingsOpen, pdfImport, supplyLinking]);
   function editRoomArea(room: Room) {
     setRoomUndo([]);
     setRoomRedo([]);
@@ -1658,6 +1710,7 @@ export default function App() {
   function showObjectMenu(item: Item, event: React.MouseEvent<SVGGElement>) {
     event.preventDefault();
     event.stopPropagation();
+    if(supplyLinking)return;
     if (!selectedIds.includes(item.id)) {
       setSelectedIds([item.id]);
       setFramePosts(1);
@@ -1667,7 +1720,7 @@ export default function App() {
     setObjectMenu({
       itemId: item.id,
       x: Math.min(event.clientX, window.innerWidth - 230),
-      y: Math.min(event.clientY, window.innerHeight - 260),
+      y: Math.max(8,Math.min(event.clientY, window.innerHeight - (isPowerSupply(types.find(type=>type.id===item.type_id)) ? 365 : isLedStrip(types.find(type=>type.id===item.type_id)) ? 310 : 260))),
     });
     setRoomMenu(null);
     setRoomPointMenu(null);
@@ -1762,11 +1815,10 @@ export default function App() {
     }
     if (isPowerSupply(nextKind)) {
       if (isPowerSupply(currentKind)) {
-        parameters.led_strip_id = selected.parameters.led_strip_id;
+        parameters.led_strip_ids = powerStripIds(selected.parameters);
         if (selected.parameters.power_watts) parameters.power_watts = selected.parameters.power_watts;
       } else {
-        const strips=project?.elements.filter(item => isLedStrip(types.find(type => type.id === item.type_id))) ?? [];
-        setSupplyPlacement({body:{...selected,type_id:typeId,product_id:null,parameters,geometry:{}},editId:selected.id,stripId:String(strips.find(item => item.page_id===selected.page_id)?.id ?? strips[0]?.id ?? ""),watts:""});
+        startSupplyLinking({...selected,type_id:typeId,product_id:null,parameters,geometry:{}},selected.id);
         return;
       }
     }
@@ -1819,7 +1871,7 @@ export default function App() {
   const visibleElements = elementsVisible
     ? (project?.elements.filter(
         (item) =>
-          displayedPageIds.has(item.page_id) &&
+          displayedPageIds.has(item.page_id) && item.id!==supplyLinking?.editId &&
           project.layers.find((l) => l.id === item.layer_id)?.visible,
       ) ?? [])
     : [];
@@ -2053,7 +2105,7 @@ export default function App() {
               className={`workspace ${leftPanelVisible ? "" : "left-collapsed"} ${rightPanelVisible ? "" : "right-collapsed"}`}
             >
               {leftPanelVisible && (
-                <aside aria-label="Объекты и рамки" className="objects-panel">
+                <aside aria-label="Объекты и рамки" className="objects-panel" inert={Boolean(supplyLinking)}>
                   <h3>Библиотека</h3>
                   <select
                     aria-label="Тип элемента"
@@ -2440,16 +2492,14 @@ export default function App() {
                           </span>
                         </label>
                       )}
-                      {isPowerSupply(selectedKind) && <>
-                        <label>Питает LED-ленту<select aria-label="Питает LED-ленту" value={String(selected.parameters.led_strip_id ?? "")} onChange={event => setSelected({...selected,parameters:{...selected.parameters,led_strip_id:Number(event.target.value)}})}>
-                          {project.elements.filter(item => isLedStrip(types.find(type => type.id === item.type_id))).map(item => <option key={item.id} value={item.id}>{stripLabel(item)}</option>)}
-                        </select></label>
-                        <label>Мощность, Вт (необязательно)<input aria-label="Мощность блока питания, Вт" type="number" min="0.01" max="1000000" step="any" value={String(selected.parameters.power_watts ?? "")} onChange={event => {
-                          const parameters={...selected.parameters};
-                          if (event.target.value) parameters.power_watts=Number(event.target.value); else delete parameters.power_watts;
-                          setSelected({...selected,parameters});
-                        }} /></label>
-                      </>}
+                      {isPowerSupply(selectedKind) && <div className="supply-linked-list">
+                        <label>Питает LED-ленты</label>
+                        <ul>{powerStripIds(selected.parameters).map(id=> {const strip=project.elements.find(item=>item.id===id);return <li key={id}>{strip ? stripLabel(strip) : `Лента №${id} не найдена`}</li>;})}</ul>
+                        <button type="button" onClick={()=>startSupplyLinking({...selected},selected.id)}>Выбрать ленты на плане</button>
+                      </div>}
+                      {(isPowerSupply(selectedKind) || isLedStrip(selectedKind)) && <label>Мощность, Вт (необязательно)<input aria-label={isPowerSupply(selectedKind) ? "Мощность блока питания, Вт" : "Мощность ленты, Вт"} type="number" min="0.01" max="1000000" step="any" value={String(selected.parameters.power_watts ?? "")} onChange={event=> {
+                        const parameters={...selected.parameters};if(event.target.value)parameters.power_watts=Number(event.target.value);else delete parameters.power_watts;setSelected({...selected,parameters});
+                      }} /></label>}
                       {Object.entries(selected.parameters)
                         .filter(
                           ([key]) =>
@@ -2458,8 +2508,8 @@ export default function App() {
                               "frame_group",
                               "plan_icon",
                               "plan_color",
-                              "led_strip_id",
-                              ...(isPowerSupply(selectedKind) ? ["power_watts"] : []),
+                              "led_strip_id", "led_strip_ids",
+                              ...((isPowerSupply(selectedKind) || isLedStrip(selectedKind)) ? ["power_watts"] : []),
                             ].includes(key),
                         )
                         .map(([key, value]) => (
@@ -2520,7 +2570,13 @@ export default function App() {
                 </aside>
               )}
               <section className="plan-area">
-                <div className="toolbar">
+                {supplyLinking && <div className="supply-link-toolbar" role="region" aria-label="Привязка LED-лент">
+                  <div><strong>{supplyLinking.editId ? "Изменение привязки блока питания" : "Блок размещён — выберите LED-ленты на плане"}</strong><small>Щёлкайте по лентам: повторный щелчок снимает выбор. Выбрано: {supplyLinking.stripIds.length}</small></div>
+                  <button className="primary" disabled={busy || !supplyLinking.stripIds.length} onClick={()=>void run(finishSupplyLinking)}>Готово · Enter</button>
+                  <button disabled={busy} onClick={cancelSupplyLinking}>Отмена · Esc</button>
+                  <span>{project.elements.some(item=>isLedStrip(types.find(type=>type.id===item.type_id))) ? "Ctrl+Z — отменить выбор · можно выбрать несколько лент и переключать листы" : "В проекте ещё нет LED-лент. Отмените привязку, разместите ленты и повторите."}</span>
+                </div>}
+                <div className="toolbar" style={{display:supplyLinking ? "none" : undefined}}>
                   <strong>
                     {project.name}{" "}
                     <small>
@@ -2785,11 +2841,13 @@ export default function App() {
                             : types.find((type) => type.id === item.type_id)
                                 ?.name}
                         </strong>
+                        {(isPowerSupply(types.find(type=>type.id===item.type_id)) || isLedStrip(types.find(type=>type.id===item.type_id))) && <button className="power-watts-action" disabled={busy || project.layers.find(layer=>layer.id===item.layer_id)?.locked} onClick={()=>editPowerWatts(item)}>Укажите мощность W</button>}
+                        {isPowerSupply(types.find(type=>type.id===item.type_id)) && <button disabled={busy || project.layers.find(layer=>layer.id===item.layer_id)?.locked} onClick={()=>startSupplyLinking({...(selected?.id===item.id ? selected : item)},item.id)}>Привязать LED-ленты</button>}
                         <button
                           onClick={() => {
                             setSelectedIds([item.id]);
                             setSelected(item);
-                            setRightPanelVisible(true);
+                            setLeftPanelVisible(true);
                             setObjectMenu(null);
                           }}
                         >
@@ -2951,6 +3009,7 @@ export default function App() {
                         onPointerDown={(e) => {
                           if (e.button !== 0 || e.target !== e.currentTarget)
                             return;
+                          if(supplyLinking)return;
                           const pos = position(e);
                           setRoomMenu(null);
                           setRoomPointMenu(null);
@@ -3030,8 +3089,7 @@ export default function App() {
                               return;
                             }
                             if (isPowerSupply(kind)) {
-                              const strips = project.elements.filter(item => isLedStrip(types.find(type => type.id === item.type_id)));
-                              setSupplyPlacement({body:{page_id:page.id,layer_id:layer.id,type_id:kind.id,product_id:null,room_id:roomId,x:pos.x,y:pos.y,geometry:{},parameters:kind.defaults},stripId:String(strips.find(item => item.page_id === page.id)?.id ?? strips[0]?.id ?? ""),watts:""});
+                              startSupplyLinking({page_id:page.id,layer_id:layer.id,type_id:kind.id,product_id:null,room_id:roomId,x:pos.x,y:pos.y,geometry:{},parameters:kind.defaults,comment:""});
                               return;
                             }
                             void run(async () => {
@@ -3342,6 +3400,10 @@ export default function App() {
                             vectorEffect="non-scaling-stroke"
                           />
                         ))}
+                        {supplyLinking && displayedPageIds.has(Number(supplyLinking.body.page_id)) && (()=> {
+                          const point=pagePoint({x:Number(supplyLinking.body.x),y:Number(supplyLinking.body.y)},Number(supplyLinking.body.page_id));
+                          return <g className="power-supply-preview" transform={`translate(${point.x*1000},${point.y*1000})`} pointerEvents="none"><PointMarker scale={symbolScale} color="#dc2626" selected={true} icon="" powerSupply={true}/><text x={29*symbolScale} y="5" fontSize="14" fill="#b91c1c" stroke="white" strokeWidth="3" paintOrder="stroke">Блок питания · выберите ленты</text></g>;
+                        })()}
                         <g className="plan-elements" style={{ pointerEvents: roomMode ? "none" : undefined }}>
                         {visibleElements.map((original) => {
                           const item =
@@ -3364,7 +3426,7 @@ export default function App() {
                                 .join(" "),
                               anchor = transformed[0],
                               editable =
-                                isSelected &&
+                                isSelected && !supplyLinking &&
                                 !project.layers.find(
                                   (l) => l.id === item.layer_id,
                                 )?.locked,
@@ -3372,23 +3434,26 @@ export default function App() {
                             return (
                               <g
                                 key={item.id}
-                                className={isSelected ? "selected-line-object" : ""}
+                                className={(isSelected ? "selected-line-object " : "")+(supplyLinking && isLedStrip(t) ? "supply-strip-target "+(supplyLinking.stripIds.includes(item.id) ? "supply-strip-picked" : "") : "")}
+                                data-element-id={item.id}
                                 opacity={isSelected ? 1 : opacity}
                                 onContextMenu={(e) => showObjectMenu(item, e)}
                                 onDoubleClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
-                                  selectSameType(item);
+                                  if(!supplyLinking)selectSameType(item);
                                 }}
                                 onPointerDown={(e) => {
                                   if (e.button !== 0) return;
                                   e.preventDefault();
                                   e.stopPropagation();
+                                  if(supplyLinking) {if(isLedStrip(t))toggleSupplyStrip(item.id);return;}
                                   if (objectDoubleClick(item)) return;
                                   choose(item, e.ctrlKey);
                                 }}
                               >
-                                {isSelected && (
+                                {supplyLinking && isLedStrip(t) && <polyline className="supply-strip-hit" points={coords} fill="none" stroke="transparent" strokeWidth="24" vectorEffect="non-scaling-stroke" />}
+                                {isSelected && !supplyLinking && (
                                   <polyline
                                     className="selection-line-halo"
                                     points={coords}
@@ -3402,8 +3467,8 @@ export default function App() {
                                 <polyline
                                   points={coords}
                                   fill="none"
-                                  stroke={t?.color}
-                                  strokeWidth={isSelected ? 9 : 6}
+                                  stroke={supplyLinking?.stripIds.includes(item.id) ? "#2563eb" : t?.color}
+                                  strokeWidth={supplyLinking?.stripIds.includes(item.id) ? 10 : isSelected ? 9 : 6}
                                   vectorEffect="non-scaling-stroke"
                                 />
                                 {track
@@ -3469,7 +3534,7 @@ export default function App() {
                                     strokeWidth="3"
                                     paintOrder="stroke"
                                   >
-                                    {t?.name} #{item.id}{isPowerSupply(t) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""} ·{" "}
+                                    {t?.name} #{item.id}{(isPowerSupply(t) || isLedStrip(t)) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""} ·{" "}
                                     {String(item.parameters.length)} м
                                   </text>
                                 )}
@@ -3483,19 +3548,21 @@ export default function App() {
                           return (
                             <g
                               key={item.id}
-                              className={isSelected ? "selected-point-object" : ""}
+                              className={(isSelected ? "selected-point-object " : "")+(supplyLinking && isLedStrip(t) ? "supply-strip-target "+(supplyLinking.stripIds.includes(item.id) ? "supply-strip-picked" : "") : "")}
+                              data-element-id={item.id}
                               opacity={isSelected ? 1 : opacity}
                               transform={`translate(${marker.x * 1000},${marker.y * 1000})`}
                               onContextMenu={(e) => showObjectMenu(item, e)}
                               onDoubleClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                selectSameType(item);
+                                if(!supplyLinking)selectSameType(item);
                               }}
                               onPointerDown={(e) => {
                                 if (e.button !== 0) return;
                                 e.preventDefault();
                                 e.stopPropagation();
+                                if(supplyLinking){if(isLedStrip(t))toggleSupplyStrip(item.id);return;}
                                 if (objectDoubleClick(item)) return;
                                 choose(item, e.ctrlKey);
                                 if (
@@ -3515,12 +3582,12 @@ export default function App() {
                               <PointMarker
                                 scale={symbolScale}
                                 powerSupply={isPowerSupply(t)}
-                                color={String(
+                                color={supplyLinking?.stripIds.includes(item.id) ? "#2563eb" : String(
                                   item.parameters.plan_color ??
                                     t?.color ??
                                     "#64748b",
                                 )}
-                                selected={isSelected}
+                                selected={supplyLinking ? supplyLinking.stripIds.includes(item.id) : isSelected}
                                 icon={planIcon}
                               />
                               {labelsVisible && (
@@ -3534,7 +3601,7 @@ export default function App() {
                                   strokeWidth="3"
                                   paintOrder="stroke"
                                 >
-                                  {t?.name} #{item.id}{isPowerSupply(t) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""}
+                                  {t?.name} #{item.id}{(isPowerSupply(t) || isLedStrip(t)) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""}
                                 </text>
                               )}
                             </g>
@@ -4095,30 +4162,8 @@ export default function App() {
           )}
         </>
       )}
-      {supplyPlacement && project && <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="supply-title">
-        <section className="catalog-modal supply-modal">
-          <h2 id="supply-title">К какой LED-ленте относится блок питания?</h2>
-          {project.elements.some(item => isLedStrip(types.find(type => type.id === item.type_id))) ? <form onSubmit={event => {
-            event.preventDefault();
-            const placement=supplyPlacement;
-            void run(async () => {
-              const parameters={...(placement.body.parameters as Record<string,unknown>),led_strip_id:Number(placement.stripId),...(placement.watts ? {power_watts:Number(placement.watts)} : {})};
-              const item=await api<Item>(placement.editId ? `/elements/${placement.editId}` : `/projects/${project.id}/elements`,placement.editId ? "PUT" : "POST",{...placement.body,parameters});
-              setSelected(item); setSelectedIds([item.id]); setSupplyPlacement(null);
-              await refresh(project.id);
-            });
-          }}>
-            <label>LED-лента<select autoFocus required aria-label="LED-лента блока питания" value={supplyPlacement.stripId} onChange={event => setSupplyPlacement({...supplyPlacement,stripId:event.target.value})}>
-              {project.elements.filter(item => isLedStrip(types.find(type => type.id === item.type_id))).map(item => <option key={item.id} value={item.id}>{stripLabel(item)}</option>)}
-            </select></label>
-            <label>Мощность, Вт (необязательно)<input type="number" aria-label="Мощность при размещении, Вт" min="0.01" max="1000000" step="any" value={supplyPlacement.watts} onChange={event => setSupplyPlacement({...supplyPlacement,watts:event.target.value})} placeholder="Не указана" /></label>
-            <button className="primary" disabled={busy || !supplyPlacement.stripId}>{supplyPlacement.editId ? "Применить" : "Разместить блок питания"}</button>
-          </form> : <p>Сначала разместите LED-ленту на плане, затем добавьте её блок питания.</p>}
-          <button disabled={busy} onClick={() => setSupplyPlacement(null)}>Отмена</button>
-        </section>
-      </div>}
       <footer>
-        <span>SMART HOME CALC / 1.0.32</span>
+        <span>SMART HOME CALC / 1.0.33</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

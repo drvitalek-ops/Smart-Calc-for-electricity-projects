@@ -37,7 +37,7 @@ def test_health_identifies_desktop_backend(client,monkeypatch):
     health=client.get('/api/health')
     assert health.status_code==200
     assert health.json()=={
-        'status':'ok','version':'1.0.33','instance':'test-instance',
+        'status':'ok','version':'1.0.34','instance':'test-instance',
     }
 
 def test_full_workflow_and_exports(client):
@@ -954,3 +954,105 @@ def test_existing_single_strip_link_migrates_on_startup_and_legacy_backup_still_
     assert restored.status_code==201,restored.text
     elements=client.get(f"/api/projects/{restored.json()['id']}").json()['elements']
     assert next(item for item in elements if item['type_id']==typ['id'])['parameters']['led_strip_ids']==[next(item for item in elements if item['type_id']==body['type_id'])['id']]
+
+
+def test_delete_completed_project_and_its_files(client,monkeypatch,tmp_path):
+    from pathlib import Path
+    from sqlalchemy import select
+    from app.models import Project,Page,Element,Room,Layer,Report
+    monkeypatch.setattr(main_module,'STORAGE',tmp_path)
+    pid,body=setup(client)
+    strip=client.post(f'/api/projects/{pid}/elements',json=body).json()
+    supply_type=next(kind for kind in client.get('/api/types').json() if kind['name']=='Блок питания LED-ленты')
+    power=client.post(f'/api/projects/{pid}/elements',json={**body,'type_id':supply_type['id'],'parameters':{'led_strip_ids':[strip['id']],'power_watts':100}})
+    assert power.status_code==201
+    client.patch(f"/api/layers/{body['layer_id']}",json={'locked':True})
+    client.patch(f"/api/layers/{body['layer_id']}",json={'opacity':.5})
+    assert client.get(f'/api/projects/{pid}/export/pdf').status_code==200
+    assert client.get(f"/api/pages/{body['page_id']}/image?edge=1024").status_code==200
+    other,_=setup(client)
+    # Exercise undo and redo cleanup while retaining another project's history.
+    assert client.post(f'/api/projects/{pid}/elements/undo').status_code==200
+    assert pid in main_module.ELEMENT_REDO and other in main_module.ELEMENT_HISTORY
+    current=client.get(f'/api/projects/{pid}').json()
+    assert next(layer for layer in current['layers'] if layer['id']==body['layer_id'])['locked']
+    assert len(current['elements'])==2
+    before_other=client.get(f'/api/projects/{other}').json()
+    before_catalog=client.get('/api/catalog').json()
+    before_types=client.get('/api/types?include_inactive=true').json()
+    with main_module.Session() as db:
+        removed_files={Path(p.pdf_path) for p in db.scalars(select(Page).where(Page.project_id==pid))}
+        removed_files.update(Path(p.image_path) for p in db.scalars(select(Page).where(Page.project_id==pid)))
+        preserved_files={Path(p.pdf_path) for p in db.scalars(select(Page).where(Page.project_id==other))}
+        preserved_files.update(Path(p.image_path) for p in db.scalars(select(Page).where(Page.project_id==other)))
+    caches=set(tmp_path.glob('*-q*.png'))
+    response=client.delete(f'/api/projects/{pid}')
+    assert response.status_code==200 and response.json()=={'deleted':pid,'cleanup_failed':False}
+    assert all(not path.exists() for path in removed_files|caches)
+    assert all(path.exists() for path in preserved_files)
+    assert client.get(f'/api/projects/{pid}').status_code==404
+    assert client.get(f"/api/pages/{body['page_id']}/image").status_code==404
+    assert client.get(f'/api/projects/{other}').json()==before_other
+    assert client.get('/api/catalog').json()==before_catalog
+    assert client.get('/api/types?include_inactive=true').json()==before_types
+    assert pid not in main_module.ELEMENT_HISTORY and pid not in main_module.ELEMENT_REDO
+    assert other in main_module.ELEMENT_HISTORY
+    with main_module.Session() as db:
+        assert db.get(Project,pid) is None
+        for model in (Page,Element,Room,Layer,Report):
+            assert db.scalar(select(model.id).where(model.project_id==pid)) is None
+    assert client.post(f'/api/projects/{pid}/elements/undo').status_code==404
+    assert client.delete(f'/api/projects/{pid}').status_code==404
+
+
+def test_delete_project_preserves_shared_and_external_files(client,monkeypatch,tmp_path):
+    from pathlib import Path
+    from sqlalchemy import select
+    from app.models import Page
+    managed=tmp_path/'managed';managed.mkdir()
+    monkeypatch.setattr(main_module,'STORAGE',managed)
+    pid,_=setup(client)
+    other,_=setup(client)
+    external=tmp_path/'original.pdf';external.write_bytes(b'original outside storage')
+    external_image=tmp_path/'original.png';external_image.write_bytes(b'original image')
+    with main_module.Session() as db:
+        pages=list(db.scalars(select(Page).where(Page.project_id==pid).order_by(Page.id)))
+        shared=db.scalar(select(Page).where(Page.project_id==other).order_by(Page.id))
+        shared.pdf_path=pages[0].pdf_path;shared.image_path=pages[0].image_path
+        paths={Path(shared.pdf_path),Path(shared.image_path)}
+        cache=Path(shared.image_path).with_name(f'{Path(shared.image_path).stem}-q2048.png')
+        cache.write_bytes(b'shared cache');paths.add(cache)
+        pages[1].pdf_path=str(external);pages[1].image_path=str(external_image)
+        db.commit()
+    assert client.delete(f'/api/projects/{pid}').status_code==200
+    assert all(path.exists() for path in paths|{external,external_image})
+    assert client.get(f'/api/projects/{other}').status_code==200
+
+
+def test_delete_empty_project_and_last_project(client):
+    first=client.post('/api/projects',json={'name':'Дубль'}).json()['id']
+    second=client.post('/api/projects',json={'name':'Дубль'}).json()['id']
+    assert client.delete(f'/api/projects/{first}').status_code==200
+    assert [p['id'] for p in client.get('/api/projects').json()]==[second]
+    assert client.delete(f'/api/projects/{second}').status_code==200
+    assert client.get('/api/projects').json()==[]
+    assert client.delete('/api/projects/999999').status_code==404
+
+
+def test_delete_project_reports_file_in_use_without_false_failure(client,monkeypatch,tmp_path):
+    from pathlib import Path
+    from sqlalchemy import select
+    from app.models import Page
+    monkeypatch.setattr(main_module,'STORAGE',tmp_path)
+    pid,_=setup(client)
+    with main_module.Session() as db:
+        blocked=Path(db.scalar(select(Page).where(Page.project_id==pid)).pdf_path)
+    unlink=Path.unlink
+    def file_in_use(path,*args,**kwargs):
+        if path==blocked: raise PermissionError('File in use')
+        return unlink(path,*args,**kwargs)
+    monkeypatch.setattr(Path,'unlink',file_in_use)
+    response=client.delete(f'/api/projects/{pid}')
+    assert response.status_code==200 and response.json()['cleanup_failed'] is True
+    assert client.get(f'/api/projects/{pid}').status_code==404
+    assert blocked.exists()

@@ -2,6 +2,7 @@ import io
 import copy
 import csv
 import json
+import logging
 import math
 import os
 import re
@@ -18,7 +19,7 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, Query, Form, Re
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import inspect, select, text
+from sqlalchemy import delete, inspect, select, text
 from sqlalchemy.orm import Session as DbSession
 from .db import Base, engine, session, Session
 from .models import (
@@ -100,7 +101,7 @@ async def lifespan(app):
         db.commit()
     yield
 
-APP_VERSION = '1.0.33'
+APP_VERSION = '1.0.34'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -971,6 +972,44 @@ def project(pid: int, db: DbSession = Depends(session)):
     for key, model in [('pages',Page),('rooms',Room),('layers',Layer),('elements',Element)]:
         p[key] = [data(x) for x in db.scalars(select(model).where(model.project_id==pid).order_by(model.id))]
     return p
+
+@app.delete('/api/projects/{pid}')
+def remove_project(pid: int, db: DbSession = Depends(session)):
+    target=require(db,Project,pid)
+    cleanup_failed=False
+    # A whole project can be removed even when its layers are locked or its
+    # LED strips have power supplies. Delete children before their foreign keys.
+    with PDF_IMAGE_LOCK:
+        pages=list(db.scalars(select(Page).where(Page.project_id==pid)))
+        paths=set()
+        for page in pages:
+            image=Path(page.image_path)
+            paths.update((Path(page.pdf_path),image))
+            paths.update(image.with_name(f'{image.stem}-q{level}.png') for level in (1024,2048,4096,8192))
+        for model in (Element,Room,Report,Layer,Page):
+            db.execute(delete(model).where(model.project_id==pid))
+        db.delete(target)
+        # Keep files used by another project, including legacy shared paths.
+        referenced=set()
+        for page in db.scalars(select(Page)):
+            image=Path(page.image_path)
+            referenced.update((Path(page.pdf_path).resolve(),image.resolve()))
+            referenced.update(image.with_name(f'{image.stem}-q{level}.png').resolve() for level in (1024,2048,4096,8192))
+        db.commit()
+        with ELEMENT_HISTORY_LOCK:
+            ELEMENT_HISTORY.pop(pid,None)
+            ELEMENT_REDO.pop(pid,None)
+        for path in paths:
+            resolved=path.resolve()
+            # Never remove source files outside the application's storage.
+            if not resolved.is_relative_to(STORAGE) or resolved in referenced:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                cleanup_failed=True
+                logging.getLogger(__name__).warning('Project %s deleted; could not remove %s',pid,path,exc_info=True)
+    return {'deleted':pid,'cleanup_failed':cleanup_failed}
 
 @app.post('/api/projects/{pid}/rooms',status_code=201)
 def add_room(pid: int, body: RoomInput, db: DbSession = Depends(session)):

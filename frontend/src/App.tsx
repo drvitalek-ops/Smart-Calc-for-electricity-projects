@@ -445,7 +445,8 @@ function makeLegend(
     return rank(a.name)-rank(b.name) || a.name.localeCompare(b.name,"ru",{numeric:true});
   });
 }
-function ToolIcon({name}:{name:"settings"|"pdf"|"folder"}) {
+function ToolIcon({name}:{name:"settings"|"pdf"|"folder"|"trash"}) {
+  if(name==="trash")return <svg className="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>;
   return <svg className="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     {name==="settings" ? <><path d="m9 3-1 3-3 1-2 3 2 2v3l3 2 1 4h6l1-4 3-2v-3l2-2-2-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></> : name==="folder" ? <><path d="M3 7V5h7l2 2h9v13H3Z"/><path d="M3 10h18"/></> : <><path d="M14 3H5v18h14V8Z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></>}
   </svg>;
@@ -996,6 +997,7 @@ export default function App() {
     });
   const [settingsOpen,setSettingsOpen]=useState(false),[draggingPdf,setDraggingPdf]=useState(false),
     [pdfImport,setPdfImport]=useState<{file:File;name:string}|null>(null),[pdfImportError,setPdfImportError]=useState("");
+  const [deletingProject,setDeletingProject]=useState<Project|null>(null),[deleteProjectError,setDeleteProjectError]=useState("");
   const dragDepth=useRef(0),pdfInput=useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState(1),
     [symbolScale, setSymbolScale] = useState(1),
@@ -1146,7 +1148,7 @@ export default function App() {
   function requestPdfImport(files:File[]) {
     if(busy) {setError("Дождитесь завершения сохранения или загрузки");return;}
     if(supplyLinking){setError("Сначала завершите или отмените привязку LED-лент");return;}
-    if(settingsOpen || catalogOpen || pdfImport) {setError("Закройте открытое окно перед импортом PDF");return;}
+    if(settingsOpen || catalogOpen || pdfImport || deletingProject) {setError("Закройте открытое окно перед импортом PDF");return;}
     if(files.length!==1) {setError("Перетащите один PDF-файл проекта");return;}
     const file=files[0];
     if(!/\.pdf$/i.test(file.name) && file.type!=="application/pdf") {setError("Для нового проекта нужен PDF-файл");return;}
@@ -1204,6 +1206,35 @@ export default function App() {
     setCalibrationStart(null);
     setElementsVisible(true);
     setZoom(1);
+  }
+  function clearProject() {
+    setProject(null);setPageId(null);setLayerId(null);setRoomId(null);
+    setSelected(null);setSelectedIds([]);setTypeEditorOpen(false);
+    setReport({rows:[],warnings:[],summary:{categories:[],rooms:[]}});
+    setView("plan");setCheckedPageIds([]);setSupplyLinking(null);
+    pendingHistory.current=[];
+    setAlignPageId(null);setAlignOriginal(null);
+    setRoomMode(null);setRoomPoints([]);setRoomCursor(null);setRoomUndo([]);setRoomRedo([]);setEditingRoomId(null);
+    setRoomMenu(null);setRoomPointMenu(null);setObjectMenu(null);
+    setLinePoints([]);setLineRedo([]);setLineCursor(null);setCalibrationStart(null);
+    setPlacing(false);setCalibrating(false);setSelectionBox(null);
+    drag.current=null;nodeDrag.current=null;pan.current=null;alignDrag.current=null;
+    roomDragStart.current=null;roomNodeDrag.current=null;lastObjectClick.current=null;
+    setRoomName("");setWet(false);setZoom(1);setSymbolScale(1);setElementsVisible(true);
+  }
+  async function deleteCurrentProject() {
+    if(!deletingProject)return;
+    const id=deletingProject.id;
+    let result:{cleanup_failed:boolean};
+    try {result=await api(`/projects/${id}`,"DELETE");}
+    catch(error){setDeleteProjectError(error instanceof Error ? error.message : "Не удалось удалить проект");return;}
+    try {localStorage.removeItem(symbolScaleKey(id));}catch{}
+    clearProject();setDeletingProject(null);setDeleteProjectError("");
+    setProjects(current=>current.filter(item=>item.id!==id));
+    const remaining=await api<{id:number;name:string}[]>("/projects");
+    setProjects(remaining);
+    if(remaining.length)await open(remaining[0].id);
+    if(result.cleanup_failed)setError("Проект удалён. Часть его файлов занята другой программой и осталась в папке данных.");
   }
   useEffect(() => {
     void run(async () => {
@@ -1306,7 +1337,7 @@ export default function App() {
     );
   }
   useEffect(() => {
-    if (!selected || !project || busy || drag.current || nodeDrag.current)
+    if (!selected || !project || busy || deletingProject || drag.current || nodeDrag.current)
       return;
     const stored = project.elements.find((item) => item.id === selected.id);
     if (!stored || sameItem(selected, stored)) return;
@@ -1315,10 +1346,10 @@ export default function App() {
       600,
     );
     return () => window.clearTimeout(timeout);
-  }, [selected, project, busy]);
+  }, [selected, project, busy, deletingProject]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
-      if (settingsOpen || pdfImport) return;
+      if (settingsOpen || pdfImport || deletingProject) return;
       if(supplyLinking) {
         if((event.target as HTMLElement|null)?.matches('input,textarea,[contenteditable="true"]'))return;
         const modifier=event.ctrlKey || event.metaKey,key=event.key.toLowerCase();
@@ -1373,13 +1404,13 @@ export default function App() {
     }
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport]);
+  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport, deletingProject]);
   useEffect(() => {
-    if (!busy && pendingHistory.current.length) {
+    if (!busy && !deletingProject && pendingHistory.current.length) {
       const redo = pendingHistory.current.shift()!;
       void run(() => undoLast(redo));
     }
-  }, [busy, selected, project]);
+  }, [busy, selected, project, deletingProject]);
   useEffect(() => {
     function wheel(event: WheelEvent) {
       if (!event.ctrlKey) return;
@@ -1599,7 +1630,7 @@ export default function App() {
     function roomKeys(event: KeyboardEvent) {
       if (
         !roomMode ||
-        settingsOpen || pdfImport || supplyLinking ||
+        settingsOpen || pdfImport || supplyLinking || deletingProject ||
         busy ||
         (event.target as HTMLElement | null)?.matches(
           'input:not([type="checkbox"]):not([type="range"]),textarea,[contenteditable="true"]',
@@ -1625,7 +1656,7 @@ export default function App() {
     }
     window.addEventListener("keydown", roomKeys);
     return () => window.removeEventListener("keydown", roomKeys);
-  }, [roomMode, roomPoints, roomUndo, roomRedo, busy, project, page, editingRoomId, settingsOpen, pdfImport, supplyLinking]);
+  }, [roomMode, roomPoints, roomUndo, roomRedo, busy, project, page, editingRoomId, settingsOpen, pdfImport, supplyLinking, deletingProject]);
   function editRoomArea(room: Room) {
     setRoomUndo([]);
     setRoomRedo([]);
@@ -2011,6 +2042,7 @@ export default function App() {
         <div className="project-controls">
         <select
           aria-label="Проект"
+          disabled={busy}
           value={project?.id ?? ""}
           onChange={(e) => void run(() => open(+e.target.value))}
         >
@@ -2023,6 +2055,7 @@ export default function App() {
             </option>
           ))}
         </select>
+        <button className="icon-button delete-project" disabled={busy || !project} onClick={()=>{setDeleteProjectError("");setDeletingProject(project);}} title="Удалить выбранный проект"><ToolIcon name="trash"/>Удалить проект</button>
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -2046,6 +2079,14 @@ export default function App() {
         </form>
         </div>
       </header>
+      {deletingProject && <AppModal title="Удалить проект?" onClose={()=>setDeletingProject(null)} busy={busy} className="delete-project-modal">
+        <p className="delete-project-name">{deletingProject.name}</p>
+        <p>Будут удалены все листы PDF, помещения, размещённые объекты и расчёты этого проекта.</p>
+        <p className="hint">Отменить удаление через Ctrl+Z нельзя. Общий каталог и другие проекты сохранятся.</p>
+        <a href={`/api/projects/${deletingProject.id}/backup`} download>Скачать резервную копию проекта ZIP</a>
+        {deleteProjectError && <p className="catalog-error" role="alert">{deleteProjectError}</p>}
+        <div className="modal-actions"><button type="button" data-dialog-autofocus disabled={busy} onClick={()=>setDeletingProject(null)}>Отмена</button><button className="confirm-delete" disabled={busy} onClick={()=>{setDeleteProjectError("");void run(deleteCurrentProject);}}>{busy ? "Удаление…" : "Удалить навсегда"}</button></div>
+      </AppModal>}
       {settingsOpen && <SettingsDialog onClose={()=>setSettingsOpen(false)} />}
       {pdfImport && <AppModal title="Новый проект из PDF" onClose={()=>setPdfImport(null)} busy={busy} className="pdf-import-modal">
         <div className="pdf-import-file"><ToolIcon name="pdf"/><div><strong>{pdfImport.file.name}</strong><small>{(pdfImport.file.size/(pdfImport.file.size<1024*1024 ? 1024 : 1024*1024)).toLocaleString("ru-RU",{maximumFractionDigits:1})} {pdfImport.file.size<1024*1024 ? "КБ" : "МБ"} · все страницы PDF</small></div></div>
@@ -4163,7 +4204,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.33</span>
+        <span>SMART HOME CALC / 1.0.34</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

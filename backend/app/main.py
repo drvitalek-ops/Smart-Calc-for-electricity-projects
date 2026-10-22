@@ -14,7 +14,7 @@ from typing import Literal
 from contextlib import asynccontextmanager
 from collections import defaultdict
 import pymupdf
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, Query
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, Query, Form, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
@@ -28,6 +28,7 @@ from .models import (
 from .catalog import LAYERS, seed
 from .nomenclature import nomenclature_key
 from .polygons import polygon_error
+from .desktop_settings import desktop_settings, open_data_folder
 
 STORAGE = Path(os.getenv('STORAGE_DIR', 'storage')).resolve()
 STORAGE.mkdir(parents=True, exist_ok=True)
@@ -98,7 +99,7 @@ async def lifespan(app):
         db.commit()
     yield
 
-APP_VERSION = '1.0.31'
+APP_VERSION = '1.0.32'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -127,6 +128,10 @@ def remember_elements(db: DbSession, project_id: int):
         history.append(snapshot)
         del history[:-ELEMENT_HISTORY_LIMIT]
         ELEMENT_REDO.pop(project_id,None)
+
+class OpenDataFolderInput(BaseModel):
+    model_config={'extra':'forbid'}
+    instance: str = Field(min_length=1,max_length=128)
 
 class NameInput(BaseModel):
     name: str = Field(min_length=1, max_length=200)
@@ -472,18 +477,43 @@ def health(db: DbSession = Depends(session)):
         'instance':os.getenv('SMART_HOME_CALC_INSTANCE_TOKEN',''),
     }
 
+@app.get('/api/settings')
+def settings():
+    return {'version':APP_VERSION,**desktop_settings()}
+
+@app.post('/api/settings/open-data-folder')
+def open_settings_data_folder(body: OpenDataFolderInput, request: Request):
+    origin=request.headers.get('origin')
+    if origin and origin!=str(request.base_url).rstrip('/'):
+        raise HTTPException(403,'Открывайте папку из настроек приложения')
+    return open_data_folder(body.instance)
+
 @app.get('/api/projects')
 def projects(db: DbSession = Depends(session)):
     return [data(p) for p in db.scalars(select(Project).order_by(Project.id.desc()))]
 
+def new_project(db,name):
+    p=Project(name=name)
+    db.add(p); db.flush()
+    for layer_name in LAYERS:
+        db.add(Layer(project_id=p.id,name=layer_name))
+    db.flush()
+    return p
+
 @app.post('/api/projects', status_code=201)
 def create_project(body: NameInput, db: DbSession = Depends(session)):
-    p = Project(name=body.name)
-    db.add(p); db.flush()
-    for name in LAYERS:
-        db.add(Layer(project_id=p.id,name=name))
+    p=new_project(db,body.name)
     db.commit()
     return data(p)
+
+@app.post('/api/projects/from-pdf',status_code=201)
+async def create_project_from_pdf(file: UploadFile, name: str = Form(min_length=1,max_length=200),
+                                  db: DbSession = Depends(session)):
+    name=name.strip()
+    if not name: raise HTTPException(422,'Укажите название проекта')
+    p=new_project(db,name)
+    pages=await store_pdf(db,p.id,file)
+    return {**data(p),'pages':pages}
 
 @app.get('/api/types')
 def types(include_inactive: bool = False, db: DbSession = Depends(session)):
@@ -1042,9 +1072,7 @@ def calibrate_page(page_id: int, body: CalibrationInput, db: DbSession = Depends
     result['recalculated_lines']=updated
     return result
 
-@app.post('/api/projects/{pid}/pdf',status_code=201)
-async def upload(pid: int, file: UploadFile, db: DbSession = Depends(session)):
-    require(db,Project,pid)
+async def store_pdf(db,pid,file):
     token=uuid.uuid4().hex
     pdf=STORAGE/f'{token}.pdf'
     paths=[pdf]
@@ -1058,7 +1086,7 @@ async def upload(pid: int, file: UploadFile, db: DbSession = Depends(session)):
                     raise HTTPException(413,f'Максимальный размер PDF — {PDF_MAX_MB} МБ')
                 destination.write(chunk)
         doc=pymupdf.open(pdf)
-        if doc.needs_pass or not 1<=len(doc)<=100:
+        if not doc.is_pdf or doc.needs_pass or not 1<=len(doc)<=100:
             raise ValueError('Нужен PDF без пароля, от 1 до 100 страниц')
         number=max((p.number for p in db.scalars(select(Page).where(Page.project_id==pid))),default=0)
         pages=[]
@@ -1085,6 +1113,11 @@ async def upload(pid: int, file: UploadFile, db: DbSession = Depends(session)):
         for path in paths:
             path.unlink(missing_ok=True)
         raise HTTPException(422,'Не удалось прочитать PDF') from exc
+
+@app.post('/api/projects/{pid}/pdf',status_code=201)
+async def upload(pid: int, file: UploadFile, db: DbSession = Depends(session)):
+    require(db,Project,pid)
+    return await store_pdf(db,pid,file)
 
 @app.get('/api/pages/{page_id}/image')
 def page_image(page_id: int, edge: int | None = Query(default=None, ge=1, le=8192),

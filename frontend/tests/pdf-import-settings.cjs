@@ -1,0 +1,95 @@
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const frontend=process.env.FRAME_TEST_FRONTEND || 'http://127.0.0.1:5174';
+const backend=process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
+const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFIvSW5mbzw8L1Byb2R1Y2VyKE11UERGIDEuMjguMik+Pj4+CmVuZG9iagoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0NvdW50IDEvS2lkc1s0IDAgUl0+PgplbmRvYmoKCjMgMCBvYmoKPDw+PgplbmRvYmoKCjQgMCBvYmoKPDwvVHlwZS9QYWdlL01lZGlhQm94WzAgMCA1OTUgODQyXS9Sb3RhdGUgMC9SZXNvdXJjZXMgMyAwIFIvUGFyZW50IDIgMCBSPj4KZW5kb2JqCgp4cmVmCjAgNQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwNDIgMDAwMDAgbiAKMDAwMDAwMDEyMCAwMDAwMCBuIAowMDAwMDAwMTcyIDAwMDAwIG4gCjAwMDAwMDAxOTMgMDAwMDAgbiAKCnRyYWlsZXIKPDwvU2l6ZSA1L1Jvb3QgMSAwIFIvSURbPEMyOUIyMEMyQjRDMkJDNTZDMzhBMkIxMjE4QzI4M0MyPjwxMUMwRDIyMDM3NzE0QkMxRjgyRDE0RDA3ODUxNUM1Mj5dPj4Kc3RhcnR4cmVmCjI4NAolJUVPRgo=','base64');
+(async()=> {
+ const browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium',headless:true,args:['--no-sandbox']});
+ try {
+  const context=await browser.newContext({viewport:{width:1600,height:1100}}),page=await context.newPage(),errors=[];
+  page.on('pageerror',error=>errors.push(String(error)));
+  await page.route('**/api/**',route=>route.continue({url:route.request().url().replace(frontend,backend)}));
+  const api=context.request,base=backend+'/api';
+  const projects=async()=>await (await api.get(base+'/projects')).json();
+  const dropData=async(files)=>await page.evaluateHandle(files=> {
+   const transfer=new DataTransfer();
+   for(const file of files){const bytes=Uint8Array.from(atob(file.data),char=>char.charCodeAt(0));transfer.items.add(new File([bytes],file.name,{type:file.type}));}
+   return transfer;
+  },files);
+  const file={name:'Первый план.PDF',type:'application/pdf',data:pdf.toString('base64')};
+  await page.goto(frontend);await page.getByRole('button',{name:'Создать',exact:true}).waitFor();
+  await page.waitForFunction(()=>!document.querySelector('header form button')?.disabled);
+  const before=await projects(),shell=page.locator('.app-shell');
+  if(process.env.IMPORT_WELCOME_SCREENSHOT)await page.screenshot({path:process.env.IMPORT_WELCOME_SCREENSHOT,fullPage:true});
+  let transfer=await dropData([file]);
+  await page.getByRole('button',{name:/Перетащите PDF сюда/}).dispatchEvent('dragenter',{dataTransfer:transfer});
+  await page.locator('.pdf-drop-overlay').waitFor();
+  await shell.dispatchEvent('dragover',{dataTransfer:transfer});
+  await shell.dispatchEvent('drop',{dataTransfer:transfer});
+  await transfer.dispose();
+  const dialog=page.getByRole('dialog',{name:'Новый проект из PDF',exact:true});await dialog.waitFor();
+  assert.equal(await dialog.getByLabel('Имя нового проекта из PDF',{exact:true}).inputValue(),'Первый план');
+  assert.equal((await projects()).length,before.length,'No project is created until the name is accepted');
+  await dialog.getByLabel('Имя нового проекта из PDF',{exact:true}).fill('  ');
+  assert.equal(await dialog.getByRole('button',{name:'Создать проект',exact:true}).isDisabled(),true);
+  const projectName='Дом из PDF '+Date.now();
+  await dialog.getByLabel('Имя нового проекта из PDF',{exact:true}).fill(projectName);
+  if(process.env.IMPORT_DIALOG_SCREENSHOT)await page.screenshot({path:process.env.IMPORT_DIALOG_SCREENSHOT,fullPage:true});
+  let response=page.waitForResponse(response=>response.url().endsWith('/projects/from-pdf')&&response.request().method()==='POST');
+  await dialog.getByRole('button',{name:'Создать проект',exact:true}).click();
+  response=await response;assert.equal(response.status(),201);const created=await response.json();
+  const svg=page.locator('.sheet > svg');await svg.waitFor();
+  assert.equal(await page.getByLabel('Проект',{exact:true}).inputValue(),String(created.id));
+  let current=await (await api.get(base+`/projects/${created.id}`)).json();
+  assert.equal(current.name,projectName);assert.equal(current.pages.length,1);assert.equal(current.layers.length,6);
+  assert.equal((await projects()).length,before.length+1);
+  // Drop while another project is open creates a separate named project and is safely cancellable.
+  transfer=await dropData([{...file,name:'Другой.pdf'}]);await svg.dispatchEvent('drop',{dataTransfer:transfer});await transfer.dispose();
+  await dialog.waitFor();await page.keyboard.press('Escape');await dialog.waitFor({state:'detached'});
+  assert.equal((await projects()).length,before.length+1);
+  assert.equal(await page.getByLabel('Проект',{exact:true}).inputValue(),String(created.id));
+  // The chooser uses the same import dialogue, without requiring drag-and-drop.
+  await page.getByLabel('PDF для нового проекта',{exact:true}).setInputFiles({name:'Из выбора.pdf',mimeType:'application/pdf',buffer:pdf});
+  await dialog.waitFor();await dialog.getByRole('button',{name:'Отмена',exact:true}).click();
+  // Invalid file content stays in the dialogue and must leave no empty project or page.
+  transfer=await dropData([{name:'Поврежденный.pdf',type:'application/pdf',data:Buffer.from('broken').toString('base64')}]);
+  await shell.dispatchEvent('drop',{dataTransfer:transfer});await transfer.dispose();await dialog.waitFor();
+  response=page.waitForResponse(response=>response.url().endsWith('/projects/from-pdf')&&response.request().method()==='POST');
+  await dialog.getByRole('button',{name:'Создать проект',exact:true}).click();assert.equal((await response).status(),422);
+  await dialog.getByRole('alert').waitFor();assert.equal((await projects()).length,before.length+1);
+  await dialog.getByRole('button',{name:'Отмена',exact:true}).click();
+  transfer=await dropData([{name:'image.png',type:'image/png',data:file.data}]);await shell.dispatchEvent('drop',{dataTransfer:transfer});await transfer.dispose();
+  await page.getByRole('alert').filter({hasText:'нужен PDF-файл'}).waitFor();
+  transfer=await dropData([file,{...file,name:'Еще.pdf'}]);await shell.dispatchEvent('drop',{dataTransfer:transfer});await transfer.dispose();
+  await page.getByRole('alert').filter({hasText:'один PDF-файл'}).waitFor();
+  assert.equal(await dialog.count(),0);
+  await page.getByRole('alert').filter({hasText:'один PDF-файл'}).getByRole('button').click();
+  // Exercise settings in a desktop-shaped environment without opening a host file manager in the test.
+  let available=true,failOpen=false;const opened=[];
+  const directory='C:\\Users\\Тест\\AppData\\Local\\SmartHomeCalc\\data';
+  await page.route('**/api/settings',route=>route.fulfill({json:{version:'1.0.32',can_open_data_folder:available,data_directory:available?directory:null,instance:available?'desktop-test-instance':''}}));
+  await page.route('**/api/settings/open-data-folder',route=> {opened.push(route.request().postDataJSON());return route.fulfill({status:failOpen?500:200,json:failOpen?{detail:'Не удалось открыть Проводник'}:{opened:true}});});
+  const kinds=await (await api.get(base+'/types')).json(),kind=kinds.find(kind=>kind.name==='Розетка одинарная');
+  const element=await api.post(base+`/projects/${created.id}/elements`,{data:{page_id:current.pages[0].id,layer_id:current.layers[0].id,type_id:kind.id,x:.4,y:.4,parameters:{quantity:1}}});assert.equal(element.status(),201);
+  const settingsButton=page.getByRole('button',{name:'Настройки',exact:true});await settingsButton.click();
+  const settings=page.getByRole('dialog',{name:'Настройки',exact:true});await settings.waitFor();
+  assert.equal(await settings.getByLabel('Папка всех данных',{exact:true}).inputValue(),directory);
+  await settings.getByRole('button',{name:'Открыть папку данных',exact:true}).click();
+  await settings.getByRole('status').filter({hasText:'открыта в Проводнике'}).waitFor();
+  assert.deepEqual(opened,[{instance:'desktop-test-instance'}]);
+  await page.keyboard.press('Control+z');
+  assert.equal((await (await api.get(base+`/projects/${created.id}`)).json()).elements.length,1,'Settings shortcuts must not undo objects behind the dialogue');
+  if(process.env.IMPORT_SETTINGS_SCREENSHOT)await page.screenshot({path:process.env.IMPORT_SETTINGS_SCREENSHOT,fullPage:true});
+  failOpen=true;await settings.getByRole('button',{name:'Открыть папку данных',exact:true}).click();
+  await settings.getByRole('alert').waitFor();
+  assert.equal(await settings.getByLabel('Папка всех данных',{exact:true}).inputValue(),directory);
+  await page.keyboard.press('Escape');await settings.waitFor({state:'detached'});
+  assert.equal(await settingsButton.evaluate(element=>element===document.activeElement),true);
+  available=false;await settingsButton.click();await settings.waitFor();
+  assert.equal(await settings.getByRole('button',{name:'Открыть папку данных',exact:true}).isDisabled(),true);
+  assert.equal(await settings.getByLabel('Папка всех данных',{exact:true}).count(),0);
+  await page.keyboard.press('Escape');
+  assert.deepEqual(errors,[]);
+  console.log('PASS: PDF drag-and-drop, naming before creation, chooser, cancellation, existing project preservation, corrupt/multiple/non-PDF files, settings, folder action, failures and unsupported runtimes');
+ } finally {await browser.close();}
+})().catch(error=>{console.error(error);process.exitCode=1;});

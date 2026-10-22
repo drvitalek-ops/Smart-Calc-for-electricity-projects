@@ -26,9 +26,11 @@ def test_copied_data_rebases_paths_without_changing_project_data(tmp_path, monke
     new = local_app_data / 'SmartHomeCalc' / 'data'
     shutil.copytree(old, new)
     monkeypatch.setenv('LOCALAPPDATA', str(local_app_data))
-    for key in ('DATABASE_URL', 'STORAGE_DIR', 'AUTO_CREATE_SCHEMA'):
+    for key in ('DATABASE_URL', 'STORAGE_DIR', 'AUTO_CREATE_SCHEMA', 'SMART_HOME_CALC_DATA_DIR'):
         monkeypatch.setenv(key, 'test-value')
     assert configure_data_directory() == new
+    import os
+    assert os.environ['SMART_HOME_CALC_DATA_DIR']==str(new.resolve())
     with sqlite3.connect(new / 'smart-home-calc.db') as db:
         pdf_path, image_path = db.execute('SELECT pdf_path,image_path FROM pages').fetchone()
         assert pdf_path == str(new / 'storage' / 'project.pdf')

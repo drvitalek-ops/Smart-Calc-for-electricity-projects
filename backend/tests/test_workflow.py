@@ -37,7 +37,7 @@ def test_health_identifies_desktop_backend(client,monkeypatch):
     health=client.get('/api/health')
     assert health.status_code==200
     assert health.json()=={
-        'status':'ok','version':'1.0.31','instance':'test-instance',
+        'status':'ok','version':'1.0.32','instance':'test-instance',
     }
 
 def test_full_workflow_and_exports(client):
@@ -817,3 +817,69 @@ def test_removed_product_keeps_assigned_cost_and_renamed_power_supply_keeps_shap
     with pymupdf.open(stream=client.get(f"/api/projects/{project['id']}/pages/{project['pages'][0]['id']}/export.pdf").content,filetype='pdf') as document:
         assert any(item[0]=='re' for drawing in document[0].get_drawings() for item in drawing['items'])
     assert client.get(f"/api/projects/{project['id']}/report").json()['totals']['RUB']==1250
+
+
+def test_pdf_creates_named_project_with_all_pages_atomically(client,monkeypatch):
+    document=pymupdf.open();document.new_page();document.new_page()
+    pdf=document.tobytes();document.close()
+    response=client.post('/api/projects/from-pdf',data={'name':'  Квартира из PDF  '},files={'file':('План.PDF',pdf,'application/pdf')})
+    assert response.status_code==201,response.text
+    project=client.get(f"/api/projects/{response.json()['id']}").json()
+    assert project['name']=='Квартира из PDF'
+    assert len(project['pages'])==2 and [item['number'] for item in project['pages']]==[1,2]
+    assert len(project['layers'])==6
+    assert client.get(f"/api/pages/{project['pages'][0]['id']}/image").content.startswith(b'\x89PNG')
+    projects_before=client.get('/api/projects').json()
+    files_before=set(main_module.STORAGE.iterdir())
+    pixmap=pymupdf.Pixmap(pymupdf.csRGB,(0,0,10,10),False)
+    invalid_files=[b'not a PDF',pixmap.tobytes('png')]
+    encrypted=pymupdf.open();encrypted.new_page()
+    invalid_files.append(encrypted.tobytes(encryption=pymupdf.PDF_ENCRYPT_AES_256,owner_pw='owner',user_pw='secret'));encrypted.close()
+    for content in invalid_files:
+        result=client.post('/api/projects/from-pdf',data={'name':'Не должен сохраниться'},files={'file':('bad.pdf',content,'application/pdf')})
+        assert result.status_code==422
+        assert client.get('/api/projects').json()==projects_before
+        assert set(main_module.STORAGE.iterdir())==files_before
+    assert client.post('/api/projects/from-pdf',data={'name':'  '},files={'file':('plan.pdf',pdf,'application/pdf')}).status_code==422
+    monkeypatch.setattr(main_module,'PDF_MAX_BYTES',10)
+    assert client.post('/api/projects/from-pdf',data={'name':'Большой'},files={'file':('plan.pdf',pdf,'application/pdf')}).status_code==413
+    assert client.get('/api/projects').json()==projects_before
+    assert set(main_module.STORAGE.iterdir())==files_before
+
+
+def test_pdf_with_too_many_pages_does_not_create_project(client):
+    document=pymupdf.open()
+    for _ in range(101): document.new_page()
+    response=client.post('/api/projects/from-pdf',data={'name':'101 страница'},files={'file':('plan.pdf',document.tobytes(),'application/pdf')})
+    document.close()
+    assert response.status_code==422
+    assert client.get('/api/projects').json()==[]
+
+
+def test_settings_open_only_desktop_data_directory_with_matching_instance(client,monkeypatch,tmp_path):
+    from app import desktop_settings as integration
+    from types import SimpleNamespace
+    opened=[]
+    monkeypatch.delenv('SMART_HOME_CALC_DATA_DIR',raising=False)
+    assert client.get('/api/settings').json()['can_open_data_folder'] is False
+    assert client.post('/api/settings/open-data-folder',json={'instance':'test-instance'}).status_code==409
+    directory=tmp_path/'Все проекты'/'data';directory.mkdir(parents=True)
+    (directory/'storage').mkdir();(directory/'smart-home-calc.db').write_bytes(b'original database')
+    monkeypatch.setenv('SMART_HOME_CALC_DATA_DIR',str(directory))
+    monkeypatch.setenv('SMART_HOME_CALC_INSTANCE_TOKEN','local-desktop-instance')
+    monkeypatch.setattr(integration,'sys',SimpleNamespace(platform='win32'))
+    monkeypatch.setattr(integration.os,'startfile',lambda path,operation:opened.append((path,operation)),raising=False)
+    info=client.get('/api/settings').json()
+    assert info['can_open_data_folder'] is True and info['data_directory']==str(directory.resolve())
+    assert client.post('/api/settings/open-data-folder',json={'instance':'wrong-instance'}).status_code==403
+    assert client.post('/api/settings/open-data-folder',json={'instance':'неверный ключ'}).status_code==403
+    assert client.post('/api/settings/open-data-folder',headers={'Origin':'https://another-site.example'},json={'instance':info['instance']}).status_code==403
+    assert client.post('/api/settings/open-data-folder',json={'instance':info['instance'],'path':'C:/other-folder'}).status_code==422
+    assert opened==[]
+    response=client.post('/api/settings/open-data-folder',headers={'Origin':'http://testserver'},json={'instance':info['instance']})
+    assert response.status_code==200 and response.json()['opened'] is True
+    assert opened==[(str(directory.resolve()),'explore')]
+    assert (directory/'smart-home-calc.db').read_bytes()==b'original database'
+    def unavailable(path,operation): raise OSError('Explorer unavailable')
+    monkeypatch.setattr(integration.os,'startfile',unavailable)
+    assert client.post('/api/settings/open-data-folder',json={'instance':info['instance']}).status_code==500

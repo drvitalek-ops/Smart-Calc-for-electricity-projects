@@ -36,7 +36,13 @@ try {
     Pop-Location
 
     $backendExecutable = Join-Path $backendOutput "SmartHomeCalc.Backend.exe"
-    $backendProcess = Start-Process -FilePath $backendExecutable -PassThru
+    $smokeToken = [guid]::NewGuid().ToString("N")
+    $smokeStart = [Diagnostics.ProcessStartInfo]::new($backendExecutable)
+    $smokeStart.UseShellExecute = $false
+    $smokeStart.CreateNoWindow = $true
+    $smokeStart.Environment["LOCALAPPDATA"] = $workDirectory
+    $smokeStart.Environment["SMART_HOME_CALC_INSTANCE_TOKEN"] = $smokeToken
+    $backendProcess = [Diagnostics.Process]::Start($smokeStart)
     $backendReady = $false
     try {
         for ($attempt = 0; $attempt -lt 90; $attempt++) {
@@ -45,7 +51,7 @@ try {
             }
             try {
                 $health = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/health" -TimeoutSec 2
-                if ($health.status -eq "ok") {
+                if ($health.status -eq "ok" -and $health.instance -eq $smokeToken) {
                     $backendReady = $true
                     break
                 }
@@ -56,6 +62,11 @@ try {
         }
         if (-not $backendReady) {
             throw "Packaged backend did not become ready"
+        }
+        $settings = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/settings" -TimeoutSec 5
+        $expectedDataDirectory = Join-Path $workDirectory "SmartHomeCalc\data"
+        if (-not $settings.can_open_data_folder -or $settings.instance -ne $smokeToken -or $settings.data_directory -ne $expectedDataDirectory) {
+            throw "Packaged desktop data-folder settings are invalid"
         }
     }
     finally {

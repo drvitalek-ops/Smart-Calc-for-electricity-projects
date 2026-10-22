@@ -442,6 +442,69 @@ function makeLegend(
     return rank(a.name)-rank(b.name) || a.name.localeCompare(b.name,"ru",{numeric:true});
   });
 }
+function ToolIcon({name}:{name:"settings"|"pdf"|"folder"}) {
+  return <svg className="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {name==="settings" ? <><path d="m9 3-1 3-3 1-2 3 2 2v3l3 2 1 4h6l1-4 3-2v-3l2-2-2-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></> : name==="folder" ? <><path d="M3 7V5h7l2 2h9v13H3Z"/><path d="M3 10h18"/></> : <><path d="M14 3H5v18h14V8Z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></>}
+  </svg>;
+}
+function AppModal({title,onClose,busy=false,children,className=""}:{title:string;onClose:()=>void;busy?:boolean;children:React.ReactNode;className?:string}) {
+  const modal=useRef<HTMLDivElement>(null);
+  useEffect(()=> {
+    const previous=document.activeElement as HTMLElement|null;
+    const frame=requestAnimationFrame(()=>modal.current?.querySelector<HTMLElement>('[data-dialog-autofocus],button,input,select')?.focus());
+    return ()=> {cancelAnimationFrame(frame);if(previous?.isConnected)previous.focus();};
+  },[]);
+  useEffect(()=> {
+    const keyboard=(event:KeyboardEvent)=> {
+      if(event.key==="Escape") {event.preventDefault();event.stopImmediatePropagation();if(!busy)onClose();}
+      if(event.key==="Tab" && !modal.current?.contains(document.activeElement)) {
+        event.preventDefault();modal.current?.querySelector<HTMLElement>('button:not([disabled]),input:not([disabled]),select')?.focus();
+      }
+    };
+    window.addEventListener("keydown",keyboard,true);
+    return()=>window.removeEventListener("keydown",keyboard,true);
+  },[busy,onClose]);
+  return <div className="modal-backdrop" ref={modal} role="dialog" aria-modal="true" aria-label={title} onPointerDown={event=> {if(event.target===event.currentTarget && !busy)onClose();}} onKeyDown={event=> {
+    if(event.key==="Escape") {event.preventDefault();event.stopPropagation();if(!busy)onClose();}
+    if(event.key==="Tab") {
+      const controls=[...event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex="0"]')].filter(item=>item.getClientRects().length);
+      const first=controls[0],last=controls.at(-1);
+      if(event.shiftKey && document.activeElement===first) {event.preventDefault();last?.focus();}
+      else if(!event.shiftKey && document.activeElement===last) {event.preventDefault();first?.focus();}
+    }
+  }}>
+    <section className={`catalog-modal app-modal ${className}`}>
+      <div className="app-modal-title"><h2>{title}</h2><button type="button" aria-label={`Закрыть: ${title}`} disabled={busy} onClick={onClose}>×</button></div>
+      {children}
+    </section>
+  </div>;
+}
+type AppSettings={version:string;can_open_data_folder:boolean;data_directory:string|null;instance:string};
+function SettingsDialog({onClose}:{onClose:()=>void}) {
+  const [info,setInfo]=useState<AppSettings|null>(null),[error,setError]=useState(""),[message,setMessage]=useState(""),[opening,setOpening]=useState(false);
+  useEffect(()=> {let active=true;api<AppSettings>("/settings").then(info=> {if(active)setInfo(info);}).catch(error=> {if(active)setError(error instanceof Error ? error.message : "Не удалось загрузить настройки");});return()=>{active=false;};},[]);
+  return <AppModal title="Настройки" onClose={onClose} busy={opening} className="settings-modal">
+    <div className="settings-heading"><ToolIcon name="folder"/><div><h3>Данные и перенос на другой компьютер</h3><p>Здесь хранятся все проекты, общий каталог, PDF-планы и изображения.</p></div></div>
+    {!info && !error && <p role="status">Загрузка настроек…</p>}
+    {info?.data_directory && <label>Папка всех данных<input aria-label="Папка всех данных" readOnly value={info.data_directory} onFocus={event=>event.target.select()} /></label>}
+    {info && <button className="primary icon-button open-data-folder" disabled={opening || !info.can_open_data_folder} onClick={()=>void(async()=> {
+      setOpening(true);setError("");setMessage("");
+      try {await api("/settings/open-data-folder","POST",{instance:info.instance});setMessage("Папка данных открыта в Проводнике");}
+      catch(error){setError(error instanceof Error ? error.message : "Не удалось открыть папку");}
+      finally {setOpening(false);}
+    })()}><ToolIcon name="folder"/>{opening ? "Открытие…" : "Открыть папку данных"}</button>}
+    {info && !info.can_open_data_folder && <p className="hint">Открытие папки доступно в автономном приложении Smart Home Calc для Windows.</p>}
+    {error && <p className="catalog-error" role="alert">{error}</p>}
+    {message && <p className="catalog-success" role="status">{message}</p>}
+    <div className="transfer-instructions"><h3>Как перенести всё</h3><ol>
+      <li>Откройте папку данных кнопкой выше и закройте калькулятор.</li>
+      <li>В Проводнике нажмите <strong>Alt + ↑</strong> и скопируйте папку <strong>data целиком</strong>: файл <strong>smart-home-calc.db</strong> и папку <strong>storage</strong> с планами. Каталог и все проекты находятся в базе.</li>
+      <li>На другом ПК запустите актуальную версию калькулятора и откройте эту же папку через настройки. Закройте приложение и замените папку <strong>data</strong> своей копией.</li>
+      <li>Запустите калькулятор — проекты и планы появятся автоматически.</li>
+    </ol><p>Если на другом ПК уже есть нужные проекты, сначала сохраните его папку данных: замена папки переносит всю базу целиком.</p></div>
+    <small>Smart Home Calc {info?.version ?? ""}</small>
+  </AppModal>;
+}
 function NomenclatureEditor({types,onChanged}:{types:Kind[];onChanged:()=>Promise<void>}) {
   const empty=()=>({id:0,name:"",category:"Электроустановки",unit:"шт",color:"#f97316",wet_min_ip:"",defaults:{quantity:1} as Record<string,unknown>});
   const [form,setForm]=useState(empty), [search,setSearch]=useState(""), [showDeleted,setShowDeleted]=useState(false),
@@ -928,6 +991,9 @@ export default function App() {
         rooms: [],
       },
     });
+  const [settingsOpen,setSettingsOpen]=useState(false),[draggingPdf,setDraggingPdf]=useState(false),
+    [pdfImport,setPdfImport]=useState<{file:File;name:string}|null>(null),[pdfImportError,setPdfImportError]=useState("");
+  const dragDepth=useRef(0),pdfInput=useRef<HTMLInputElement>(null);
   const [zoom, setZoom] = useState(1),
     [symbolScale, setSymbolScale] = useState(1),
     [labelsVisible, setLabelsVisible] = useState(true),
@@ -1074,6 +1140,34 @@ export default function App() {
       setBusy(false);
     }
   }
+  function requestPdfImport(files:File[]) {
+    if(busy) {setError("Дождитесь завершения сохранения или загрузки");return;}
+    if(settingsOpen || catalogOpen || supplyPlacement || pdfImport) {setError("Закройте открытое окно перед импортом PDF");return;}
+    if(files.length!==1) {setError("Перетащите один PDF-файл проекта");return;}
+    const file=files[0];
+    if(!/\.pdf$/i.test(file.name) && file.type!=="application/pdf") {setError("Для нового проекта нужен PDF-файл");return;}
+    if(file.size===0) {setError("PDF-файл пуст");return;}
+    if(file.size>500*1024*1024) {setError("Максимальный размер PDF — 500 МБ");return;}
+    setError("");setPdfImportError("");
+    setPdfImport({file,name:file.name.replace(/\.pdf$/i,"").trim().slice(0,200) || "Новый проект"});
+  }
+  function resetPdfDrag() {dragDepth.current=0;setDraggingPdf(false);}
+  useEffect(()=> {
+    const clear=()=> {dragDepth.current=0;setDraggingPdf(false);};
+    const escape=(event:KeyboardEvent)=>{if(event.key==="Escape" && dragDepth.current>0){event.preventDefault();event.stopImmediatePropagation();clear();}};
+    window.addEventListener("dragend",clear);window.addEventListener("blur",clear);window.addEventListener("keydown",escape);
+    return()=>{window.removeEventListener("dragend",clear);window.removeEventListener("blur",clear);window.removeEventListener("keydown",escape);};
+  },[]);
+  async function importPdfProject() {
+    if(!pdfImport || !pdfImport.name.trim())return;
+    const stored=selected && project?.elements.find(item=>item.id===selected.id);
+    if(selected && stored && !sameItem(selected,stored))await save(selected);
+    const form=new FormData();form.append("name",pdfImport.name.trim());form.append("file",pdfImport.file);
+    let created:{id:number};
+    try {created=await api<{id:number}>("/projects/from-pdf","POST",form);}
+    catch(error){setPdfImportError(error instanceof Error ? error.message : "Не удалось загрузить PDF");return;}
+    setPdfImport(null);setPdfImportError("");setProjects(await api("/projects"));await open(created.id);setPlacing(false);setCalibrating(false);
+  }
   async function refresh(id: number) {
     const p = await api<Project>(`/projects/${id}`);
     setProject(p);
@@ -1178,6 +1272,7 @@ export default function App() {
   }, [selected, project, busy]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
+      if (settingsOpen || pdfImport) return;
       if (event.key === "F7") {
         event.preventDefault();
         setElementsVisible((value) => !value);
@@ -1226,7 +1321,7 @@ export default function App() {
     }
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyPlacement]);
+  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyPlacement, settingsOpen, pdfImport]);
   useEffect(() => {
     if (!busy && pendingHistory.current.length) {
       const redo = pendingHistory.current.shift()!;
@@ -1452,6 +1547,7 @@ export default function App() {
     function roomKeys(event: KeyboardEvent) {
       if (
         !roomMode ||
+        settingsOpen || pdfImport ||
         busy ||
         (event.target as HTMLElement | null)?.matches(
           'input:not([type="checkbox"]):not([type="range"]),textarea,[contenteditable="true"]',
@@ -1477,7 +1573,7 @@ export default function App() {
     }
     window.addEventListener("keydown", roomKeys);
     return () => window.removeEventListener("keydown", roomKeys);
-  }, [roomMode, roomPoints, roomUndo, roomRedo, busy, project, page, editingRoomId]);
+  }, [roomMode, roomPoints, roomUndo, roomRedo, busy, project, page, editingRoomId, settingsOpen, pdfImport]);
   function editRoomArea(room: Room) {
     setRoomUndo([]);
     setRoomRedo([]);
@@ -1797,7 +1893,21 @@ export default function App() {
     })
     .filter((value) => value !== null);
   return (
-    <div className="app-shell">
+    <div className="app-shell" onDragEnterCapture={event=> {
+      if(!event.dataTransfer.types.includes("Files"))return;
+      event.preventDefault();dragDepth.current++;setDraggingPdf(true);
+    }} onDragOverCapture={event=> {
+      if(!event.dataTransfer.types.includes("Files"))return;
+      event.preventDefault();event.dataTransfer.dropEffect=busy ? "none" : "copy";
+    }} onDragLeaveCapture={event=> {
+      if(!dragDepth.current)return;
+      event.preventDefault();dragDepth.current=Math.max(0,dragDepth.current-1);if(!dragDepth.current)setDraggingPdf(false);
+    }} onDropCapture={event=> {
+      if(!event.dataTransfer.types.includes("Files"))return;
+      event.preventDefault();event.stopPropagation();resetPdfDrag();requestPdfImport([...event.dataTransfer.files]);
+    }}>
+      {draggingPdf && <div className="pdf-drop-overlay" role="status"><div><ToolIcon name="pdf"/><h2>Отпустите PDF здесь</h2><p>Создадим новый проект и предложим задать имя</p></div></div>}
+      <input ref={pdfInput} hidden type="file" aria-label="PDF для нового проекта" accept=".pdf,application/pdf" disabled={busy} onChange={event=> {requestPdfImport([...event.target.files ?? []]);event.target.value="";}} />
       <header>
         <div className="logo">SH</div>
         <div className="brand">
@@ -1819,7 +1929,9 @@ export default function App() {
             Спецификация
           </button>
         </nav>
+        <button className="icon-button" disabled={busy} onClick={()=>pdfInput.current?.click()} title="Создать новый проект из PDF"><ToolIcon name="pdf"/>Новый из PDF</button>
         <button onClick={() => setCatalogOpen(true)}>Каталог и цены</button>
+        <button className="icon-button settings-button" aria-label="Настройки" title="Настройки и папка данных" onClick={()=>setSettingsOpen(true)}><ToolIcon name="settings"/>Настройки</button>
         <label className="restore-project">
           Восстановить ZIP
           <input
@@ -1844,6 +1956,7 @@ export default function App() {
             }}
           />
         </label>
+        <div className="project-controls">
         <select
           aria-label="Проект"
           value={project?.id ?? ""}
@@ -1879,7 +1992,18 @@ export default function App() {
           />
           <button disabled={busy}>Создать</button>
         </form>
+        </div>
       </header>
+      {settingsOpen && <SettingsDialog onClose={()=>setSettingsOpen(false)} />}
+      {pdfImport && <AppModal title="Новый проект из PDF" onClose={()=>setPdfImport(null)} busy={busy} className="pdf-import-modal">
+        <div className="pdf-import-file"><ToolIcon name="pdf"/><div><strong>{pdfImport.file.name}</strong><small>{(pdfImport.file.size/(pdfImport.file.size<1024*1024 ? 1024 : 1024*1024)).toLocaleString("ru-RU",{maximumFractionDigits:1})} {pdfImport.file.size<1024*1024 ? "КБ" : "МБ"} · все страницы PDF</small></div></div>
+        <form onSubmit={event=> {event.preventDefault();setPdfImportError("");void run(importPdfProject);}}>
+          <label>Имя проекта<input data-dialog-autofocus aria-label="Имя нового проекта из PDF" required maxLength={200} disabled={busy} value={pdfImport.name} onChange={event=>setPdfImport({...pdfImport,name:event.target.value})} onFocus={event=>event.target.select()} /></label>
+          <p className="hint">PDF будет загружен в новый проект. Каждый лист станет отдельной страницей плана.</p>
+          {pdfImportError && <p className="catalog-error" role="alert">{pdfImportError}</p>}
+          <div className="modal-actions"><button type="button" disabled={busy} onClick={()=>setPdfImport(null)}>Отмена</button><button className="primary" disabled={busy || !pdfImport.name.trim()}>{busy ? "Загрузка PDF…" : "Создать проект"}</button></div>
+        </form>
+      </AppModal>}
       {catalogOpen && (
         <CatalogManager
           catalog={catalog}
@@ -1911,9 +2035,10 @@ export default function App() {
               на своём месте.
             </h2>
             <p>
-              Создайте проект, загрузите PDF-план и разместите оборудование.
-              Ведомость формируется автоматически.
+              Перетащите PDF-план в окно и задайте имя проекта.
+              Разместите оборудование — ведомость заполнится автоматически.
             </p>
+            <button className="welcome-import icon-button" disabled={busy} onClick={()=>pdfInput.current?.click()}><ToolIcon name="pdf"/><span><strong>Перетащите PDF сюда</strong><small>или нажмите, чтобы выбрать файл · до 500 МБ и 100 страниц</small></span></button>
             <div className="steps">
               <span>01 / PDF-план</span>
               <span>02 / Элементы и слои</span>
@@ -3993,7 +4118,7 @@ export default function App() {
         </section>
       </div>}
       <footer>
-        <span>SMART HOME CALC / 1.0.31</span>
+        <span>SMART HOME CALC / 1.0.32</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

@@ -29,6 +29,7 @@ def configure_data_directory():
     os.environ['DATABASE_URL'] = f"sqlite:///{(root / 'smart-home-calc.db').as_posix()}"
     os.environ['STORAGE_DIR'] = str(storage)
     os.environ['AUTO_CREATE_SCHEMA'] = '1'
+    os.environ['SMART_HOME_CALC_DATA_DIR'] = str(root.resolve())
     relocate_storage_paths(root)
     return root
 

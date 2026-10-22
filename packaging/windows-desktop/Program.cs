@@ -25,13 +25,13 @@ internal static class Program
 
 internal sealed class MainWindow : Form
 {
-    private const string ApplicationVersion = "1.0.31";
+    private const string ApplicationVersion = "1.0.32";
     private static readonly string InstallDirectory = Path.GetDirectoryName(Environment.ProcessPath)
         ?? AppContext.BaseDirectory;
     private readonly int backendPort = FindAvailablePort();
     private readonly string instanceToken = Guid.NewGuid().ToString("N");
     private string ApplicationUrl => $"http://127.0.0.1:{backendPort}";
-    private readonly WebView2 webView = new() { Dock = DockStyle.Fill };
+    private readonly WebView2 webView = new() { Dock = DockStyle.Fill, AllowExternalDrop = true };
     private readonly Label status = new()
     {
         Dock = DockStyle.Fill,

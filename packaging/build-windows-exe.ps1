@@ -21,6 +21,8 @@ $embeddedDesktop = Join-Path $launcherDirectory "SmartHomeCalc.Desktop.exe"
 New-Item -ItemType Directory -Force -Path $outputDirectory, $workDirectory | Out-Null
 
 try {
+    & $DotnetBinary run --project (Join-Path $scriptDirectory "tests\local-server-connection\LocalServerConnection.Tests.csproj") --configuration Release
+
     Push-Location (Join-Path $projectRoot "frontend")
     & $NpmBinary ci
     & $NpmBinary run build

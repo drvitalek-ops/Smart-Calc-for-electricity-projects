@@ -25,7 +25,7 @@ internal static class Program
 
 internal sealed class MainWindow : Form
 {
-    private const string ApplicationVersion = "1.0.35";
+    private const string ApplicationVersion = "1.0.36";
     private static readonly string InstallDirectory = Path.GetDirectoryName(Environment.ProcessPath)
         ?? AppContext.BaseDirectory;
     private readonly int backendPort = FindAvailablePort();
@@ -41,6 +41,19 @@ internal sealed class MainWindow : Form
         Font = new Font("Segoe UI", 14),
     };
     private Process? backendProcess;
+    private string? lastHealthFailure;
+
+    private static void LogStartup(string message)
+    {
+        try
+        {
+            var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SmartHomeCalc", "data");
+            Directory.CreateDirectory(directory);
+            File.AppendAllText(Path.Combine(directory, "desktop.log"), $"{DateTimeOffset.Now:O} {ApplicationVersion} {message}{Environment.NewLine}");
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
 
     public MainWindow()
     {
@@ -59,11 +72,16 @@ internal sealed class MainWindow : Form
         base.OnShown(e);
         try
         {
+            LogStartup("Starting desktop; local connections bypass system proxy.");
             await StartBackendAsync();
+            status.Text = "Открытие окна Smart Home Calc…";
             var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             var userDataFolder = Path.Combine(localAppData, "SmartHomeCalc", "WebView2");
-            var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataFolder);
-            await webView.EnsureCoreWebView2Async(environment);
+            var options = new CoreWebView2EnvironmentOptions(LocalServerConnection.BrowserArguments);
+            var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: userDataFolder, options: options)
+                .WaitAsync(TimeSpan.FromSeconds(45));
+            await webView.EnsureCoreWebView2Async(environment).WaitAsync(TimeSpan.FromSeconds(45));
+            LogStartup("WebView2 ready; opening local interface.");
 
             webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             webView.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = false;
@@ -76,6 +94,7 @@ internal sealed class MainWindow : Form
             };
             webView.CoreWebView2.NavigationCompleted += (_, eventArgs) =>
             {
+                LogStartup($"Navigation completed: success={eventArgs.IsSuccess}, status={eventArgs.WebErrorStatus}.");
                 if (!eventArgs.IsSuccess)
                 {
                     MessageBox.Show(
@@ -92,6 +111,7 @@ internal sealed class MainWindow : Form
         }
         catch (WebView2RuntimeNotFoundException)
         {
+            LogStartup("WebView2 Runtime not found.");
             MessageBox.Show(
                 this,
                 "Для окна Smart Home Calc нужен системный компонент Microsoft WebView2 Runtime. Установите его и повторите запуск.",
@@ -102,9 +122,10 @@ internal sealed class MainWindow : Form
         }
         catch (Exception exception)
         {
+            LogStartup(exception.ToString());
             MessageBox.Show(
                 this,
-                "Не удалось открыть окно Smart Home Calc.\n\n" + exception.Message,
+                "Не удалось открыть окно Smart Home Calc.\n\n" + exception.Message + "\n\nПодробности: %LOCALAPPDATA%\\SmartHomeCalc\\data\\desktop.log",
                 "Smart Home Calc",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
@@ -124,7 +145,7 @@ internal sealed class MainWindow : Form
 
     private async Task StartBackendAsync()
     {
-        using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+        using var client = LocalServerConnection.CreateHealthClient();
         var backendPath = Path.Combine(InstallDirectory, "SmartHomeCalc.Backend.exe");
         if (!File.Exists(backendPath))
         {
@@ -140,8 +161,10 @@ internal sealed class MainWindow : Form
         startInfo.Environment["SMART_HOME_CALC_INSTANCE_TOKEN"] = instanceToken;
         backendProcess = Process.Start(startInfo)
             ?? throw new InvalidOperationException("Не удалось запустить локальный сервер.");
+        LogStartup($"Backend started: pid={backendProcess.Id}, address={ApplicationUrl}.");
 
-        for (var attempt = 0; attempt < 90; attempt++)
+        var startup = Stopwatch.StartNew();
+        while (startup.Elapsed < TimeSpan.FromSeconds(90))
         {
             if (backendProcess.HasExited)
             {
@@ -149,11 +172,12 @@ internal sealed class MainWindow : Form
             }
             if (await IsBackendReady(client))
             {
+                LogStartup("Backend health confirmed.");
                 return;
             }
             await Task.Delay(1000);
         }
-        throw new TimeoutException("Локальный сервер не ответил вовремя.");
+        throw new TimeoutException("Не удалось подключиться к локальному серверу за 90 секунд. Если VPN блокирует локальные соединения, разрешите доступ к 127.0.0.1 в настройках VPN.");
     }
 
     private async Task<bool> IsBackendReady(HttpClient client)
@@ -161,14 +185,24 @@ internal sealed class MainWindow : Form
         try
         {
             var health = await client.GetFromJsonAsync<HealthResponse>(ApplicationUrl + "/api/health");
-            return health?.Status == "ok"
+            var ready = health?.Status == "ok"
                 && health.Version == ApplicationVersion
                 && health.Instance == instanceToken;
+            if (!ready) RecordHealthFailure("Server health response did not match the launched backend.");
+            return ready;
         }
-        catch
+        catch (Exception exception)
         {
+            RecordHealthFailure($"Health check failed: {exception.GetType().Name}: {exception.Message}");
             return false;
         }
+    }
+
+    private void RecordHealthFailure(string message)
+    {
+        if (lastHealthFailure == message) return;
+        lastHealthFailure = message;
+        LogStartup(message);
     }
 
     private static int FindAvailablePort()

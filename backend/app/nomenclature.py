@@ -1,6 +1,50 @@
 """Stable functional grouping of standard and user-created equipment names."""
 import re
 
+ELECTRICAL_GROUPS = (
+    'Розетки', 'Розетки слаботочные', 'Выключатели',
+    'Выключатели проходные', 'Выключатели перекрёстные',
+    'Выключатели звонковые', 'Диммеры', 'Терморегуляторы',
+    'Сценарные кнопки', 'Заглушки', 'Выводы кабеля',
+    'Прочие электроустановки',
+)
+
+
+def nomenclature_group(name, category):
+    if category != 'Электроустановки':
+        return category
+    value=name.casefold().replace('ё','е')
+    if 'заглуш' in value:
+        return 'Заглушки'
+    if 'вывод' in value and 'кабел' in value:
+        return 'Выводы кабеля'
+    if 'терморегулятор' in value:
+        return 'Терморегуляторы'
+    if 'сценарн' in value:
+        return 'Сценарные кнопки'
+    if 'диммер' in value:
+        return 'Диммеры'
+    if 'выключател' in value or 'кнопк' in value:
+        if 'звонков' in value or 'самовозврат' in value:
+            return 'Выключатели звонковые'
+        if 'перекрест' in value:
+            return 'Выключатели перекрёстные'
+        if 'проходн' in value:
+            return 'Выключатели проходные'
+        return 'Выключатели'
+    if 'розет' in value and any(word in value for word in ('с usb','с юсб','220','230')):
+        return 'Розетки'
+    if any(word in value for word in ('usb','юсб','rj45','rj-45','rj11','rj-11','hdmi','tv','тв','слаботоч','телевиз','телефон','антенн','ethernet')):
+        return 'Розетки слаботочные'
+    if 'розет' in value:
+        return 'Розетки'
+    return 'Прочие электроустановки'
+
+
+def nomenclature_group_order(name, category):
+    group=nomenclature_group(name,category)
+    return ELECTRICAL_GROUPS.index(group) if category=='Электроустановки' else 0
+
 
 def channel_count(name):
     name=name.casefold().replace('ё','е')
@@ -54,7 +98,11 @@ def nomenclature_key(name):
         family=15
     elif 'координатор' in value:
         family=16
-    else:
+    elif 'заглуш' in value:
         family=17
+    elif 'вывод' in value and 'кабел' in value:
+        family=18
+    else:
+        family=19
     natural=re.sub(r'\d+',lambda match:match.group().zfill(8),value)
     return family,variant,channel_count(value),natural

@@ -73,10 +73,23 @@ type Kind = {
   id: number;
   name: string;
   category: string;
+  group?: string;
   unit: string;
   color: string;
   defaults: Record<string, unknown>;
 };
+function groupKinds(types:Kind[]) {
+  const groups=new Map<string,Kind[]>();
+  for(const type of types) {
+    const group=type.group ?? type.category;
+    if(!groups.has(group))groups.set(group,[]);
+    groups.get(group)!.push(type);
+  }
+  return [...groups].map(([label,items])=>({label,items}));
+}
+function KindOptions({types,showUnits=false}:{types:Kind[];showUnits?:boolean}) {
+  return <>{groupKinds(types).map(group=><optgroup key={group.label} label={group.label}>{group.items.map(type=><option key={type.id} value={type.id}>{type.name}{showUnits ? ` (${type.unit})` : ""}</option>)}</optgroup>)}</>;
+}
 type Item = {
   id: number;
   page_id: number;
@@ -512,12 +525,14 @@ function SettingsDialog({onClose}:{onClose:()=>void}) {
 function NomenclatureEditor({types,onChanged}:{types:Kind[];onChanged:()=>Promise<void>}) {
   const empty=()=>({id:0,name:"",category:"Электроустановки",unit:"шт",color:"#f97316",wet_min_ip:"",defaults:{quantity:1} as Record<string,unknown>});
   const [form,setForm]=useState(empty), [search,setSearch]=useState(""), [showDeleted,setShowDeleted]=useState(false),
+    [groupFilter,setGroupFilter]=useState(""),
     [message,setMessage]=useState(""), [error,setError]=useState(""), [saving,setSaving]=useState(false), [parameter,setParameter]=useState("ip");
   async function work(action:()=>Promise<void>) {
     setSaving(true);setError("");setMessage("");
     try {await action();} catch(error) {setError(error instanceof Error ? error.message : "Ошибка");} finally {setSaving(false);}
   }
-  const visible=types.filter(item => (item.active || showDeleted) && `${item.name} ${item.category}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
+  const groups=groupKinds(types.filter(item=>item.active || showDeleted));
+  const visible=types.filter(item => (item.active || showDeleted) && (!groupFilter || (item.group ?? item.category)===groupFilter) && `${item.name} ${item.category} ${item.group ?? ""}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   return <section className="nomenclature-manager" aria-label="Управление номенклатурой">
     {message && <p className="catalog-success" role="status">{message}</p>}
     {error && <p className="catalog-error" role="alert">{error}</p>}
@@ -545,16 +560,17 @@ function NomenclatureEditor({types,onChanged}:{types:Kind[];onChanged:()=>Promis
         <p className="hint">Название и цвет обновляются во всех проектах. Для используемой позиции категория и единица измерения защищены.</p>
       </form>
       <div className="nomenclature-list">
+        <label>Группа<select aria-label="Группа номенклатуры" value={groupFilter} onChange={event=>setGroupFilter(event.target.value)}><option value="">Все группы</option>{groups.map(group=><option key={group.label} value={group.label}>{group.label}</option>)}</select></label>
         <label>Поиск<input aria-label="Поиск номенклатуры" type="search" value={search} onChange={event=>setSearch(event.target.value)} /></label>
         <label className="check"><input type="checkbox" checked={showDeleted} onChange={event=>setShowDeleted(event.target.checked)} />Показывать удалённые</label>
-        <div className="nomenclature-rows">{visible.map(item=><article key={item.id} className={!item.active ? "inactive" : ""} data-type-id={item.id}>
+        <div className="nomenclature-rows">{groupKinds(visible).map(group=><section className="nomenclature-group" key={group.label} aria-label={`Группа ${group.label}`}><h4>{group.label}<small>{group.items.length}</small></h4>{group.items.map(item=><article key={item.id} className={!item.active ? "inactive" : ""} data-type-id={item.id}>
           <div><strong><i style={{background:item.color}} />{item.name}</strong><small>{item.category} · {item.unit}{!item.active ? " · удалена из библиотеки" : ""}</small></div>
           <button type="button" disabled={saving} aria-label={`Редактировать ${item.name}`} onClick={()=> {setForm({id:item.id,name:item.name,category:item.category,unit:item.unit,color:item.color,wet_min_ip:item.wet_min_ip==null ? "" : String(item.wet_min_ip),defaults:{...item.defaults}});setError("");setMessage("");}}>Редактировать</button>
           {item.active ? <button type="button" className="danger" disabled={saving} aria-label={`Удалить ${item.name}`} onClick={()=> {
             if(!confirm(`Удалить «${item.name}» из библиотеки? Уже размещённые объекты и отчёты сохранятся.`)) return;
             void work(async()=> {await api(`/types/${item.id}`,"DELETE");await onChanged();if(form.id===item.id)setForm(empty());setMessage("Позиция удалена из библиотеки");});
           }}>Удалить</button> : <button type="button" disabled={saving} aria-label={`Восстановить ${item.name}`} onClick={()=>void work(async()=> {await api(`/types/${item.id}`,"PUT",{...item,active:true});await onChanged();setMessage("Позиция восстановлена");})}>Восстановить</button>}
-        </article>)}</div>
+        </article>)}</section>)}</div>
         {!visible.length && <p className="hint">Подходящих позиций нет.</p>}
       </div>
     </div>
@@ -844,11 +860,7 @@ function CatalogManager({
                     setForm({ ...form, type_id: +e.target.value })
                   }
                 >
-                  {types.filter(item=>item.active || item.id===form.type_id).map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.category} · {item.name} ({item.unit})
-                    </option>
-                  ))}
+                  <KindOptions types={types.filter(item=>item.active || item.id===form.type_id)} showUnits />
                 </select>
               </label>
               <label>
@@ -983,6 +995,7 @@ export default function App() {
     [layerId, setLayerId] = useState<number | null>(null),
     [typeId, setTypeId] = useState<number | null>(null),
     [roomId, setRoomId] = useState<number | null>(null);
+  const [libraryGroup,setLibraryGroup]=useState("");
   const [selected, setSelected] = useState<Item | null>(null),
     [selectedIds, setSelectedIds] = useState<number[]>([]),
     [typeEditorOpen, setTypeEditorOpen] = useState(false),
@@ -1132,6 +1145,10 @@ export default function App() {
     };
   }, [alignPageId]);
   const availableTypes=types.filter(item=>item.active);
+  const libraryTypes=availableTypes.filter(item=>!libraryGroup || (item.group ?? item.category)===libraryGroup);
+  useEffect(()=> {
+    if(libraryGroup && !types.some(item=>item.active && item.id===typeId && (item.group ?? item.category)===libraryGroup))setLibraryGroup("");
+  },[types,typeId,libraryGroup]);
   const page = project?.pages.find((p) => p.id === pageId),
     kind = types.find((t) => t.id === typeId),
     layer = project?.layers.find((l) => l.id === layerId);
@@ -1187,6 +1204,7 @@ export default function App() {
     setPageId(p.pages[0]?.id ?? null);
     setLayerId(p.layers[0]?.id ?? null);
     setRoomId(null);
+    setLibraryGroup("");
     setSelected(null);
     setSelectedIds([]);
     setTypeEditorOpen(false);
@@ -2150,6 +2168,13 @@ export default function App() {
               {leftPanelVisible && (
                 <aside aria-label="Объекты и рамки" className="objects-panel" inert={Boolean(supplyLinking)}>
                   <h3>Библиотека</h3>
+                  <label>Группа<select aria-label="Группа элементов" value={libraryGroup} onChange={event=> {
+                    const group=event.target.value;
+                    setLibraryGroup(group);
+                    const items=availableTypes.filter(item=>!group || (item.group ?? item.category)===group);
+                    if(!items.some(item=>item.id===typeId))setTypeId(items[0]?.id ?? null);
+                    setPlacing(false);setCalibrating(false);setCalibrationStart(null);setLinePoints([]);setLineRedo([]);setLineCursor(null);
+                  }}><option value="">Все группы</option>{groupKinds(availableTypes).map(group=><option key={group.label} value={group.label}>{group.label}</option>)}</select></label>
                   <select
                     aria-label="Тип элемента"
                     value={typeId ?? ""}
@@ -2160,20 +2185,10 @@ export default function App() {
                       setLineCursor(null);
                     }}
                   >
-                    {[...new Set(availableTypes.map((t) => t.category))].map((c) => (
-                      <optgroup key={c} label={c}>
-                        {availableTypes
-                          .filter((t) => t.category === c)
-                          .map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.name}
-                            </option>
-                          ))}
-                      </optgroup>
-                    ))}
+                    <KindOptions types={libraryTypes} />
                   </select>
                   <p className="hint">
-                    {kind?.category} · {kind?.unit}
+                    {kind?.group ?? kind?.category} · {kind?.unit}
                     {kind?.unit === "м" && !page?.meters_per_point
                       ? " · нужен масштаб"
                       : ""}
@@ -2379,29 +2394,7 @@ export default function App() {
                             }}
                           >
                             {selectedKind?.active === false && <option value={selectedKind.id} disabled>{selectedKind.name} · удалена из библиотеки</option>}
-                            {[
-                              ...new Set(
-                                types
-                                  .filter(
-                                    (type) => type.active && type.unit === selectedKind?.unit,
-                                  )
-                                  .map((type) => type.category),
-                              ),
-                            ].map((category) => (
-                              <optgroup key={category} label={category}>
-                                {types
-                                  .filter(
-                                    (type) =>
-                                      type.active && type.unit === selectedKind?.unit &&
-                                      type.category === category,
-                                  )
-                                  .map((type) => (
-                                    <option key={type.id} value={type.id}>
-                                      {type.name}
-                                    </option>
-                                  ))}
-                              </optgroup>
-                            ))}
+                            <KindOptions types={types.filter(type=>type.active && type.unit===selectedKind?.unit)} />
                           </select>
                           <small>
                             При замене привязка к товару будет сброшена.
@@ -4213,7 +4206,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.36</span>
+        <span>SMART HOME CALC / 1.0.37</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

@@ -27,7 +27,7 @@ from .models import (
     Product, Report,
 )
 from .catalog import LAYERS, seed
-from .nomenclature import nomenclature_key
+from .nomenclature import nomenclature_key, nomenclature_group, nomenclature_group_order
 from .polygons import polygon_error
 from .desktop_settings import desktop_settings, open_data_folder
 
@@ -101,7 +101,7 @@ async def lifespan(app):
         db.commit()
     yield
 
-APP_VERSION = '1.0.36'
+APP_VERSION = '1.0.37'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -111,7 +111,10 @@ def require(db, model, id):
     return obj
 
 def data(obj):
-    return {c.name: getattr(obj, c.name) for c in obj.__table__.columns if c.name not in ('pdf_path','image_path')}
+    result={c.name: getattr(obj, c.name) for c in obj.__table__.columns if c.name not in ('pdf_path','image_path')}
+    if isinstance(obj,ElementType):
+        result['group']=nomenclature_group(obj.name,obj.category)
+    return result
 
 def element_snapshot(db: DbSession, project_id: int):
     snapshot={}
@@ -543,6 +546,7 @@ def types(include_inactive: bool = False, db: DbSession = Depends(session)):
     items.sort(key=lambda item:(
         category_order.get(item.category,len(category_order)),
         item.category.casefold(),
+        nomenclature_group_order(item.name,item.category),
         nomenclature_key(item.name),
         item.id,
     ))

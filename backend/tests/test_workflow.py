@@ -37,7 +37,7 @@ def test_health_identifies_desktop_backend(client,monkeypatch):
     health=client.get('/api/health')
     assert health.status_code==200
     assert health.json()=={
-        'status':'ok','version':'1.0.36','instance':'test-instance',
+        'status':'ok','version':'1.0.37','instance':'test-instance',
     }
 
 def test_full_workflow_and_exports(client):
@@ -279,9 +279,8 @@ def test_switch_catalog_has_distinct_default_colors_and_custom_point_color(clien
     assert categories[0]=='Электроустановки'
     assert categories.count('Электроустановки')==categories.index('Освещение')
     electrical=[item['name'] for item in types if item['category']=='Электроустановки']
-    first_switch=next(index for index,name in enumerate(electrical) if 'выключатель' in name.casefold())
-    assert all('выключатель' not in name.casefold() for name in electrical[:first_switch])
-    assert all('выключатель' in name.casefold() for name in electrical[first_switch:])
+    switches=[index for index,name in enumerate(electrical) if 'выключатель' in name.casefold()]
+    assert switches==list(range(min(switches),max(switches)+1))
     thermostat=next(item for item in types if item['name']=='Терморегулятор')
     assert thermostat['category']=='Электроустановки'
     assert thermostat['color']=='#be123c'
@@ -1056,3 +1055,74 @@ def test_delete_project_reports_file_in_use_without_false_failure(client,monkeyp
     assert response.status_code==200 and response.json()['cleanup_failed'] is True
     assert client.get(f'/api/projects/{pid}').status_code==404
     assert blocked.exists()
+
+
+def test_electrical_library_subgroups_and_custom_names(client):
+    kinds=client.get('/api/types').json()
+    expected={
+        'Розетка одинарная':'Розетки','Розетка с USB (2 в 1)':'Розетки',
+        'USB':'Розетки слаботочные','TV':'Розетки слаботочные',
+        'RJ45':'Розетки слаботочные','HDMI-розетка':'Розетки слаботочные',
+        'Выключатель':'Выключатели','Одинарный проходной выключатель':'Выключатели проходные',
+        'Двойной перекрестный выключатель':'Выключатели перекрёстные',
+        'Звонковый выключатель двухклавишный':'Выключатели звонковые',
+        'Выключатель самовозвратный для жалюзи, двухклавишный':'Выключатели звонковые',
+        'Диммер':'Диммеры','Терморегулятор':'Терморегуляторы',
+        'Сценарная кнопка':'Сценарные кнопки','Заглушка':'Заглушки','Вывод кабеля':'Выводы кабеля',
+    }
+    for name,group in expected.items():
+        kind=next(item for item in kinds if item['name']==name)
+        assert kind['group']==group and kind['category']=='Электроустановки'
+    electrical=[item for item in kinds if item['category']=='Электроустановки']
+    groups=list(dict.fromkeys(item['group'] for item in electrical))
+    assert groups==['Розетки','Розетки слаботочные','Выключатели','Выключатели проходные',
+                    'Выключатели перекрёстные','Выключатели звонковые','Диммеры','Терморегуляторы',
+                    'Сценарные кнопки','Заглушки','Выводы кабеля']
+    for item in kinds:
+        if item['category']!='Электроустановки': assert item['group']==item['category']
+    for name,group in [('TV-розетка заказная','Розетки слаботочные'),
+                       ('Проходной выключатель 4-клавишный','Выключатели проходные'),
+                       ('Кабельный вывод круглый','Выводы кабеля')]:
+        response=client.post('/api/types',json={'name':name,'category':'Электроустановки'})
+        assert response.status_code==201 and response.json()['group']==group
+    custom=client.post('/api/types',json={'name':'Тестовый механизм','category':'Электроустановки'}).json()
+    assert custom['group']=='Прочие электроустановки'
+    renamed=client.put(f"/api/types/{custom['id']}",json={**custom,'name':'Диммер заказной'})
+    assert renamed.status_code==200 and renamed.json()['group']=='Диммеры'
+
+
+def test_blanking_plate_and_cable_outlet_frames_exports_and_restore(client):
+    pid,body=setup(client)
+    project=client.get(f'/api/projects/{pid}').json()
+    kinds=client.get('/api/types').json()
+    names=['Розетка одинарная','Заглушка','Вывод кабеля']
+    selected=[]
+    for index,name in enumerate(names):
+        kind=next(item for item in kinds if item['name']==name)
+        assert kind['category']=='Электроустановки' and kind['unit']=='шт'
+        response=client.post(f'/api/projects/{pid}/elements',json={
+            **body,'layer_id':project['layers'][0]['id'],'type_id':kind['id'],
+            'x':.2+index*.1,'parameters':{'quantity':1,'ip':44},
+        })
+        assert response.status_code==201
+        selected.append(response.json()['id'])
+    assert client.post(f'/api/projects/{pid}/frames',json={'element_ids':selected,'posts':3}).status_code==200
+    report=client.get(f'/api/projects/{pid}/report').json()
+    assert report['summary']['electrical_total']==3 and report['summary']['frame_total']==1
+    assert all(next(row for row in report['rows'] if row['name']==name)['quantity']==1 for name in names)
+    xlsx=load_workbook(io.BytesIO(client.get(f'/api/projects/{pid}/export/xlsx').content))
+    cells={cell.value for row in xlsx['Электроустановки'].iter_rows() for cell in row if isinstance(cell.value,str)}
+    assert all(name in cells for name in names)
+    with pymupdf.open(stream=client.get(f'/api/projects/{pid}/export/pdf').content,filetype='pdf') as pdf:
+        content=' '.join(' '.join(page.get_text() for page in pdf).split())
+        assert all(name in content for name in names)
+    backup=client.get(f'/api/projects/{pid}/backup')
+    restored=client.post('/api/projects/import',files={'file':('project.zip',backup.content,'application/zip')})
+    assert restored.status_code==201
+    new_pid=restored.json()['id']
+    assert client.get(f'/api/projects/{new_pid}/report').json()['summary']['electrical_total']==3
+    assert client.get(f'/api/projects/{new_pid}/report').json()['summary']['frame_total']==1
+    with main_module.Session() as db: main_module.seed(db)
+    updated=client.get('/api/types').json()
+    for name in names:
+        assert sum(item['name']==name for item in updated)==1

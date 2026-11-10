@@ -356,8 +356,12 @@ def extract_pdf_rows(data,warnings):
                         found.extend(recognized_rows(table.extract(),warnings))
                 if found:
                     for row in found: row['_page']=page.number+1
-                elif any(re.search(r'\d+[,.]\d{2}',w.text) for w in words):
-                    warnings.append(f'Страница {page.number+1}: таблица не распознана. Проверьте, не пропущены ли позиции.')
+                else:
+                    large_image=any(pymupdf.Rect(info['bbox']).get_area()>page.cropbox.get_area()*.2 for info in page.get_image_info())
+                    if large_image:
+                        warnings.append(f'Страница {page.number+1}: таблица не распознана; возможно, она сохранена изображением. Выполните OCR и проверьте, не пропущены ли позиции.')
+                    elif any(re.search(r'\d+[,.]\d{2}',w.text) for w in words):
+                        warnings.append(f'Страница {page.number+1}: таблица не распознана. Проверьте, не пропущены ли позиции.')
             rows.extend(found)
         if len(empty_pages)==len(document):
             raise ValueError('PDF содержит сканы без текста. Сначала распознайте текст (OCR) либо используйте Excel или Word (.docx).')

@@ -188,3 +188,16 @@ def test_overprinted_bold_text_does_not_duplicate_names_or_numbers():
     assert len(result['lines'])==1 and result['lines'][0]['name']=='Профиль накладной'
     assert result['lines'][0]['unit_price']=='1234.50' and result['lines'][0]['quantity']=='2.000'
     assert not result['warnings'],result['warnings']
+
+
+def test_scan_with_text_footer_is_not_silently_omitted_from_mixed_pdf():
+    data=supplier_pdf([{'name':'Розетка','price':'100,00','quantity':'2','unit':'шт','total':'200,00'}])
+    with pymupdf.open(stream=data,filetype='pdf') as doc:
+        raster=doc[0].get_pixmap(matrix=pymupdf.Matrix(.7,.7)).tobytes('png')
+        scanned=doc.new_page(width=doc[0].rect.width,height=doc[0].rect.height)
+        scanned.insert_image(scanned.rect,stream=raster)
+        scanned.insert_text((20,800),'Page 2')
+        data=doc.tobytes()
+    result=parse_quote_file(data,'mixed-scan.pdf')
+    assert len(result['lines'])==1
+    assert any('Страница 2' in warning and 'OCR' in warning for warning in result['warnings'])

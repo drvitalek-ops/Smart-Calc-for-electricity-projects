@@ -168,6 +168,10 @@ export default function QuotationEditor({projectId,projectName,types,onChanged,o
     <div className="quotation-heading"><div><div className="eyebrow">КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div><h2>{projectName}</h2><p>Расчёт → товары → готовое КП</p></div>
       <div className="quotation-actions">
         <button disabled={busy || !dirty} onClick={()=>void work(async()=>{await saveCurrent();setMessage("КП сохранено");})}>Сохранить КП</button>
+        <button disabled={busy} onClick={()=>void work(async()=>{
+          if(dirty && !confirm("Отменить несохранённые правки и загрузить сохранённое КП?"))return;
+          await load();
+        })}>Загрузить сохранённое КП</button>
         <button disabled={busy} onClick={()=>importInput.current?.click()}>Импорт из PDF / Excel / Word</button>
         <input ref={importInput} hidden type="file" aria-label="Файл внешнего КП" accept=".pdf,.xlsx,.xls,.xlsm,.docx,.csv" disabled={busy} onChange={e=>{void importFile(e.target.files?.[0]);e.target.value="";}}/>
         <button disabled={busy} onClick={()=>void work(async()=>{

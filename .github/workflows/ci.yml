@@ -43,7 +43,7 @@ jobs:
           DATABASE_URL: postgresql+psycopg://smart_calc:smart_calc_test@127.0.0.1:5432/smart_calc_test
           STORAGE_DIR: /tmp/smart-calc-test-files
           PYTHONPATH: .
-        run: pytest -q
+        run: pytest -q -s
 
       - name: Validate database migrations
         working-directory: backend

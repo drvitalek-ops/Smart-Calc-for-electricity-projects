@@ -9,7 +9,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 from .db import session
@@ -24,6 +24,7 @@ def money(value):
 
 
 class QuoteLine(BaseModel):
+    model_config=ConfigDict(validate_default=True)
     id: str = Field(min_length=1,max_length=80)
     source_key: str = Field(default='',max_length=2000)
     source_ids: list[int] = Field(default_factory=list,max_length=100000)
@@ -57,14 +58,34 @@ def validate_image(value):
         raw=base64.b64decode(encoded,validate=True)
         if not (raw.startswith(b'\x89PNG\r\n\x1a\n') or raw.startswith(b'\xff\xd8')):
             raise ValueError('Неверный формат изображения')
-        profile=pymupdf.image_profile(raw)
-        if not profile or profile['width']*profile['height']>4000000:
+        # Inspect dimensions before decoding to bound image allocation.
+        if raw.startswith(b'\x89PNG'):
+            width=int.from_bytes(raw[16:20],'big');height=int.from_bytes(raw[20:24],'big')
+        else:
+            position=2;width=height=0
+            while position<len(raw):
+                if raw[position]!=255: raise ValueError('Неверная структура JPEG')
+                while position<len(raw) and raw[position]==255: position+=1
+                marker=raw[position];position+=1
+                if marker in (0xD9,0xDA): break
+                if marker==0x01 or 0xD0<=marker<=0xD7: continue
+                length=int.from_bytes(raw[position:position+2],'big')
+                if length<2 or position+length>len(raw): raise ValueError('Неверная длина JPEG')
+                if 0xC0<=marker<=0xCF and marker not in (0xC4,0xC8,0xCC):
+                    height=int.from_bytes(raw[position+3:position+5],'big')
+                    width=int.from_bytes(raw[position+5:position+7],'big')
+                    break
+                position+=length
+        if width<=0 or height<=0 or width*height>4000000:
             raise ValueError('Слишком большое изображение')
+        pixmap=pymupdf.Pixmap(raw)
+        if pixmap.width!=width or pixmap.height!=height: raise ValueError('Размер изображения не совпадает с заголовком')
     except Exception as exc:
         raise ValueError('Некорректное изображение PNG/JPEG') from exc
 
 
 class QuoteInput(BaseModel):
+    model_config=ConfigDict(validate_default=True)
     revision: int = Field(default=0,ge=0)
     number: str = Field(default='',max_length=100)
     date: str = Field(default_factory=lambda:date.today().isoformat(),pattern=r'^\d{4}-\d{2}-\d{2}$')

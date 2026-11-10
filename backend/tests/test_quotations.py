@@ -134,10 +134,11 @@ def test_quotes_validate_financial_values_and_images(client):
 
 def test_pdf_pagination_and_external_pdf_price_quantity_roundtrip():
     lines=[QuoteLine(id=str(i),name='Светильник номер '+str(i),quantity=str(i+1),unit_price='1234.50',sku='SKU-'+str(i)) for i in range(20)]
-    doc=QuoteInput(number='10574',lines=lines,global_discount='10')
+    doc=QuoteInput(number='10574',customer='Заказчик проекта',lines=lines,global_discount='10')
     data=export_quotation(doc,'client',pdf_font_path())
     with pymupdf.open(stream=data,filetype='pdf') as pdf:
         assert len(pdf)>1
+        print('QUOTE_PDF_PREVIEW='+base64.b64encode(pdf[0].get_pixmap(matrix=pymupdf.Matrix(.85,.85)).tobytes('png')).decode())
         text=' '.join(' '.join(page.get_text() for page in pdf).split())
         assert 'Светильник номер 19' in text
     result=parse_quote_file(data,'КП.pdf')

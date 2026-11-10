@@ -49,7 +49,7 @@ const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKM
   let savedResponse=page.waitForResponse(r=>r.url().endsWith('/quotation')&&r.request().method()==='PUT');
   await editor.getByRole('button',{name:'Сохранить КП',exact:true}).click();
   stored=await(await savedResponse).json();assert.equal(stored.client.totals.RUB.total,'3100.00');assert.equal(stored.partner.totals.RUB.total,'2540.00');
-  await page.waitForFunction(()=>!document.querySelector('.quotation-editor button')?.disabled);
+  await page.waitForFunction(()=>!document.querySelector('[aria-label="Файл внешнего КП"]')?.disabled);
   await editor.getByLabel('Файл внешнего КП',{exact:true}).setInputFiles({name:'Другой КП.csv',mimeType:'text/csv',buffer:Buffer.from('Наименование;Цена;Количество;Ед.\nИмпортированный светильник;500,00;2;шт\n')});
   const importing=page.getByRole('dialog',{name:'Проверка импорта КП',exact:true});await importing.waitFor();
   assert.equal((await(await api.get(base+'/projects/'+pid+'/quotation')).json()).lines.length,2);

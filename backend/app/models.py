@@ -115,3 +115,10 @@ class Quotation(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'), primary_key=True)
     revision: Mapped[int] = mapped_column(default=1)
     content: Mapped[dict] = mapped_column(JSON, default=dict)
+
+class StandaloneQuotation(Base):
+    __tablename__ = 'standalone_quotations'
+    __table_args__ = {'sqlite_autoincrement': True}
+    id: Mapped[int] = mapped_column(primary_key=True)
+    revision: Mapped[int] = mapped_column(default=1)
+    content: Mapped[dict] = mapped_column(JSON, default=dict)

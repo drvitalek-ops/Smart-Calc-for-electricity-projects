@@ -7,13 +7,13 @@ import uuid
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 from .db import session
-from .models import Project, Quotation, Element, ElementType, Product, Manufacturer, Layer
+from .models import Project, Quotation, StandaloneQuotation, Element, ElementType, Product, Manufacturer, Layer
 
 router=APIRouter()
 CENT=Decimal('0.01')
@@ -156,7 +156,11 @@ def require_project(db,pid):
     return project
 
 
-def get_quote(db,pid):
+def get_quote(db,pid,standalone=False):
+    if standalone:
+        stored=db.get(StandaloneQuotation,pid)
+        if stored is None: raise HTTPException(404,'Самостоятельное КП не найдено')
+        return QuoteInput.model_validate({**stored.content,'revision':stored.revision})
     project=require_project(db,pid)
     stored=db.get(Quotation,pid)
     if stored is None:
@@ -164,29 +168,120 @@ def get_quote(db,pid):
     return QuoteInput.model_validate({**stored.content,'revision':stored.revision})
 
 
-def check_revision(db,pid,revision):
-    quote=get_quote(db,pid)
+def check_revision(db,pid,revision,standalone=False):
+    quote=get_quote(db,pid,standalone)
     if quote.revision!=revision:
         raise HTTPException(409,'КП изменилось в другом окне. Загрузите сохранённую версию перед продолжением.')
     return quote
 
 
-def persist_quote(db,pid,quote):
+def persist_quote(db,pid,quote,standalone=False):
     # Conditional update protects against overwriting a concurrent editor.
     from sqlalchemy import update
-    stored=db.get(Quotation,pid)
+    model=StandaloneQuotation if standalone else Quotation
+    primary_key=StandaloneQuotation.id if standalone else Quotation.project_id
+    stored=db.get(model,pid)
     payload=quote.model_dump(mode='json',exclude={'revision'})
     if stored is None:
+        if standalone: raise HTTPException(409,'Самостоятельное КП было удалено')
         stored=Quotation(project_id=pid,revision=1,content=payload)
         db.add(stored); db.flush()
         quote.revision=1
     else:
-        result=db.execute(update(Quotation).where(Quotation.project_id==pid,Quotation.revision==quote.revision)
+        result=db.execute(update(model).where(primary_key==pid,model.revision==quote.revision)
             .values(content=payload,revision=quote.revision+1).execution_options(synchronize_session=False))
         if result.rowcount!=1: raise HTTPException(409,'КП уже изменено в другом окне')
         quote.revision+=1
         db.expire(stored)
     return quote
+
+
+def quote_scope(request:Request):
+    standalone='qid' in request.path_params
+    try:
+        identifier=int(request.path_params['qid' if standalone else 'pid'])
+        if identifier<1: raise ValueError()
+    except (ValueError,TypeError):
+        raise HTTPException(422,'Некорректный идентификатор КП')
+    return identifier,standalone
+
+
+def validate_standalone(quote):
+    if any(line.source_ids or line.source_key for line in quote.lines):
+        raise HTTPException(422,'Самостоятельное КП не может содержать привязки к плану')
+
+
+def new_standalone(db,quote):
+    validate_standalone(quote)
+    row=StandaloneQuotation(revision=1,content={});db.add(row);db.flush()
+    if not quote.number: quote.number='С-'+str(row.id)
+    quote.revision=1
+    row.content=quote.model_dump(mode='json',exclude={'revision'})
+    return row
+
+
+class QuoteAttachment(QuoteRevision):
+    project_id: int = Field(gt=0)
+    project_revision: int = Field(ge=0)
+
+
+@router.get('/api/quotations/project-options')
+def quote_project_options(db:DbSession=Depends(session)):
+    return [{'id':project.id,'name':project.name,'quote_revision':stored.revision if stored else 0}
+            for project,stored in db.execute(select(Project,Quotation).outerjoin(Quotation,Quotation.project_id==Project.id).order_by(Project.id.desc()))]
+
+
+@router.get('/api/quotations')
+def list_quotations(db:DbSession=Depends(session)):
+    drafts=[]
+    for item in db.scalars(select(StandaloneQuotation).order_by(StandaloneQuotation.id.desc())):
+        content=item.content
+        drafts.append({'id':item.id,'revision':item.revision,'number':content.get('number',''),
+            'customer':content.get('customer',''),'date':content.get('date',''),'lines_count':len(content.get('lines',[]))})
+    projects=[{'project_id':project.id,'name':project.name,'number':stored.content.get('number',''),
+              'customer':stored.content.get('customer',''),'lines_count':len(stored.content.get('lines',[]))}
+        for project,stored in db.execute(select(Project,Quotation).join(Quotation,Quotation.project_id==Project.id).order_by(Project.id.desc()))]
+    return {'standalone':drafts,'projects':projects}
+
+
+@router.post('/api/quotations',status_code=201)
+def create_standalone(body:QuoteInput|None=None,db:DbSession=Depends(session)):
+    quote=body if body is not None else QuoteInput()
+    row=new_standalone(db,quote);db.commit()
+    return {'id':row.id,'quotation':present(quote)}
+
+
+@router.delete('/api/quotations/{qid}',status_code=204)
+def delete_standalone(qid:int,body:QuoteRevision,db:DbSession=Depends(session)):
+    from sqlalchemy import delete
+    check_revision(db,qid,body.revision,standalone=True)
+    result=db.execute(delete(StandaloneQuotation).where(StandaloneQuotation.id==qid,StandaloneQuotation.revision==body.revision))
+    if result.rowcount!=1: raise HTTPException(409,'КП уже изменено в другом окне')
+    db.commit()
+
+
+@router.post('/api/quotations/{qid}/attach')
+def attach_standalone(qid:int,body:QuoteAttachment,db:DbSession=Depends(session)):
+    from sqlalchemy import delete
+    from sqlalchemy.exc import IntegrityError
+    quote=check_revision(db,qid,body.revision,standalone=True)
+    validate_standalone(quote)
+    previous=check_revision(db,body.project_id,body.project_revision)
+    archived_id=None
+    if previous.revision:
+        detached=previous.model_copy(deep=True)
+        for line in detached.lines: line.source_ids=[];line.source_key=''
+        archived_id=new_standalone(db,detached).id
+    quote.revision=previous.revision
+    try:
+        persist_quote(db,body.project_id,quote)
+        result=db.execute(delete(StandaloneQuotation).where(StandaloneQuotation.id==qid,StandaloneQuotation.revision==body.revision))
+        if result.rowcount!=1: raise HTTPException(409,'Самостоятельное КП уже изменено в другом окне')
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409,'КП проекта изменилось. Обновите список проектов и повторите привязку.') from exc
+    return {'project_id':body.project_id,'archived_quotation_id':archived_id,'quotation':present(quote)}
 
 
 def totals(quote,mode):
@@ -283,18 +378,23 @@ def bind_product(db,pid,quote,line_id,product):
     product_snapshot(db,line,product)
 
 
+@router.get('/api/quotations/{qid}')
 @router.get('/api/projects/{pid}/quotation')
-def read_quote(pid:int,db:DbSession=Depends(session)):
-    quote=get_quote(db,pid)
+def read_quote(db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
+    quote=get_quote(db,pid,standalone)
     if quote.revision==0:
         import_lines(db,pid,quote)
-        persist_quote(db,pid,quote);db.commit()
+        persist_quote(db,pid,quote,standalone);db.commit()
     return present(quote)
 
 
+@router.put('/api/quotations/{qid}')
 @router.put('/api/projects/{pid}/quotation')
-def save_quote(pid:int,body:QuoteInput,db:DbSession=Depends(session)):
-    check_revision(db,pid,body.revision)
+def save_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
+    check_revision(db,pid,body.revision,standalone)
+    if standalone: validate_standalone(body)
     for line in body.lines:
         if line.type_id is not None and db.get(ElementType,line.type_id) is None:
             raise HTTPException(422,'Номенклатура строки не найдена')
@@ -302,13 +402,16 @@ def save_quote(pid:int,body:QuoteInput,db:DbSession=Depends(session)):
             product=db.get(Product,line.product_id)
             if product is None or product.unit!=line.unit or line.type_id!=product.type_id:
                 raise HTTPException(422,'Товар строки не соответствует номенклатуре или единице')
-    persist_quote(db,pid,body);db.commit()
+    persist_quote(db,pid,body,standalone);db.commit()
     return present(body)
 
 
+@router.post('/api/quotations/{qid}/preview')
 @router.post('/api/projects/{pid}/quotation/preview')
-def preview_quote(pid:int,body:QuoteInput,db:DbSession=Depends(session)):
-    require_project(db,pid)
+def preview_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
+    get_quote(db,pid,standalone)
+    if standalone: validate_standalone(body)
     return present(body)
 
 
@@ -320,9 +423,11 @@ def import_quote(pid:int,body:QuoteRevision,db:DbSession=Depends(session)):
     return present(quote)
 
 
+@router.post('/api/quotations/{qid}/bind')
 @router.post('/api/projects/{pid}/quotation/bind')
-def bind_quote(pid:int,body:QuoteBinding,db:DbSession=Depends(session)):
-    quote=check_revision(db,pid,body.revision)
+def bind_quote(body:QuoteBinding,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
+    quote=check_revision(db,pid,body.revision,standalone)
     if body.product_id is None:
         line=next((line for line in quote.lines if line.id==body.line_id),None)
         if line is None: raise HTTPException(404,'Строка КП не найдена')
@@ -341,13 +446,15 @@ def bind_quote(pid:int,body:QuoteBinding,db:DbSession=Depends(session)):
         product=db.get(Product,body.product_id)
         if product is None: raise HTTPException(404,'Товар не найден')
         bind_product(db,pid,quote,body.line_id,product)
-    persist_quote(db,pid,quote);db.commit()
+    persist_quote(db,pid,quote,standalone);db.commit()
     return present(quote)
 
 
+@router.post('/api/quotations/{qid}/product',status_code=201)
 @router.post('/api/projects/{pid}/quotation/product',status_code=201)
-def create_quote_product(pid:int,body:QuoteProduct,db:DbSession=Depends(session)):
-    quote=check_revision(db,pid,body.revision)
+def create_quote_product(body:QuoteProduct,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
+    quote=check_revision(db,pid,body.revision,standalone)
     line=next((line for line in quote.lines if line.id==body.line_id),None)
     if line is None: raise HTTPException(404,'Строка КП не найдена')
     typ=db.get(ElementType,body.type_id) if body.type_id else None
@@ -368,15 +475,17 @@ def create_quote_product(pid:int,body:QuoteProduct,db:DbSession=Depends(session)
         unit=typ.unit,price=float(body.unit_price),currency=body.currency,active=True,parameters={'image':body.image} if body.image else {})
     db.add(product);db.flush()
     bind_product(db,pid,quote,body.line_id,product)
-    persist_quote(db,pid,quote);db.commit()
+    persist_quote(db,pid,quote,standalone);db.commit()
     return present(quote)
 
 
+@router.get('/api/quotations/{qid}/export.pdf')
 @router.get('/api/projects/{pid}/quotation/export.pdf')
-def export_quote(pid:int,mode:Literal['client','partner']='client',db:DbSession=Depends(session)):
+def export_quote(mode:Literal['client','partner']='client',db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
     from .main import pdf_font_path
     from .quotation_pdf import export_quotation
-    quote=get_quote(db,pid)
+    quote=get_quote(db,pid,standalone)
     if not quote.lines: raise HTTPException(422,'Добавьте позиции в КП')
     document=export_quotation(quote,mode,pdf_font_path())
     return StreamingResponse(io.BytesIO(document),media_type='application/pdf',
@@ -398,10 +507,12 @@ def restore_quote(db,pid,payload,type_map,product_map,element_map):
             line.source_key=source_key({'element_ids':line.source_ids}) if line.source_ids else ''
     persist_quote(db,pid,quote)
 
+@router.post('/api/quotations/{qid}/import-file')
 @router.post('/api/projects/{pid}/quotation/import-file')
-async def import_quote_file(pid:int,file:UploadFile,db:DbSession=Depends(session)):
+async def import_quote_file(file:UploadFile,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
     from .quotation_import import parse_quote_file
-    require_project(db,pid)
+    get_quote(db,pid,standalone)
     raw=await file.read(20*1024*1024+1)
     if len(raw)>20*1024*1024: raise HTTPException(413,'Файл больше 20 МБ')
     try: return parse_quote_file(raw,file.filename or '')

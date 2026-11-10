@@ -93,6 +93,17 @@ try {
         if ($wordResult.lines.Count -ne 1 -or $wordResult.lines[0].name -ne "Imported lamp" -or $wordResult.lines[0].unit_price -ne "25.00") {
             throw "Packaged Word quotation import failed"
         }
+        $draft = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/quotations" -Method Post -ContentType "application/json" -Body '{}'
+        $draftUrl = "http://127.0.0.1:5173/api/quotations/$($draft.id)"
+        $draftDoc = $draft.quotation
+        $draftDoc.lines = $smokeQuote.lines
+        $draftDoc.global_discount = "5"
+        $draftDoc = Invoke-RestMethod -Uri $draftUrl -Method Put -ContentType "application/json; charset=utf-8" -Body ($draftDoc | ConvertTo-Json -Depth 20) -TimeoutSec 10
+        $attachment = @{revision=$draftDoc.revision;project_id=$smokeProject.id;project_revision=$smokeQuote.revision} | ConvertTo-Json
+        $attached = Invoke-RestMethod -Uri "$draftUrl/attach" -Method Post -ContentType "application/json" -Body $attachment -TimeoutSec 10
+        if ($attached.project_id -ne $smokeProject.id -or -not $attached.archived_quotation_id -or $attached.quotation.partner.totals.RUB.total -ne "190.00") {
+            throw "Packaged standalone quotation attachment failed"
+        }
     }
     finally {
         if (-not $backendProcess.HasExited) {

@@ -101,7 +101,7 @@ async def lifespan(app):
         db.commit()
     yield
 
-APP_VERSION = '1.0.38'
+APP_VERSION = '1.0.39'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):

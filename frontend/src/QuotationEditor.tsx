@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import "./QuotationEditor.css";
 
-type Kind = { id:number; name:string; category:string; unit:string; active:boolean };
+export type QuotationKind = { id:number; name:string; category:string; unit:string; active:boolean };
 type Product = { id:number; type_id:number; name:string; sku:string; unit:string; price:number; currency:string; active:boolean; manufacturer:string };
 type Catalogue = { products:Product[]; manufacturers:{id:number;name:string}[] };
 type Line = {
@@ -19,9 +19,10 @@ type Quote = {
   client:Prices;partner:Prices;
 };
 type Props = {
-  projectId:number; projectName:string; types:Kind[]; onChanged:()=>Promise<void>;
+  projectName:string; types:QuotationKind[]; onChanged:()=>Promise<void>; onBrowse?:()=>void;
   onDirtyChange:(dirty:boolean)=>void; onBusyChange:(busy:boolean)=>void;
-};
+} & ({projectId:number;quotationId?:never;onAttached?:never} | {quotationId:number;projectId?:never;onAttached:(projectId:number)=>Promise<void>});
+type AttachmentProject={id:number;name:string;quote_revision:number};
 
 async function api<T>(path:string,method="GET",body?:unknown,signal?:AbortSignal):Promise<T> {
   const response=await fetch("/api"+path,{method,headers:{"Content-Type":"application/json"},
@@ -53,19 +54,21 @@ async function picture(file:File,logo=false):Promise<string> {
   return value;
 }
 
-export default function QuotationEditor({projectId,projectName,types,onChanged,onDirtyChange,onBusyChange}:Props) {
+export default function QuotationEditor({projectId,quotationId,projectName,types,onChanged,onDirtyChange,onBusyChange,onBrowse,onAttached}:Props) {
   const [doc,setDoc]=useState<Quote|null>(null),[prices,setPrices]=useState<Quote|null>(null);
   const [catalogue,setCatalogue]=useState<Catalogue>({products:[],manufacturers:[]});
   const [busy,setBusy]=useState(false),[dirty,setDirty]=useState(false),[calculating,setCalculating]=useState(false);
   const [error,setError]=useState(""),[message,setMessage]=useState(""),[mode,setMode]=useState<"client"|"partner">("partner");
   const [preview,setPreview]=useState(false);
+  const [attachOpen,setAttachOpen]=useState(false),[attachProjects,setAttachProjects]=useState<AttachmentProject[]>([]),[attachTarget,setAttachTarget]=useState("");
   const [imported,setImported]=useState<{filename:string;lines:Line[];warnings:string[]}|null>(null);
   const [importMode,setImportMode]=useState<"append"|"replace">("append");
   const importInput=useRef<HTMLInputElement>(null);
   const [newProduct,setNewProduct]=useState<{lineId:string;name:string;manufacturer:string;sku:string;typeId:string;price:string;currency:string;image:string}|null>(null);
   const docRef=useRef<Quote|null>(doc);docRef.current=doc;
   const history=useRef<Quote[]>([]),future=useRef<Quote[]>([]),lastChange=useRef(0);
-  const base="/projects/"+projectId+"/quotation";
+  const standalone=quotationId!==undefined;
+  const base=standalone ? "/quotations/"+quotationId : "/projects/"+projectId+"/quotation";
   function apply(value:Quote) {setDoc(value);setPrices(value);setDirty(false);history.current=[];future.current=[];lastChange.current=0;}
   async function work(action:()=>Promise<void>) {
     setBusy(true);setError("");setMessage("");
@@ -76,7 +79,7 @@ export default function QuotationEditor({projectId,projectName,types,onChanged,o
     const [value,products]=await Promise.all([api<Quote>(base),api<Catalogue>("/catalog")]);
     apply(value);setCatalogue(products);
   }
-  useEffect(()=>{void work(load);},[projectId]);
+  useEffect(()=>{void work(load);},[base]);
   useEffect(()=>{onDirtyChange(dirty);},[dirty,onDirtyChange]);
   useEffect(()=>{onBusyChange(busy);},[busy,onBusyChange]);
   useEffect(()=>()=>{onDirtyChange(false);onBusyChange(false);},[onDirtyChange,onBusyChange]);
@@ -112,13 +115,13 @@ export default function QuotationEditor({projectId,projectName,types,onChanged,o
   }
   useEffect(()=>{
     const key=(event:KeyboardEvent)=>{
-      if(newProduct || imported || (event.target as HTMLElement|null)?.closest('[role="dialog"]') || (event.target as HTMLElement|null)?.matches("input,textarea,select,[contenteditable=true]"))return;
+      if(newProduct || imported || attachOpen || (event.target as HTMLElement|null)?.closest('[role="dialog"]') || (event.target as HTMLElement|null)?.matches("input,textarea,select,[contenteditable=true]"))return;
       if((event.ctrlKey||event.metaKey)&&["z","я","y","н"].includes(event.key.toLowerCase())){
         event.preventDefault();undo(event.shiftKey||["y","н"].includes(event.key.toLowerCase()));
       }
     };
     window.addEventListener("keydown",key);return()=>window.removeEventListener("keydown",key);
-  },[doc,busy,newProduct,imported]);
+  },[doc,busy,newProduct,imported,attachOpen]);
   async function saveCurrent():Promise<Quote> {
     if(!doc)throw Error("КП ещё не загружено");
     if(!dirty)return doc;
@@ -128,7 +131,7 @@ export default function QuotationEditor({projectId,projectName,types,onChanged,o
     await work(async()=>{
       const saved=await saveCurrent();
       const value=await api<Quote>(base+"/bind","POST",{revision:saved.revision,line_id:lineId,product_id:productId ? Number(productId) : null});
-      apply(value);await onChanged();setMessage("Товар привязан. Позиции плана обновлены.");
+      apply(value);await onChanged();setMessage(standalone ? "Товар привязан к строке КП." : "Товар привязан. Позиции плана обновлены.");
     });
   }
   async function download(target:"client"|"partner") {
@@ -165,8 +168,10 @@ export default function QuotationEditor({projectId,projectName,types,onChanged,o
   const validProducts=(line:Line)=>catalogue.products.filter(product=>
     (product.active || product.id===line.product_id) && product.unit===line.unit && (!line.source_ids.length || line.type_id===null || product.type_id===line.type_id));
   return <section className="quotation-editor" aria-label="Редактор коммерческого предложения">
-    <div className="quotation-heading"><div><div className="eyebrow">КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div><h2>{projectName}</h2><p>Расчёт → товары → готовое КП</p></div>
+    <div className="quotation-heading"><div><div className="eyebrow">КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div><h2>{projectName}</h2><p>{standalone ? "Товары → готовое КП → привязка к проекту" : "Расчёт → товары → готовое КП"}</p></div>
       <div className="quotation-actions">
+        {onBrowse && <button disabled={busy} onClick={onBrowse}>К списку КП</button>}
+        {standalone && <button disabled={busy} className="quote-primary" onClick={()=>void work(async()=>{setAttachProjects(await api<AttachmentProject[]>("/quotations/project-options"));setAttachTarget("");setAttachOpen(true);})}>Прикрепить к проекту</button>}
         <button disabled={busy || !dirty} onClick={()=>void work(async()=>{await saveCurrent();setMessage("КП сохранено");})}>Сохранить КП</button>
         <button disabled={busy} onClick={()=>void work(async()=>{
           if(dirty && !confirm("Отменить несохранённые правки и загрузить сохранённое КП?"))return;
@@ -174,7 +179,7 @@ export default function QuotationEditor({projectId,projectName,types,onChanged,o
         })}>Загрузить сохранённое КП</button>
         <button disabled={busy} onClick={()=>importInput.current?.click()}>Импорт из PDF / Excel / Word</button>
         <input ref={importInput} hidden type="file" aria-label="Файл внешнего КП" accept=".pdf,.xlsx,.xls,.xlsm,.docx,.csv" disabled={busy} onChange={e=>{void importFile(e.target.files?.[0]);e.target.value="";}}/>
-        <button disabled={busy} onClick={()=>void work(async()=>{
+        <button disabled={busy || standalone} title={standalone ? "Сначала прикрепите КП к проекту" : undefined} onClick={()=>void work(async()=>{
           if(doc.lines.length && !confirm("Обновить позиции из расчёта? Количество обновится, удалённые на плане позиции уйдут из КП. Ручные строки и скидки сохранятся."))return;
           const saved=await saveCurrent();apply(await api<Quote>(base+"/import","POST",{revision:saved.revision}));setMessage("Позиции обновлены из расчёта");
         })}>Обновить из расчёта</button>
@@ -182,7 +187,7 @@ export default function QuotationEditor({projectId,projectName,types,onChanged,o
         <button className="quote-primary" disabled={busy || !doc.lines.length} onClick={()=>void download("partner")}>PDF для партнёра — со скидками</button>
       </div>
     </div>
-    {!newProduct && !imported && error && <p className="catalog-error" role="alert">{error}</p>}
+    {!newProduct && !imported && !attachOpen && error && <p className="catalog-error" role="alert">{error}</p>}
     {message && <p className="catalog-success" role="status">{message}</p>}
     <div className="quotation-status" role="status">{busy ? "Сохранение…" : dirty ? "Есть несохранённые изменения" : "КП сохранено"}{calculating ? " · Пересчёт итогов…" : ""}</div>
     <div className="quotation-totals">
@@ -246,7 +251,7 @@ export default function QuotationEditor({projectId,projectName,types,onChanged,o
       </div>
     </div>}
     {newProduct && <QuoteDialog title="Новый товар из КП" busy={busy} onClose={()=>{setNewProduct(null);setError("");}}>
-      <h2>Новый товар в базу</h2><p>Товар сохранится в общем каталоге и будет привязан к этой строке и её объектам на плане.</p>
+      <h2>Новый товар в базу</h2><p>{standalone ? "Товар сохранится в общем каталоге и строке КП." : "Товар сохранится в общем каталоге и будет привязан к этой строке и её объектам на плане."}</p>
       <form onSubmit={event=>{event.preventDefault();void work(async()=>{
         const saved=await saveCurrent();
         const value=await api<Quote>(base+"/product","POST",{revision:saved.revision,line_id:newProduct.lineId,type_id:newProduct.typeId ? Number(newProduct.typeId) : null,
@@ -265,6 +270,21 @@ export default function QuotationEditor({projectId,projectName,types,onChanged,o
         {error && <p role="alert" className="catalog-error">{error}</p>}
         <div className="modal-actions"><button type="button" disabled={busy} onClick={()=>{setNewProduct(null);setError("");}}>Отмена</button><button className="quote-primary" disabled={busy}>Создать и привязать товар</button></div>
       </form>
+    </QuoteDialog>}
+    {attachOpen && <QuoteDialog title="Прикрепить КП к проекту" busy={busy} onClose={()=>{setAttachOpen(false);setError("");}}>
+      <h2>Прикрепить КП к проекту</h2>
+      <p>КП целиком перейдёт в выбранный проект: позиции, цены, скидки, реквизиты и фотографии сохранятся.</p>
+      <label>Проект<select aria-label="Проект для КП" disabled={busy} value={attachTarget} onChange={e=>setAttachTarget(e.target.value)}><option value="">Выберите проект</option>{attachProjects.map(project=><option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+      {attachProjects.length===0 && <p className="hint">Сначала создайте проект, затем вернитесь к этому КП и прикрепите его.</p>}
+      {attachProjects.find(project=>project.id===Number(attachTarget))?.quote_revision ? <p className="hint">Текущее КП проекта будет сохранено отдельно в списке «КП без проекта».</p> : null}
+      <button disabled={busy} onClick={()=>void work(async()=>setAttachProjects(await api<AttachmentProject[]>("/quotations/project-options")))}>Обновить список проектов</button>
+      {error && <p className="catalog-error" role="alert">{error}</p>}
+      <div className="modal-actions"><button disabled={busy} onClick={()=>setAttachOpen(false)}>Отмена</button><button className="quote-primary" disabled={busy || !attachTarget} onClick={()=>void work(async()=>{
+        const target=attachProjects.find(project=>project.id===Number(attachTarget));if(!target)return;
+        const saved=await saveCurrent();
+        const result=await api<{project_id:number}>(base+"/attach","POST",{revision:saved.revision,project_id:target.id,project_revision:target.quote_revision});
+        setAttachOpen(false);setDirty(false);await onAttached?.(result.project_id);
+      })}>Прикрепить КП</button></div>
     </QuoteDialog>}
     {imported && <QuoteDialog title="Проверка импорта КП" busy={busy} className="quotation-import-modal" onClose={()=>{setImported(null);setError("");}}>
       <h2>{imported.filename}</h2><p>Распознано позиций: {imported.lines.length}. Проверьте цены и количество. После переноса все строки можно редактировать.</p>

@@ -92,6 +92,7 @@ jobs:
               else:
                   raise RuntimeError('Test server did not become ready: '+address)
           PY
+          node frontend/tests/standalone-quotations.cjs
           node frontend/tests/quotations.cjs
 
       - name: Validate Docker Compose

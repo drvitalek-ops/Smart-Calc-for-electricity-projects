@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import QuotationEditor from "./QuotationEditor";
+import QuotationHub from "./QuotationHub";
 type Point = { x: number; y: number };
 type Page = {
   id: number;
@@ -1022,7 +1023,7 @@ export default function App() {
     [placing, setPlacing] = useState(false),
     [calibrating, setCalibrating] = useState(false),
     [catalogOpen, setCatalogOpen] = useState(false),
-    [view, setView] = useState<"plan" | "report" | "quote">("plan");
+    [view, setView] = useState<"plan" | "report" | "quote" | "quotations">("plan");
   const [quoteDirty,setQuoteDirty]=useState(false),[quoteBusy,setQuoteBusy]=useState(false);
   const [alignPageId, setAlignPageId] = useState<number | null>(null);
   const [alignOriginal, setAlignOriginal] = useState<{
@@ -1166,11 +1167,11 @@ export default function App() {
     }
   }
   function canLeaveQuote() {
-    return view!=="quote" || !quoteDirty || confirm("В КП есть несохранённые изменения. Выйти без сохранения?");
+    return !["quote","quotations"].includes(view) || !quoteDirty || confirm("В КП есть несохранённые изменения. Выйти без сохранения?");
   }
-  function changeView(next:"plan"|"report"|"quote") {
+  function changeView(next:"plan"|"report"|"quote"|"quotations") {
     if(busy || quoteBusy || next===view || !canLeaveQuote())return;
-    if(next==="quote") {
+    if(next==="quote" || next==="quotations") {
       void run(async()=>{
         const stored=selected && project?.elements.find(item=>item.id===selected.id);
         if(selected && stored && !sameItem(selected,stored))await save(selected);
@@ -1180,7 +1181,7 @@ export default function App() {
   }
   function requestPdfImport(files:File[]) {
     if(busy || quoteBusy) {setError("Дождитесь завершения сохранения или загрузки");return;}
-    if(view==="quote" && quoteDirty){setError("Сначала сохраните изменения КП");return;}
+    if(["quote","quotations"].includes(view) && quoteDirty){setError("Сначала сохраните изменения КП");return;}
     if(supplyLinking){setError("Сначала завершите или отмените привязку LED-лент");return;}
     if(settingsOpen || catalogOpen || pdfImport || deletingProject) {setError("Закройте открытое окно перед импортом PDF");return;}
     if(files.length!==1) {setError("Перетащите один PDF-файл проекта");return;}
@@ -1373,7 +1374,7 @@ export default function App() {
     );
   }
   useEffect(() => {
-    if (!selected || !project || busy || view==="quote" || deletingProject || drag.current || nodeDrag.current)
+    if (!selected || !project || busy || ["quote","quotations"].includes(view) || deletingProject || drag.current || nodeDrag.current)
       return;
     const stored = project.elements.find((item) => item.id === selected.id);
     if (!stored || sameItem(selected, stored)) return;
@@ -1385,7 +1386,7 @@ export default function App() {
   }, [selected, project, busy, deletingProject, view]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
-      if (view==="quote" || settingsOpen || pdfImport || deletingProject) return;
+      if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject) return;
       if(supplyLinking) {
         if((event.target as HTMLElement|null)?.matches('input,textarea,[contenteditable="true"]'))return;
         const modifier=event.ctrlKey || event.metaKey,key=event.key.toLowerCase();
@@ -1442,7 +1443,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", keydown);
   }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport, deletingProject, view]);
   useEffect(() => {
-    if (!busy && view!=="quote" && !deletingProject && pendingHistory.current.length) {
+    if (!busy && !["quote","quotations"].includes(view) && !deletingProject && pendingHistory.current.length) {
       const redo = pendingHistory.current.shift()!;
       void run(() => undoLast(redo));
     }
@@ -1666,7 +1667,7 @@ export default function App() {
     function roomKeys(event: KeyboardEvent) {
       if (
         !roomMode ||
-        view==="quote" || settingsOpen || pdfImport || supplyLinking || deletingProject ||
+        ["quote","quotations"].includes(view) || settingsOpen || pdfImport || supplyLinking || deletingProject ||
         busy ||
         (event.target as HTMLElement | null)?.matches(
           'input:not([type="checkbox"]):not([type="range"]),textarea,[contenteditable="true"]',
@@ -2048,7 +2049,8 @@ export default function App() {
           >
             Спецификация
           </button>
-          <button className={view==="quote" ? "active" : ""} disabled={!project || busy || quoteBusy} onClick={()=>changeView("quote")}>КП</button>
+          <button className={view==="quote" ? "active" : ""} disabled={busy || quoteBusy} onClick={()=>changeView(project ? "quote" : "quotations")}>КП</button>
+          <button className={view==="quotations" ? "active" : ""} disabled={busy || quoteBusy} onClick={()=>changeView("quotations")}>Все КП</button>
         </nav>
         <button className="icon-button" disabled={busy || quoteBusy} onClick={()=>pdfInput.current?.click()} title="Создать новый проект из PDF"><ToolIcon name="pdf"/>Новый из PDF</button>
         <button disabled={busy || quoteBusy} onClick={() => setCatalogOpen(true)}>Каталог и цены</button>
@@ -2124,7 +2126,7 @@ export default function App() {
       </header>
       {deletingProject && <AppModal title="Удалить проект?" onClose={()=>setDeletingProject(null)} busy={busy} className="delete-project-modal">
         <p className="delete-project-name">{deletingProject.name}</p>
-        <p>Будут удалены все листы PDF, помещения, размещённые объекты и расчёты этого проекта.</p>
+        <p>Будут удалены все листы PDF, помещения, размещённые объекты, расчёты и КП этого проекта.</p>
         <p className="hint">Отменить удаление через Ctrl+Z нельзя. Общий каталог и другие проекты сохранятся.</p>
         <a href={`/api/projects/${deletingProject.id}/backup`} download>Скачать резервную копию проекта ZIP</a>
         {deleteProjectError && <p className="catalog-error" role="alert">{deleteProjectError}</p>}
@@ -2161,7 +2163,9 @@ export default function App() {
           <button onClick={() => setError("")}>×</button>
         </div>
       )}
-      {!project ? (
+      {view==="quotations" ? <QuotationHub types={types} onDirtyChange={setQuoteDirty} onBusyChange={setQuoteBusy}
+        onChanged={async()=>{setCatalog(await api("/catalog"));setTypes(await api<Kind[]>("/types?include_inactive=true"));}}
+        onOpenProject={async(id)=>{await open(id);setView("quote");}}/> : !project ? (
         <main className="welcome">
           <div className="welcome-content">
             <div className="eyebrow">ОТ ПЛАНА К ВЕДОМОСТИ</div>
@@ -2175,6 +2179,7 @@ export default function App() {
               Разместите оборудование — ведомость заполнится автоматически.
             </p>
             <button className="welcome-import icon-button" disabled={busy} onClick={()=>pdfInput.current?.click()}><ToolIcon name="pdf"/><span><strong>Перетащите PDF сюда</strong><small>или нажмите, чтобы выбрать файл · до 500 МБ и 100 страниц</small></span></button>
+            <button className="welcome-quote" disabled={busy || quoteBusy} onClick={()=>changeView("quotations")}>КП без проекта — создать или открыть</button>
             <div className="steps">
               <span>01 / PDF-план</span>
               <span>02 / Элементы и слои</span>
@@ -2186,6 +2191,7 @@ export default function App() {
         <>
           {view === "quote" ? (
             <QuotationEditor key={project.id} projectId={project.id} projectName={project.name} types={types}
+              onBrowse={()=>changeView("quotations")}
               onDirtyChange={setQuoteDirty} onBusyChange={setQuoteBusy} onChanged={async()=>{
                 setCatalog(await api("/catalog"));
                 setTypes(await api<Kind[]>("/types?include_inactive=true"));
@@ -4237,7 +4243,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.38</span>
+        <span>SMART HOME CALC / 1.0.39</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

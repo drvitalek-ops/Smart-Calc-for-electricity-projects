@@ -14,7 +14,7 @@ from threading import Lock
 from pathlib import Path
 from typing import Literal
 from contextlib import asynccontextmanager
-from collections import defaultdict
+from collections import defaultdict, Counter
 import pymupdf
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, Query, Form, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session as DbSession
 from .db import Base, engine, session, Session
 from .models import (
     Project, Page, Room, Layer, Element, ElementType, Manufacturer, Supplier,
-    Product, Report, Quotation,
+    Product, Report, Quotation, CatalogCategory,
 )
 from .catalog import LAYERS, seed
 from .nomenclature import nomenclature_key, nomenclature_group, nomenclature_group_order
@@ -105,7 +105,7 @@ async def lifespan(app):
         db.commit()
     yield
 
-APP_VERSION = '1.0.41'
+APP_VERSION = '1.0.42'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -197,6 +197,9 @@ class TypeInput(NameInput):
     color: str = Field(default='#38bdf8', pattern='^#[0-9a-fA-F]{6}$')
     defaults: dict = Field(default_factory=dict)
     wet_min_ip: int | None = Field(default=None, ge=0, le=69)
+
+class CategoryInput(NameInput):
+    description: str = Field(default='',max_length=1000)
 
 class ElementInput(BaseModel):
     page_id: int
@@ -576,6 +579,8 @@ def type_values(db,body,item=None):
     values=body.model_dump()
     values['name']=values['name'].strip()
     values['category']=values['category'].strip()
+    canonical=next((name for name in db.scalars(select(CatalogCategory.name)) if name.casefold()==values['category'].casefold()),None)
+    if canonical: values['category']=canonical
     if not values['name'] or not values['category']: raise HTTPException(422,'Укажите название и категорию')
     if any(other.id!=(item.id if item else None) and other.name.casefold()==values['name'].casefold() and other.category.casefold()==values['category'].casefold()
            for other in db.scalars(select(ElementType).where(ElementType.active.is_(True)))):
@@ -594,6 +599,8 @@ def type_values(db,body,item=None):
             raise HTTPException(409,'Категория и единица измерения используемой позиции защищены; создайте новую позицию')
         if is_power_supply(item) and (values['unit']!='шт' or values['category']!='LED-подсветка'):
             raise HTTPException(422,'Для блока питания используйте категорию LED-подсветка и единицу шт')
+    if not db.scalar(select(CatalogCategory.id).where(CatalogCategory.name==values['category'])):
+        db.add(CatalogCategory(name=values['category'],description=''))
     return values
 
 @app.post('/api/types',status_code=201)
@@ -615,6 +622,49 @@ def remove_type(type_id: int, db: DbSession = Depends(session)):
     db.commit()
     return data(item)
 
+def category_rows(db):
+    stored={item.name:item for item in db.scalars(select(CatalogCategory))}
+    counts=Counter(db.scalars(select(ElementType.category)))
+    names=set(stored) | set(LAYERS) | set(counts)
+    return [{'name':name,'description':stored[name].description if name in stored else '',
+        'system':name in LAYERS,'id':stored[name].id if name in stored else None,
+        'positions':counts.get(name,0)}
+        for name in sorted(names,key=str.casefold)]
+
+
+@app.get('/api/categories')
+def categories(db:DbSession=Depends(session)):
+    return category_rows(db)
+
+
+@app.post('/api/categories',status_code=201)
+def create_category(body:CategoryInput,db:DbSession=Depends(session)):
+    name=body.name.strip()
+    if not name: raise HTTPException(422,'Укажите название категории')
+    if any(item['name'].casefold()==name.casefold() for item in category_rows(db)):
+        raise HTTPException(409,'Категория уже существует')
+    item=CatalogCategory(name=name,description=body.description);db.add(item);db.commit();return data(item)
+
+
+@app.put('/api/categories/{category_id}')
+def update_category(category_id:int,body:CategoryInput,db:DbSession=Depends(session)):
+    item=require(db,CatalogCategory,category_id);name=body.name.strip()
+    if not name: raise HTTPException(422,'Укажите название категории')
+    if item.name in LAYERS and name!=item.name: raise HTTPException(409,'Название системной категории защищено')
+    if any(row['name']!=item.name and row['name'].casefold()==name.casefold() for row in category_rows(db)):
+        raise HTTPException(409,'Категория уже существует')
+    for kind in db.scalars(select(ElementType).where(ElementType.category==item.name)):kind.category=name
+    item.name=name;item.description=body.description;db.commit();return data(item)
+
+
+@app.delete('/api/categories/{category_id}')
+def delete_category(category_id:int,db:DbSession=Depends(session)):
+    item=require(db,CatalogCategory,category_id)
+    if item.name in LAYERS or db.scalar(select(ElementType.id).where(ElementType.category==item.name).limit(1)):
+        raise HTTPException(409,'Удалить можно только пустую пользовательскую категорию')
+    db.delete(item);db.commit();return {'deleted':True}
+
+
 @app.get('/api/catalog')
 def catalog(db: DbSession = Depends(session)):
     manufacturers=[data(item) for item in db.scalars(select(Manufacturer).order_by(Manufacturer.name))]
@@ -622,7 +672,7 @@ def catalog(db: DbSession = Depends(session)):
     products=[]
     for product in db.scalars(select(Product).order_by(Product.name)):
         products.append(catalog_product(db,product))
-    return {'manufacturers':manufacturers,'suppliers':suppliers,'products':products}
+    return {'manufacturers':manufacturers,'suppliers':suppliers,'products':products,'categories':category_rows(db)}
 
 @app.post('/api/manufacturers',status_code=201)
 def add_manufacturer(body: ManufacturerInput, db: DbSession = Depends(session)):

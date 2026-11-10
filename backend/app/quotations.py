@@ -8,7 +8,7 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
@@ -517,15 +517,40 @@ def create_quote_product(body:QuoteProduct,db:DbSession=Depends(session),scope:t
     return present(quote)
 
 
+@router.post('/api/quotations/{qid}/preview.pdf')
+@router.post('/api/projects/{pid}/quotation/preview.pdf')
+def preview_document(body:QuoteInput,mode:Literal['client','partner']='client',db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
+    # Resolve access without creating or changing the saved quotation.
+    if db.get(StandaloneQuotation if standalone else Project,pid) is None: raise HTTPException(404,"КП или проект не найден")
+    if standalone: validate_standalone(body)
+    from .quotation_pdf import export_quotation
+    return StreamingResponse(io.BytesIO(export_quotation(body,mode)),media_type='application/pdf',
+        headers={'Cache-Control':'no-store'})
+
+
+@router.post('/api/quotations/{qid}/preview.png')
+@router.post('/api/projects/{pid}/quotation/preview.png')
+def preview_page(body:QuoteInput,mode:Literal['client','partner']='client',page:int=1,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
+    if db.get(StandaloneQuotation if standalone else Project,pid) is None: raise HTTPException(404,'КП или проект не найден')
+    if standalone: validate_standalone(body)
+    import pymupdf
+    from .quotation_pdf import export_quotation
+    with pymupdf.open(stream=export_quotation(body,mode),filetype='pdf') as pdf:
+        if page<1 or page>len(pdf): raise HTTPException(422,'Страница вне диапазона')
+        image=pdf[page-1].get_pixmap(matrix=pymupdf.Matrix(2,2),alpha=False).tobytes('png')
+        return Response(image,media_type='image/png',headers={'X-Preview-Pages':str(len(pdf)),'Cache-Control':'no-store'})
+
+
 @router.get('/api/quotations/{qid}/export.pdf')
 @router.get('/api/projects/{pid}/quotation/export.pdf')
 def export_quote(mode:Literal['client','partner']='client',db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
     pid,standalone=scope
-    from .main import pdf_font_path
     from .quotation_pdf import export_quotation
     quote=get_quote(db,pid,standalone)
     if not quote.lines: raise HTTPException(422,'Добавьте позиции в КП')
-    document=export_quotation(quote,mode,pdf_font_path())
+    document=export_quotation(quote,mode)
     return StreamingResponse(io.BytesIO(document),media_type='application/pdf',
         headers={'Content-Disposition':f'attachment; filename="quotation-{pid}-{mode}.pdf"'})
 

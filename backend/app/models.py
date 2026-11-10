@@ -123,3 +123,9 @@ class StandaloneQuotation(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     revision: Mapped[int] = mapped_column(default=1)
     content: Mapped[dict] = mapped_column(JSON, default=dict)
+
+class CatalogCategory(Base):
+    __tablename__ = 'catalog_categories'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True)
+    description: Mapped[str] = mapped_column(String(1000), default='')

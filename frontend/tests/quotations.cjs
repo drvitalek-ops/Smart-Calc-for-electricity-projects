@@ -63,7 +63,7 @@ const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKM
   assert.equal(stored.client.totals.RUB.total,'4900.00');assert.equal(stored.partner.totals.RUB.total,'4160.00');
   assert.equal((await(await api.get(base+'/projects/'+pid)).json()).elements.length,2,'External rows must not create plan objects');
   await editor.getByRole('button',{name:'Предпросмотр',exact:true}).click();
-  await editor.locator('.quotation-paper').waitFor();
+  await editor.locator('.quotation-paper .quotation-pdf-page').waitFor();
   const screenshot=await editor.locator('.quotation-paper').screenshot();
   console.log('QUOTE_UI_PREVIEW='+screenshot.toString('base64'));
   for(const [label,kind] of [['PDF для клиента — без скидок','client'],['PDF для партнёра — со скидками','partner']]){
@@ -73,7 +73,8 @@ const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKM
    assert.equal(fs.readFileSync(await download.path()).subarray(0,4).toString(),'%PDF');
   }
   await editor.getByLabel('Цены предпросмотра КП',{exact:true}).selectOption('client');
-  assert.equal(await editor.locator('.quotation-paper th').filter({hasText:'Скидка'}).count(),0);
+  await editor.locator('.quotation-paper .quotation-pdf-page').waitFor();
+  assert.ok((await editor.locator('.quotation-paper').innerText()).includes('без скидок'));
   await page.getByRole('button',{name:'План',exact:true}).click();await page.locator('.sheet > svg').waitFor();
   await page.getByRole('button',{name:'КП',exact:true}).click();await editor.locator('[data-quote-line]').first().waitFor();
   assert.equal(await editor.locator('[data-quote-line]').count(),3);

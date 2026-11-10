@@ -1,5 +1,5 @@
 from sqlalchemy import select
-from .models import ElementType, Element, Product, Layer, Project
+from .models import ElementType, Element, Product, Layer, Project, CatalogCategory
 
 LAYERS = ['Электроустановки', 'Освещение', 'LED-подсветка', 'Датчики', 'Электрокарнизы', 'Умные устройства', 'Профиль']
 
@@ -138,4 +138,8 @@ def seed(db):
             else:
                 layer=Layer(project_id=project.id,name=name,seed_key=name)
                 db.add(layer);layers.append(layer)
+    db.flush()
+    registered=set(db.scalars(select(CatalogCategory.name)))
+    for name in set(LAYERS) | set(db.scalars(select(ElementType.category))):
+        if name not in registered: db.add(CatalogCategory(name=name,description=''))
     db.commit()

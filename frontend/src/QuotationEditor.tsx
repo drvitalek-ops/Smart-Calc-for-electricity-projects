@@ -1,3 +1,6 @@
+import ImageField,{imagePaste,prepareImage,imageDrop,imageDragOver} from "./ImageField";
+import SearchInput from "./SearchInput";
+import QuotationPreview from "./QuotationPreview";
 import ToolRail, {ToolButton, type ToolItem} from "./ToolRail";
 import SearchSelect from "./SearchSelect";
 import { useEffect, useRef, useState } from "react";
@@ -42,21 +45,6 @@ const cash=(value:string|number)=>Number(value).toLocaleString("ru-RU",{minimumF
 const amount=(value:string|number,code:string)=>cash(value)+" "+(({RUB:"₽",USD:"$",EUR:"€"} as Record<string,string>)[code] ?? code);
 const newLine=():Line=>({id:crypto.randomUUID(),source_key:"",source_ids:[],type_id:null,product_id:null,
   name:"Новая позиция",sku:"",manufacturer:"",room:"",description:"",quantity:"1",unit:"шт",unit_price:"0",currency:"RUB",discount:null,image:""});
-
-async function picture(file:File,logo=false):Promise<string> {
-  if(!["image/png","image/jpeg"].includes(file.type))throw Error("Выберите изображение PNG или JPEG");
-  if(file.size>8*1024*1024)throw Error("Изображение больше 8 МБ");
-  const bitmap=await createImageBitmap(file);
-  const scale=Math.min(1,240/Math.max(bitmap.width,bitmap.height));
-  const canvas=document.createElement("canvas");
-  canvas.width=Math.max(1,Math.round(bitmap.width*scale));canvas.height=Math.max(1,Math.round(bitmap.height*scale));
-  const context=canvas.getContext("2d");if(!context)throw Error("Не удалось подготовить изображение");
-  if(!logo){context.fillStyle="white";context.fillRect(0,0,canvas.width,canvas.height);}
-  context.drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close();
-  const value=canvas.toDataURL(logo ? "image/png" : "image/jpeg",.85);
-  if(value.length>300000)throw Error("Слишком большое изображение. Выберите меньший файл.");
-  return value;
-}
 
 export default function QuotationEditor({projectId,quotationId,projectName,types,onChanged,onDirtyChange,onBusyChange,onBrowse,onAttached}:Props) {
   const [doc,setDoc]=useState<Quote|null>(null),[prices,setPrices]=useState<Quote|null>(null);
@@ -178,7 +166,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
   }
   async function upload(file:File|undefined,done:(value:string)=>void,logo=false) {
     if(!file)return;
-    try {done(await picture(file,logo));}catch(error){setError(error instanceof Error ? error.message : "Ошибка изображения");}
+    try {done(await prepareImage(file,logo));}catch(error){setError(error instanceof Error ? error.message : "Ошибка изображения");}
   }
   if(!doc)return <section className="quotation-editor"><h2>Редактор КП</h2>{busy ? <p role="status">Загрузка КП…</p> : <><p role="alert">{error}</p><button onClick={()=>void work(load)}>Повторить загрузку КП</button></>}</section>;
   const calculated=prices ?? doc;
@@ -234,14 +222,14 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
       <div className="quotation-line-actions"><ToolButton icon="plus" disabled={busy} onClick={()=>change(q=>({...q,lines:[...q.lines,newLine()]}),true)}>＋ Добавить строку КП</ToolButton>
         <ToolButton icon="undo" disabled={busy || !history.current.length} onClick={()=>undo()}>Отменить правку КП</ToolButton><ToolButton icon="redo" disabled={busy || !future.current.length} onClick={()=>undo(true)}>Вернуть правку КП</ToolButton></div>
       <div className="quotation-table-wrap"><table className="quotation-table"><thead><tr><th>Позиция / товар</th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Валюта</th><th>Скидка, %</th><th>Сумма</th><th></th></tr></thead>
-        <tbody>{doc.lines.map((line,index)=><tr key={line.id} data-quote-line={line.id}>
+        <tbody>{doc.lines.map((line,index)=><tr key={line.id} data-quote-line={line.id} data-image-target onDragOver={imageDragOver} onDrop={event=>imageDrop(event,file=>void upload(file,image=>editLine(line.id,{image})))} onPasteCapture={event=>imagePaste(event,file=>void upload(file,image=>editLine(line.id,{image})))}>
           <td><div className="quotation-line-name">{line.image && <img src={line.image} alt=""/>}<div><input aria-label={"Наименование строки "+(index+1)} value={line.name} disabled={busy} onChange={e=>editLine(line.id,{name:e.target.value})}/><small>{line.room}{line.source_ids.length ? " · На плане: "+line.source_ids.length : line.source_key.startsWith("frame:") ? " · Рамка по расчёту" : " · Ручная строка"}</small></div></div>
             <SearchSelect aria-label={"Товар строки "+(index+1)} value={line.product_id ?? ""} disabled={busy} onChange={e=>void bind(line.id,e.target.value)}><option value="">Без привязки к товару</option>{validProducts(line).map(product=><option key={product.id} value={product.id} disabled={!product.active && product.id!==line.product_id}>{product.manufacturer} · {product.name}{product.sku ? " · "+product.sku : ""}</option>)}</SearchSelect>
             <div className="quotation-inline-actions"><button type="button" disabled={busy} onClick={()=>{setError("");setNewProduct({lineId:line.id,name:line.name,manufacturer:line.manufacturer,sku:line.sku,typeId:line.type_id ? String(line.type_id) : "",price:line.unit_price,currency:line.currency,image:line.image});}}>＋ Товар в базу</button>
-              <label className="quote-file">Фото<input type="file" accept="image/png,image/jpeg" disabled={busy} aria-label={"Фото строки "+(index+1)} onChange={e=>{void upload(e.target.files?.[0],image=>editLine(line.id,{image}));e.target.value="";}}/></label>
-              {line.image && <button disabled={busy} onClick={()=>editLine(line.id,{image:""})}>Убрать фото</button>}
+              <ImageField label={"Фото строки "+(index+1)} value={line.image} disabled={busy} onChange={image=>editLine(line.id,{image})}/>
+
             </div>
-            <details><summary>Описание и артикул</summary><input aria-label={"Артикул строки "+(index+1)} placeholder="Артикул" value={line.sku} disabled={busy} onChange={e=>editLine(line.id,{sku:e.target.value})}/><input aria-label={"Производитель строки "+(index+1)} placeholder="Производитель" list="row-manufacturers" value={line.manufacturer} disabled={busy} onChange={event=>editLine(line.id,{manufacturer:event.target.value})}/><input aria-label={"Помещение строки "+(index+1)} placeholder="Помещение" value={line.room} disabled={busy} onChange={event=>editLine(line.id,{room:event.target.value})}/>
+            <details><summary>Описание и артикул</summary><input aria-label={"Артикул строки "+(index+1)} placeholder="Артикул" value={line.sku} disabled={busy} onChange={e=>editLine(line.id,{sku:e.target.value})}/><SearchInput aria-label={"Производитель строки "+(index+1)} placeholder="Производитель" options={catalogue.manufacturers.map(m=>m.name)} value={line.manufacturer} disabled={busy} onChange={manufacturer=>editLine(line.id,{manufacturer})}/><input aria-label={"Помещение строки "+(index+1)} placeholder="Помещение" value={line.room} disabled={busy} onChange={event=>editLine(line.id,{room:event.target.value})}/>
             <label>Номенклатура<SearchSelect aria-label={"Номенклатура строки "+(index+1)} disabled={busy||Boolean(line.source_ids.length)} value={line.type_id??''} onChange={event=>{const type=types.find(type=>type.id===Number(event.target.value));editLine(line.id,{type_id:type?.id??null,product_id:null});}}><option value="">Без категории</option>{types.filter(type=>type.active&&type.unit===line.unit).map(type=><option key={type.id} value={type.id}>{type.category} · {type.name}</option>)}</SearchSelect></label>
             <ToolButton icon="copy" type="button" disabled={busy} aria-label={"Дублировать строку "+(index+1)+" в КП"} onClick={()=>change(quote=>({...quote,lines:[...quote.lines,{...line,id:crypto.randomUUID(),source_key:'',source_ids:[],quantity_override:null,calculated_quantity:null,overrides:[]}]}),true)}>Ручная копия строки</ToolButton>
             <textarea aria-label={"Описание строки "+(index+1)} value={line.description} disabled={busy} onChange={e=>editLine(line.id,{description:e.target.value})}/></details>
@@ -255,28 +243,18 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
           <td><button aria-label={"Удалить строку "+(index+1)+" из КП"} title="Убрать только из КП" disabled={busy} onClick={()=>change(q=>({...q,lines:q.lines.filter(item=>item.id!==line.id)}),true)}>×</button></td>
         </tr>)}</tbody></table></div>
       {!doc.lines.length && <p className="hint">Пока нет позиций. Добавьте строку вручную или импортируйте расчёт проекта.</p>}
-      <datalist id="row-manufacturers">{catalogue.manufacturers.map(m=><option key={m.id} value={m.name}/>)}</datalist>
+
       <section className="quote-catalog-panel" aria-label="Товары для КП"><h3>Добавить товар из базы</h3><input aria-label="Поиск товаров для КП" type="search" placeholder="Название, артикул, производитель…" value={productSearch} onChange={event=>setProductSearch(event.target.value)}/>
         <div className="quote-catalog-products">{catalogue.products.filter(product=>product.active&&[product.name,product.sku,product.manufacturer].join(' ').toLocaleLowerCase().includes(productSearch.toLocaleLowerCase())).map(product=><article key={product.id}><strong>{product.name}</strong><small>{product.manufacturer} · {product.sku}</small><b>{amount(product.price,product.currency)} / {product.unit}</b><ToolButton icon="plus" disabled={busy} onClick={()=>{change(quote=>({...quote,lines:[...quote.lines,{...newLine(),name:product.name,sku:product.sku,manufacturer:product.manufacturer,product_id:product.id,type_id:product.type_id,unit:product.unit as 'шт'|'м',unit_price:String(product.price),currency:product.currency,image:product.parameters?.image??'',description:product.parameters?.description??''}]}),true);chooseQuoteTool('positions');}}>Добавить в КП</ToolButton></article>)}</div>
       </section>
       <fieldset disabled={busy} className="quotation-notes"><label>Условия предложения<textarea aria-label="Условия КП" rows={4} value={doc.terms} onChange={e=>change(q=>({...q,terms:e.target.value}))}/></label></fieldset>
       <details open className="quotation-brand"><summary>Оформление и реквизиты</summary><fieldset disabled={busy} className="quotation-fields">
         {([["title","Заголовок КП"],["seller","Компания"],["city","Город"],["phone","Телефон"],["email","E-mail"],["website","Сайт"],["address","Адрес"],["slogan","Слоган"],["tax_note","Примечание о НДС"]] as const).map(([key,label])=><label key={key}>{label}<input aria-label={label+" КП"} value={doc[key]} onChange={e=>change(q=>({...q,[key]:e.target.value}))}/></label>)}
-        <label className="quote-file">Логотип PNG/JPEG<input aria-label="Логотип КП" type="file" accept="image/png,image/jpeg" onChange={e=>{void upload(e.target.files?.[0],logo=>change(q=>({...q,logo})),true);e.target.value="";}}/></label>
-        {doc.logo && <div><img className="quotation-logo" src={doc.logo} alt="Логотип"/><button onClick={()=>change(q=>({...q,logo:""}))}>Убрать логотип</button></div>}
+        <ImageField label="Логотип КП" value={doc.logo} disabled={busy} logo onChange={logo=>change(q=>({...q,logo}))}/>
         {doc.benefits.map((benefit,index)=><label key={index}>Преимущество {index+1}<input aria-label={"Заголовок преимущества "+(index+1)} value={benefit.title} onChange={e=>change(q=>({...q,benefits:q.benefits.map((item,i)=>i===index ? {...item,title:e.target.value} : item)}))}/><input aria-label={"Текст преимущества "+(index+1)} value={benefit.text} onChange={e=>change(q=>({...q,benefits:q.benefits.map((item,i)=>i===index ? {...item,text:e.target.value} : item)}))}/></label>)}
         <button onClick={()=>change(q=>({...q,benefits:[]}))}>Убрать блок преимуществ</button>
       </fieldset><p className="hint">Примечание о НДС и гарантийные условия укажите в соответствии с вашими ценами и товарами.</p></details>
-    </> : <div className="quotation-paper" aria-label="Предпросмотр коммерческого предложения">
-      <div className="quotation-paper-masthead"><div>{doc.logo ? <img src={doc.logo} alt="Логотип"/> : <strong>{doc.seller}</strong>}<span>{doc.slogan}</span></div><address>{doc.city}<b>{doc.phone}</b>{doc.website}<b>{doc.email}</b></address></div>
-      <div className="quotation-paper-body"><div className="quotation-paper-meta"><h2>{doc.title}<br/>№ КП {doc.number}</h2><dl><div><dt>ДАТА</dt><dd>{doc.date.split("-").reverse().join(".")}</dd></div><div><dt>СРОК ДЕЙСТВИЯ</dt><dd>{doc.valid_days} дней</dd></div><div><dt>ПОЗИЦИЙ</dt><dd>{doc.lines.length} шт</dd></div></dl></div>
-        <small>КОМУ</small><h3>{doc.customer}</h3><p>{doc.contact}</p>
-        <div className="quotation-paper-total"><span>ИТОГО ПО КП</span><div>{Object.entries(visiblePrices.totals).map(([code,total])=><strong key={code}>{amount(total.total,code)}</strong>)}<small>{doc.tax_note}</small></div></div>
-        {doc.benefits.length>0 && <div className="quotation-paper-benefits">{doc.benefits.map((item,i)=><div key={i}><i>✓</i><span><b>{item.title}</b><small>{item.text}</small></span></div>)}</div>}
-        <table><thead><tr><th>№</th><th>Наименование</th><th>Цена</th><th>Кол-во</th><th>Ед.</th>{mode==="partner" && <th>Скидка</th>}<th>Сумма</th></tr></thead><tbody>{doc.lines.map((line,i)=><tr key={line.id}><td>{i+1}</td><td><div className="quotation-preview-product">{line.image && <img src={line.image} alt=""/>}<div>{line.name}<small>{line.sku} {line.manufacturer}</small></div></div></td><td>{amount(line.unit_price,line.currency)}</td><td>{line.quantity}</td><td>{line.unit}</td>{mode==="partner" && <td>{rowPrices.get(line.id)?.effective_discount ?? "0"}%</td>}<td className="quotation-preview-amount">{rowPrices.has(line.id) ? amount(rowPrices.get(line.id)!.total,line.currency) : "—"}</td></tr>)}</tbody></table>
-        {doc.terms && <p className="quotation-paper-terms">{doc.terms}</p>}<footer><strong>{doc.seller}</strong><p>{doc.address}</p><p>{doc.phone} · {doc.email} · {doc.website}</p></footer>
-      </div>
-    </div>}
+    </> : <QuotationPreview base={base} document={doc} mode={mode}/>}
     </div>
     {newProduct && <QuoteDialog title="Новый товар из КП" busy={busy} onClose={()=>{setNewProduct(null);setError("");}}>
       <h2>Новый товар в базу</h2><p>{standalone ? "Товар сохранится в общем каталоге и строке КП." : "Товар сохранится в общем каталоге и будет привязан к этой строке и её объектам на плане."}</p>
@@ -286,14 +264,15 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
           name:newProduct.name,manufacturer:newProduct.manufacturer,sku:newProduct.sku,unit_price:newProduct.price,currency:newProduct.currency,image:newProduct.image});
         apply(value);setNewProduct(null);setCatalogue(await api<Catalogue>("/catalog"));await onChanged();setMessage("Товар создан в каталоге и привязан к позиции");
       });}}>
-        <fieldset disabled={busy}>
+        <fieldset disabled={busy} onDragOver={imageDragOver} onDrop={event=>imageDrop(event,file=>void upload(file,image=>setNewProduct(current=>current?{...current,image}:null)))} data-image-target onPasteCapture={event=>imagePaste(event,file=>void upload(file,image=>setNewProduct(current=>current?{...current,image}:null)))}>
           <label>Название<input autoFocus aria-label="Название нового товара КП" required maxLength={500} value={newProduct.name} onChange={e=>setNewProduct({...newProduct,name:e.target.value})}/></label>
           <label>Номенклатура<SearchSelect aria-label="Номенклатура нового товара КП" required={!doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:")} value={newProduct.typeId} onChange={e=>setNewProduct({...newProduct,typeId:e.target.value})}><option value="">{doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:") ? "Рамка по расчёту" : "Выберите номенклатуру"}</option>{types.filter(type=>type.active && type.unit===doc.lines.find(line=>line.id===newProduct.lineId)?.unit && (!doc.lines.find(line=>line.id===newProduct.lineId)?.source_ids.length || type.id===doc.lines.find(line=>line.id===newProduct.lineId)?.type_id)).map(type=><option key={type.id} value={type.id}>{type.name}</option>)}</SearchSelect></label>
-          <label>Производитель<input aria-label="Производитель нового товара КП" required list="quote-manufacturers" value={newProduct.manufacturer} onChange={e=>setNewProduct({...newProduct,manufacturer:e.target.value})}/></label><datalist id="quote-manufacturers">{catalogue.manufacturers.map(m=><option key={m.id} value={m.name}/>)}</datalist>
+          <label>Производитель<SearchInput aria-label="Производитель нового товара КП" required options={catalogue.manufacturers.map(m=>m.name)} value={newProduct.manufacturer} onChange={manufacturer=>setNewProduct(current=>current?{...current,manufacturer}:null)}/></label>
           <label>Артикул<input aria-label="Артикул нового товара КП" value={newProduct.sku} onChange={e=>setNewProduct({...newProduct,sku:e.target.value})}/></label>
           <label>Цена<input aria-label="Цена нового товара КП" required type="number" min="0" max="1000000000" step=".01" value={newProduct.price} onChange={e=>setNewProduct({...newProduct,price:e.target.value})}/></label>
           <label>Валюта<input aria-label="Валюта нового товара КП" required pattern="[A-Z]{3}" maxLength={3} value={newProduct.currency} onChange={e=>setNewProduct({...newProduct,currency:e.target.value.toUpperCase()})}/></label>
-          <label className="quote-file">Фотография товара<input aria-label="Фото нового товара КП" type="file" accept="image/png,image/jpeg" onChange={e=>{void upload(e.target.files?.[0],image=>setNewProduct(current=>current ? {...current,image} : null));e.target.value="";}}/></label>{newProduct.image && <img className="quotation-product-image" src={newProduct.image} alt="Товар"/>}
+          <ImageField label="Фото нового товара КП" value={newProduct.image} disabled={busy} onChange={image=>setNewProduct(current=>current?{...current,image}:null)}/>
+
         </fieldset>
         {error && <p role="alert" className="catalog-error">{error}</p>}
         <div className="modal-actions"><button type="button" disabled={busy} onClick={()=>{setNewProduct(null);setError("");}}>Отмена</button><button className="quote-primary" disabled={busy}>Создать и привязать товар</button></div>

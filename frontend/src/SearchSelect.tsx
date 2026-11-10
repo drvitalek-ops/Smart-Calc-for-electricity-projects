@@ -74,6 +74,7 @@ export default function SearchSelect(props:Props) {
   return <span className="search-select">
     <select {...props} ref={select} aria-label={label} title={props.title || "Начните вводить название для поиска"} aria-expanded={open} aria-controls={open ? id : undefined} onChange={event=>{close();props.onChange?.(event);}}
       onPointerDown={event=>{props.onPointerDown?.(event);if(event.button===0&&!event.defaultPrevented){event.preventDefault();select.current?.focus({preventScroll:true});show();}}}
+      onPaste={event=>{props.onPaste?.(event);if(event.defaultPrevented)return;const pasted=event.clipboardData.getData('text/plain');if(pasted){event.preventDefault();show(pasted);}}}
       onKeyDown={event=>{props.onKeyDown?.(event);if(event.defaultPrevented)return;
         if(['ArrowDown','ArrowUp','Enter',' '].includes(event.key)){event.preventDefault();show();}
         else if(event.key.length===1&&!event.ctrlKey&&!event.metaKey&&!event.altKey){event.preventDefault();show(event.key);}

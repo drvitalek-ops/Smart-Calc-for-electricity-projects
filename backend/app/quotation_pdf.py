@@ -1,12 +1,15 @@
 """Portrait quotation in the supplied LED-Profi reference style."""
 import base64
+import math
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 import pymupdf
 from .quotations import totals
 
 GREEN=(0,.72,.23)
-DARK=(.06,.09,.11)
+DARK=(14/255,20/255,24/255)
+ASSETS=Path(__file__).resolve().parent / "assets"
 GRAY=(.48,.53,.59)
 LINE=(.84,.87,.90)
 WHITE=(1,1,1)
@@ -20,10 +23,13 @@ def currency(code):
     return {'RUB':'₽','USD':'$','EUR':'€'}.get(code,code)
 
 
-def export_quotation(quote,mode,font_path):
+def export_quotation(quote,mode,font_path=None):
     result=totals(quote,mode)
     doc=pymupdf.open()
-    font=pymupdf.Font(fontfile=str(font_path))
+    font_paths={name:ASSETS / 'fonts' / ('GolosText-'+weight+'.ttf')
+        for name,weight in [('Quote','Regular'),('QuoteBold','Bold'),('QuoteBlack','Black')]}
+    fonts={name:pymupdf.Font(fontfile=str(path)) for name,path in font_paths.items()}
+    font=fonts['Quote']
     width,height=pymupdf.paper_size('a4')
     margin=32
     usable=width-2*margin
@@ -36,8 +42,7 @@ def export_quotation(quote,mode,font_path):
         else ['№','НАИМЕНОВАНИЕ','ЦЕНА','КОЛ-ВО','ЕД.','СКИДКА','СУММА'])
 
     def text(x,baseline,value,size=8,color=DARK,bold=False):
-        page.insert_text((x,baseline),str(value),fontname='Quote',fontsize=size,color=color,
-            render_mode=2 if bold else 0,border_width=.16 if bold else 0)
+        page.insert_text((x,baseline),str(value),fontname='QuoteBlack' if bold and size>=16 else 'QuoteBold' if bold else 'Quote',fontsize=size,color=color)
 
     def wrap(value,max_width,size=8):
         output=[]
@@ -68,7 +73,8 @@ def export_quotation(quote,mode,font_path):
     def new_page():
         nonlocal page,y
         page=doc.new_page(width=width,height=height)
-        page.insert_font(fontname='Quote',fontfile=str(font_path))
+        page.draw_rect(page.rect,color=None,fill=WHITE)
+        for name,path in font_paths.items(): page.insert_font(fontname=name,fontfile=str(path))
         y=28
 
     def line(ypos):
@@ -100,26 +106,24 @@ def export_quotation(quote,mode,font_path):
         shade=(.06,.09+.16*step/18,.11+.02*step/18)
         page.draw_rect(pymupdf.Rect(left,0,min(width,left+width*.38/18+1),112),fill=shade,color=None)
     page.draw_line((0,114),(width,114),color=GREEN,width=2)
-    if not image(quote.logo,pymupdf.Rect(margin,20,165,91)):
-        words=quote.seller.split()
-        wordmark='ЛЭД\nПРОФИ' if quote.seller.strip().casefold() in ('лэд-профи','лэд профи') else quote.seller
-        logo_lines=wrap(wordmark,135,22)[:2]
-        for index,part in enumerate(logo_lines): text(margin,51+index*24,part,22,WHITE,True)
-        page.draw_line((105,91),(150,38),color=GREEN,width=8)
-        page.draw_circle((152,36),3,color=WHITE,fill=WHITE)
+    if not image(quote.logo,pymupdf.Rect(margin,27,165,86)):
+        if quote.seller.strip().casefold() in ('лэд-профи','лэд профи'):
+            page.insert_image(pymupdf.Rect(margin,27,165,86),filename=str(ASSETS / 'led-profi-logo.png'),keep_proportion=True)
+        else:
+            for index,part in enumerate(wrap(quote.seller,135,20)[:2]): text(margin,51+index*24,part,20,WHITE,True)
     page.draw_line((180,33),(180,82),color=(.3,.34,.36),width=.5)
     for index,part in enumerate(wrap(quote.slogan,140,7)[:4]): text(197,46+index*12,part,7,(.7,.73,.75),True)
     for index,(value,color) in enumerate([(quote.city,(.7,.77,.73)),(quote.phone,GREEN),(quote.website,WHITE),(quote.email,GREEN)]):
         for part in wrap(value,190,8)[:1]: text(370,34+index*19,part,8,color,index in (1,3))
 
     # First-page title, recipient and the rounded information card.
-    title_lines=wrap(quote.title,210,21)
+    title_lines=wrap(quote.title,210,19)
     if len(title_lines)>4: title_lines=wrap(quote.title,210,16)
-    for index,part in enumerate(title_lines[:5]): text(margin,166+index*24,part,21 if len(title_lines)<=4 else 16,DARK,True)
+    for index,part in enumerate(title_lines[:5]): text(margin,166+index*24,part,19 if len(title_lines)<=4 else 16,DARK,True)
     title_end=166+min(5,len(title_lines))*24
     text(margin,title_end+1,'№ КП '+quote.number,16,DARK,True)
     card=pymupdf.Rect(260,148,width-margin,216)
-    page.draw_rect(card,fill=WHITE,color=LINE,width=.6)
+    page.draw_rect(card,fill=WHITE,color=LINE,width=.6,radius=.16)
     labels=['ДАТА','СРОК ДЕЙСТВИЯ','ПОЗИЦИЙ']
     values=[date.fromisoformat(quote.date).strftime('%d.%m.%Y'),str(quote.valid_days)+' дней',str(len(quote.lines))+' шт']
     col=(card.width-24)/3
@@ -128,7 +132,7 @@ def export_quotation(quote,mode,font_path):
         for j,part in enumerate(wrap(label,col-10,6)): text(x,170+j*7,part,6,GREEN,True)
         text(x,196,value,8,DARK,True)
         if index: page.draw_line((x-9,163),(x-9,201),color=LINE,width=.7)
-    y=max(270,title_end+25)
+    y=max(270,title_end+20)
     text(margin,y,'КОМУ',6,GRAY,True);y+=13
     for part in wrap(quote.customer,usable,10):
         text(margin,y,part,10,DARK,True);y+=13
@@ -136,12 +140,12 @@ def export_quotation(quote,mode,font_path):
         text(margin,y,part,8,GRAY);y+=11
     y=max(340,y+15)
     bar_height=max(70,35+len(result['totals'])*24)
-    page.draw_rect(pymupdf.Rect(margin,y,width-margin,y+bar_height),fill=DARK,color=None)
+    page.draw_rect(pymupdf.Rect(margin,y,width-margin,y+bar_height),fill=DARK,color=None,radius=.16)
     text(margin+22,y+bar_height/2+3,'ИТОГО ПО КП',8,(.7,.73,.75),True)
     for index,(code,values_for_currency) in enumerate(result['totals'].items()):
         amount=number(values_for_currency['total'])+' '+currency(code)
-        size=min(27,245/max(1,font.text_length(amount,fontsize=1)))
-        text(width-margin-22-font.text_length(amount,fontsize=size),y+28+index*24,amount,size,GREEN,True)
+        size=min(27,245/max(1,fonts['QuoteBlack'].text_length(amount,fontsize=1)))
+        text(width-margin-22-fonts['QuoteBlack'].text_length(amount,fontsize=size),y+28+index*24,amount,size,GREEN,True)
     if quote.tax_note:
         size=6.5
         tax=wrap(quote.tax_note,250,size)[0]
@@ -159,7 +163,19 @@ def export_quotation(quote,mode,font_path):
         for index,benefit in enumerate(quote.benefits):
             x=margin+index*benefit_width
             page.draw_circle((x+12,y+12),12,color=(.72,.9,.77),fill=(.94,.99,.95),width=.6)
-            text(x+8,y+15,'+',11,GREEN)
+            cx,cy=x+12,y+12
+            if index==0:
+                page.draw_polyline([(cx,cy-5),(cx+4,cy-3),(cx+4,cy+2),(cx,cy+6),(cx-4,cy+2),(cx-4,cy-3),(cx,cy-5)],color=GREEN,width=.7)
+            elif index==1:
+                points=[(cx+math.sin(i*math.pi/5)*(5 if i%2==0 else 2.4),cy-math.cos(i*math.pi/5)*(5 if i%2==0 else 2.4)) for i in range(10)]
+                page.draw_polyline(points+[points[0]],color=GREEN,width=.7)
+            elif index==2:
+                page.draw_circle((cx,cy-1),3.1,color=GREEN,width=.7)
+                page.draw_polyline([(cx-2,cy+2),(cx-1.5,cy+5),(cx+1.5,cy+5),(cx+2,cy+2)],color=GREEN,width=.7)
+                page.draw_line((cx-1,cy+6),(cx+1,cy+6),color=GREEN,width=.7)
+            else:
+                page.draw_rect(pymupdf.Rect(cx-4,cy-4,cx+4,cy+3),color=GREEN,width=.7,radius=.15)
+                page.draw_polyline([(cx-4,cy+2),(cx-4,cy+6),(cx-1,cy+3)],color=GREEN,width=.7)
             title=wrap(benefit.title,benefit_width-38,6.5)
             details=wrap(benefit.text,benefit_width-38,6)
             for j,part in enumerate(title): text(x+31,y+3+j*8,part,6.5,DARK,True)
@@ -197,7 +213,7 @@ def export_quotation(quote,mode,font_path):
                 for j,value in enumerate(values):
                     color=GREEN if col_index==len(columns)-1 else GRAY if col_index in (0,2,4) else DARK
                     right=col_index not in (0,1)
-                    xpos=x+col_width-5-font.text_length(value,fontsize=7.5) if right else x+5+(photo_width if col_index==1 else 0)
+                    xpos=x+col_width-5-fonts['QuoteBold' if col_index in (3,len(columns)-1) else 'Quote'].text_length(value,fontsize=7.5) if right else x+5+(photo_width if col_index==1 else 0)
                     text(xpos,y+14+j*10,value,7.5,color,col_index in (3,len(columns)-1))
                 x+=col_width
             y+=row_height
@@ -211,7 +227,7 @@ def export_quotation(quote,mode,font_path):
     if y+100>bottom: new_page()
     line(y);y+=30
     for part in wrap(quote.seller,usable,11):
-        text((width-font.text_length(part,fontsize=11))/2,y,part,11,DARK,True);y+=16
+        text((width-fonts['QuoteBold'].text_length(part,fontsize=11))/2,y,part,11,DARK,True);y+=16
     footer=[quote.address,'Тел.: '+quote.phone+'  |  e-mail: '+quote.email+'  |  '+quote.website]
     for value in footer:
         if not value: continue

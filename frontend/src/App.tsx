@@ -1,3 +1,6 @@
+import CategoryEditor,{type Category} from "./CategoryEditor";
+import ImageField,{imagePaste,prepareImage,imageDrop,imageDragOver} from "./ImageField";
+import SearchInput from "./SearchInput";
 import ToolRail, {ToolButton,ActionIcon} from "./ToolRail";
 import {AppearanceEditor,CustomFieldsEditor,CoordinateEditor,PlanSymbol,appearanceKeys} from "./PlanAppearance";
 import SearchSelect, {matchesSearch,SearchHighlight} from "./SearchSelect";
@@ -132,6 +135,7 @@ type Product = {
   parameters: Record<string, unknown>;
 };
 type Catalog = {
+  categories?:Category[];
   manufacturers: { id: number; name: string }[];
   suppliers: { id: number; name: string; contact: string }[];
   products: Product[];
@@ -476,7 +480,7 @@ function SettingsDialog({onClose}:{onClose:()=>void}) {
     <small>Smart Home Calc {info?.version ?? ""}</small>
   </AppModal>;
 }
-function NomenclatureEditor({types,onChanged}:{types:Kind[];onChanged:()=>Promise<void>}) {
+function NomenclatureEditor({types,categories=[],onChanged}:{types:Kind[];categories?:Category[];onChanged:()=>Promise<void>}) {
   const empty=()=>({id:0,name:"",category:"Электроустановки",unit:"шт",color:"#f97316",wet_min_ip:"",defaults:{quantity:1} as Record<string,unknown>});
   const [form,setForm]=useState(empty), [search,setSearch]=useState(""), [showDeleted,setShowDeleted]=useState(false),
     [groupFilter,setGroupFilter]=useState(""),
@@ -500,8 +504,7 @@ function NomenclatureEditor({types,onChanged}:{types:Kind[];onChanged:()=>Promis
       }}>
         <h3>{form.id ? "Редактирование позиции" : "Новая позиция"}</h3>
         <label>Название<input aria-label="Название номенклатуры" required maxLength={200} value={form.name} onChange={event=>setForm({...form,name:event.target.value})} /></label>
-        <label>Категория<input aria-label="Категория номенклатуры" required list="nomenclature-categories" maxLength={200} value={form.category} onChange={event=>setForm({...form,category:event.target.value})} /></label>
-        <datalist id="nomenclature-categories">{[...new Set(["Электроустановки","Освещение","LED-подсветка","Датчики","Электрокарнизы","Умные устройства","Профиль",...types.map(item=>item.category)])].map(category=><option key={category} value={category} />)}</datalist>
+        <label>Категория<SearchInput aria-label="Категория номенклатуры" required maxLength={200} options={[...new Set(["Электроустановки","Освещение","LED-подсветка","Датчики","Электрокарнизы","Умные устройства","Профиль",...types.map(item=>item.category),...categories.map(item=>item.name)])]} value={form.category} onChange={category=>setForm({...form,category})}/></label>
         <label>Единица измерения<SearchSelect aria-label="Единица номенклатуры" value={form.unit} onChange={event=>setForm({...form,unit:event.target.value,defaults:{...Object.fromEntries(Object.entries(form.defaults).filter(([key])=>!["length","quantity"].includes(key))),...(event.target.value === "м" ? {length:1} : {quantity:1})}})}><option value="шт">Штуки</option><option value="м">Метры</option></SearchSelect></label>
         <label>Цвет на плане<input aria-label="Цвет номенклатуры" type="color" value={form.color} onChange={event=>setForm({...form,color:event.target.value})} /></label>
         <label>Рекомендуемый IP во влажной зоне<input aria-label="Минимальный IP номенклатуры" type="number" min="0" max="69" placeholder="Не задан" value={form.wet_min_ip} onChange={event=>setForm({...form,wet_min_ip:event.target.value})} /></label>
@@ -542,7 +545,7 @@ function CatalogManager({
   onClose: () => void;
   onChanged: () => Promise<void>;
 }) {
-  const [tab,setTab]=useState<"types"|"products">("types");
+  const [tab,setTab]=useState<"types"|"products"|"categories">("types");
   const [databaseSearch,setDatabaseSearch]=useState("");
   const blank = {
     id: 0,
@@ -645,8 +648,9 @@ function CatalogManager({
         <nav className="catalog-tabs" aria-label="Раздел каталога">
           <button className={tab==="types" ? "active" : ""} onClick={()=>setTab("types")}>Номенклатура</button>
           <button className={tab==="products" ? "active" : ""} onClick={()=>setTab("products")}>Товары и цены</button>
+          <button className={tab==="categories"?"active":""} onClick={()=>setTab('categories')}>Категории</button>
         </nav>
-        {tab==="types" ? <NomenclatureEditor types={types} onChanged={onChanged} /> : <>
+        {tab==="categories"?<CategoryEditor categories={catalog.categories??[]} onChanged={onChanged}/>:tab==="types" ? <NomenclatureEditor types={types} categories={catalog.categories} onChanged={onChanged} /> : <>
         <label>Поиск в базе<input type="search" aria-label="Поиск в базе товаров" placeholder="Название, артикул, производитель, категория…" value={databaseSearch} onChange={event=>setDatabaseSearch(event.target.value)}/></label>
         <div className="catalog-grid">
           <div>
@@ -794,7 +798,7 @@ function CatalogManager({
         <div className="catalog-products">
           <div className="product-editor">
             <h3>{form.id ? "Редактирование товара" : "Новый товар"}</h3>
-            <form onSubmit={(e) => void saveProduct(e)}>
+            <form data-image-target onDragOver={imageDragOver} onDrop={event=>imageDrop(event,file=>{void prepareImage(file).then(image=>setForm(current=>current.id===form.id?({...current,parameters:{...current.parameters,image}}):current)).catch(error=>setLocalError(error instanceof Error?error.message:'Ошибка изображения'));})} onPasteCapture={event=>imagePaste(event,file=>{void prepareImage(file).then(image=>setForm(current=>current.id===form.id?({...current,parameters:{...current.parameters,image}}):current)).catch(error=>setLocalError(error instanceof Error?error.message:'Ошибка изображения'));})} onSubmit={(e) => void saveProduct(e)}>
               <label>
                 Название
                 <input
@@ -883,6 +887,8 @@ function CatalogManager({
                   />
                 </label>
               </div>
+              <ImageField key={form.id} label="Фото товара каталога" value={String(form.parameters.image??'')} disabled={saving} onChange={image=>setForm(current=>({...current,parameters:{...current.parameters,image}}))}/>
+              <button type="button" onClick={()=>setTab('types')}>＋ Создать номенклатуру или категорию</button>
               <label className="check">
                 <input
                   type="checkbox"
@@ -895,7 +901,6 @@ function CatalogManager({
               </label>
               <label>Описание товара<textarea aria-label="Описание товара в каталоге" value={String(form.parameters.description??'')} onChange={event=>setForm({...form,parameters:{...form.parameters,description:event.target.value}})}/></label>
               <CustomFieldsEditor value={form.parameters} onChange={parameters=>setForm({...form,parameters})}/>
-              {typeof form.parameters.image==='string'&&form.parameters.image&&<div><img src={form.parameters.image} alt="Фото товара" style={{width:70,height:70,objectFit:'contain'}}/></div>}
               <button
                 className="primary"
                 disabled={saving || !catalog.manufacturers.length}
@@ -1995,16 +2000,16 @@ export default function App() {
     .filter((value) => value !== null);
   return (
     <div className="app-shell" onDragEnterCapture={event=> {
-      if(!event.dataTransfer.types.includes("Files"))return;
+      if((event.target as HTMLElement).closest("[data-image-dropzone],[data-image-target]")||!event.dataTransfer.types.includes("Files"))return;
       event.preventDefault();dragDepth.current++;setDraggingPdf(true);
     }} onDragOverCapture={event=> {
-      if(!event.dataTransfer.types.includes("Files"))return;
+      if((event.target as HTMLElement).closest("[data-image-dropzone],[data-image-target]")||!event.dataTransfer.types.includes("Files"))return;
       event.preventDefault();event.dataTransfer.dropEffect=busy ? "none" : "copy";
     }} onDragLeaveCapture={event=> {
       if(!dragDepth.current)return;
       event.preventDefault();dragDepth.current=Math.max(0,dragDepth.current-1);if(!dragDepth.current)setDraggingPdf(false);
     }} onDropCapture={event=> {
-      if(!event.dataTransfer.types.includes("Files"))return;
+      if((event.target as HTMLElement).closest("[data-image-dropzone],[data-image-target]")||!event.dataTransfer.types.includes("Files"))return;
       event.preventDefault();event.stopPropagation();resetPdfDrag();requestPdfImport([...event.dataTransfer.files]);
     }}>
       {draggingPdf && <div className="pdf-drop-overlay" role="status"><div><ToolIcon name="pdf"/><h2>Отпустите PDF здесь</h2><p>Создадим новый проект и предложим задать имя</p></div></div>}
@@ -4170,7 +4175,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.41</span>
+        <span>SMART HOME CALC / 1.0.42</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

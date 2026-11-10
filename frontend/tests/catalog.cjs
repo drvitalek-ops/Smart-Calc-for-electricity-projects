@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const frontend = process.env.FRAME_TEST_FRONTEND || 'http://127.0.0.1:5174';
 const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
 (async () => {
- const browser = await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium',headless:true,args:['--no-sandbox']});
+ const browser = await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE || chromium.executablePath(),headless:true,args:['--no-sandbox']});
  try {
   const context=await browser.newContext({viewport:{width:1800,height:1800}});
   const page=await context.newPage(), errors=[];
@@ -22,6 +22,8 @@ const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
   const placed=await (await api.post(base+`/projects/${pid}/elements`,{data:{page_id:sheetId,layer_id:project.layers[0].id,type_id:usb.id,x:.3,y:.3,parameters:{quantity:1,ip:44}}})).json();
   await page.goto(frontend);await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));
   const svg=page.locator('.sheet > svg');await svg.waitFor();
+  async function tool(name){const button=page.getByRole('button',{name:'Инструмент: '+name,exact:true});if(await button.getAttribute('aria-pressed')!=='true')await button.click();}
+  await tool('Объекты');await tool('Слои');
   const left=page.getByRole('complementary',{name:'Объекты и рамки',exact:true}),right=page.getByRole('complementary',{name:'Слои и страницы',exact:true});
   assert.equal(await left.getByRole('heading',{name:'Слои элементов',exact:true}).count(),0);
   await right.getByRole('heading',{name:'Слои элементов',exact:true}).waitFor();
@@ -46,7 +48,7 @@ const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
   assert.deepEqual(await library.locator('option').allTextContents(),['Вывод кабеля']);
   await left.getByLabel('Группа элементов',{exact:true}).selectOption('');
   await page.locator('.point-symbol').click();
-  await left.getByRole('button',{name:'Назначить рамку',exact:true}).waitFor();
+  await tool('Рамки');await left.getByRole('button',{name:'Назначить рамку',exact:true}).waitFor();
   const assigned=page.waitForResponse(response=>response.url().endsWith(`/projects/${pid}/frames`)&&response.request().method()==='POST');
   await left.getByRole('button',{name:'Назначить рамку',exact:true}).click();assert.equal((await assigned).status(),200);
   await page.locator('.frame-group-outline').waitFor();
@@ -101,7 +103,7 @@ const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
   // Restore global seed to leave other browser regressions independent.
   await api.put(base+`/types/${usb.id}`,{data:{...usb,active:true}});
   await page.reload();await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));await svg.waitFor();
-  await page.getByLabel('Тип элемента',{exact:true}).selectOption(String(saved.id));
+  await tool('Объекты');await page.getByLabel('Тип элемента',{exact:true}).selectOption(String(saved.id));
   assert.deepEqual(errors,[]);
   console.log('PASS: library subgroups, USB power/low-voltage separation, blanking plates and cable outlets, catalogue group filtering, USB ordering, layer controls, frames, nomenclature add/edit/delete/restore, defaults and project preservation');
  } finally {await browser.close();}

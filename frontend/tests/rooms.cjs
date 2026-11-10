@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const frontend = process.env.FRAME_TEST_FRONTEND || 'http://127.0.0.1:5174';
 const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
 (async () => {
- const browser = await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium',headless:true,args:['--no-sandbox']});
+ const browser = await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE || chromium.executablePath(),headless:true,args:['--no-sandbox']});
  try {
   const context=await browser.newContext({viewport:{width:1800,height:1800}});
   const page=await context.newPage(), errors=[];
@@ -21,7 +21,8 @@ const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
   const project=await (await api.get(base+`/projects/${pid}`)).json();
   const kind=(await (await api.get(base+'/types')).json()).find(item=>item.name==='Розетка одинарная');
   for(const [x,y] of [[.2,.45],[.25,.5]]) assert.equal((await api.post(base+`/projects/${pid}/elements`,{data:{page_id:sheetId,layer_id:project.layers[0].id,type_id:kind.id,x,y,parameters:{quantity:1}}})).status(),201);
-  await page.goto(frontend);
+  async function tool(name){const button=page.getByRole('button',{name:'Инструмент: '+name,exact:true});if(await button.getAttribute('aria-pressed')!=='true')await button.click();}
+ await page.goto(frontend);
   await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));
   const svg=page.locator('.sheet > svg');await svg.waitFor();
   const click=async(x,y,options={})=>{
@@ -29,7 +30,7 @@ const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
    await svg.click({position:{x:rect.width*x,y:rect.height*y},...options});
   };
   assert.equal(await page.locator('.saved-room-contour').count(),2);
-  await page.getByRole('button',{name:'◇ Область помещения',exact:true}).click();
+  await tool('Помещения');await page.getByRole('button',{name:'◇ Область помещения',exact:true}).click();
   const concave=[[.1,.4],[.4,.4],[.4,.65],[.25,.65],[.25,.5],[.1,.5]];
   for(const [index,[x,y]] of concave.entries()){
    await click(x,y);

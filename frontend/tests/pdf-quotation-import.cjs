@@ -22,7 +22,7 @@ const backend=process.env.FRAME_TEST_BACKEND||'http://127.0.0.1:8014';
   await page.goto(frontend);await page.getByRole('button',{name:'КП',exact:true}).click();
   const hub=page.getByRole('region',{name:'Все коммерческие предложения',exact:true});await hub.waitFor();
   await hub.getByRole('button',{name:'Открыть КП '+number,exact:true}).click();
-  const editor=page.getByRole('region',{name:'Редактор коммерческого предложения',exact:true});await editor.getByLabel('Номер КП',{exact:true}).waitFor();
+  const editor=page.getByRole('region',{name:'Редактор коммерческого предложения',exact:true});await editor.waitFor();
   await editor.getByLabel('Файл внешнего КП',{exact:true}).setInputFiles({name:'Поставщик.pdf',mimeType:'application/pdf',buffer:pdf});
   const dialog=page.getByRole('dialog',{name:'Проверка импорта КП',exact:true});await dialog.waitFor();
   await dialog.getByText('Суммы совпали с PDF: 3.',{exact:false}).waitFor();

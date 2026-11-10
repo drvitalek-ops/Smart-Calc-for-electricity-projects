@@ -43,6 +43,7 @@ class Room(Base):
 
 class Layer(Base):
     __tablename__ = 'layers'
+    seed_key: Mapped[str | None] = mapped_column(String(200), default=None)
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'))
     name: Mapped[str] = mapped_column(String(200))

@@ -43,9 +43,9 @@ const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKM
   const current=await(await api.get(base+'/projects/'+pid)).json();
   assert.equal(current.elements[0].product_id,stored.lines[0].product_id);
   assert.ok(stored.lines[0].image.startsWith('data:image/'));
-  await editor.getByLabel('Цена строки 2',{exact:true}).fill('200');
-  await editor.getByLabel('Общая скидка КП',{exact:true}).fill('10');
-  await editor.getByLabel('Скидка строки 1',{exact:true}).fill('20');
+  await editor.getByRole('button',{name:'Редактировать',exact:true}).click();await editor.getByLabel('Цена строки 2',{exact:true}).fill('200');
+  await editor.getByRole('button',{name:'Инструмент: Реквизиты и условия',exact:true}).click();await editor.getByLabel('Общая скидка КП',{exact:true}).fill('10');
+  await editor.getByRole('button',{name:'Редактировать',exact:true}).click();await editor.getByLabel('Скидка строки 1',{exact:true}).fill('20');
   let savedResponse=page.waitForResponse(r=>r.url().endsWith('/quotation')&&r.request().method()==='PUT');
   await editor.getByRole('button',{name:'Сохранить КП',exact:true}).click();
   stored=await(await savedResponse).json();assert.equal(stored.client.totals.RUB.total,'3100.00');assert.equal(stored.partner.totals.RUB.total,'2540.00');

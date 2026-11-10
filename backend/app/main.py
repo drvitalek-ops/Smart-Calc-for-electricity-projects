@@ -1,3 +1,4 @@
+from .plan_appearance import APPEARANCE_KEYS, validate_appearance, draw_marker, rgb
 import io
 import copy
 import csv
@@ -70,6 +71,9 @@ async def lifespan(app):
         if 'opacity' not in {column['name'] for column in inspect(engine).get_columns('layers')}:
             with engine.begin() as connection:
                 connection.execute(text('ALTER TABLE layers ADD COLUMN opacity FLOAT NOT NULL DEFAULT 1'))
+        if 'seed_key' not in {column['name'] for column in inspect(engine).get_columns('layers')}:
+            with engine.begin() as connection:
+                connection.execute(text('ALTER TABLE layers ADD COLUMN seed_key VARCHAR(200)'))
         page_columns={column['name'] for column in inspect(engine).get_columns('pages')}
         page_upgrades={
             'overlay_visible':'BOOLEAN NOT NULL DEFAULT 0',
@@ -101,7 +105,7 @@ async def lifespan(app):
         db.commit()
     yield
 
-APP_VERSION = '1.0.40'
+APP_VERSION = '1.0.41'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -151,6 +155,7 @@ class RoomInput(NameInput):
     polygon: list[PolygonPoint] | None = Field(default=None,max_length=1000)
 
 class LayerInput(BaseModel):
+    name: str | None = Field(default=None,min_length=1,max_length=200)
     visible: bool | None = None
     locked: bool | None = None
     export: bool | None = None
@@ -223,6 +228,7 @@ class ProductInput(NameInput):
     parameters: dict = Field(default_factory=dict)
 
 class BackupLayer(BaseModel):
+    seed_key: str | None = Field(default=None,max_length=200)
     backup_id: int
     name: str = Field(min_length=1,max_length=200)
     visible: bool
@@ -387,6 +393,9 @@ def recalculate_page_lines(db, page):
         length=geometry_length_m(page,points)
         if length>1_000_000:
             raise HTTPException(422,'Длина линии после калибровки превышает 1 000 000 м')
+        if 'manual_length' in item.parameters:
+            item.parameters={**item.parameters,'measured_length':length,'length':item.parameters['manual_length']}
+            continue
         if item.parameters.get('length')!=length:
             item.parameters={**item.parameters,'length':length}
             updated+=1
@@ -445,7 +454,13 @@ def validate_element(db, project_id, body, check_locked=True, existing_type_id=N
         page=require(db,Page,body.page_id)
         if not page.meters_per_point:
             raise HTTPException(422, 'Сначала откалибруйте масштаб листа')
-        parameters['length']=geometry_length_m(page,points)
+        measured=geometry_length_m(page,points)
+        if 'manual_length' in parameters:
+            parameters['measured_length']=measured
+            parameters['length']=parameters['manual_length']
+        else:
+            parameters.pop('measured_length',None)
+            parameters['length']=measured
     if is_power_supply(typ):
         if points: raise HTTPException(422,'Блок питания размещается точкой с прямоугольным обозначением')
         ids=parameters.get('led_strip_ids',linked_strip_ids(parameters))
@@ -483,10 +498,7 @@ def validate_element(db, project_id, body, check_locked=True, existing_type_id=N
                 raise ValueError()
         except (ValueError,TypeError):
             raise HTTPException(422,'Некорректная степень IP')
-    if 'plan_icon' in parameters and (not isinstance(parameters['plan_icon'],str) or len(parameters['plan_icon'])>4):
-        raise HTTPException(422,'Иконка на плане должна содержать не более 4 символов')
-    if 'plan_color' in parameters and (not isinstance(parameters['plan_color'],str) or not re.fullmatch(r'#[0-9a-fA-F]{6}',parameters['plan_color'])):
-        raise HTTPException(422,'Цвет обозначения должен быть в формате #RRGGBB')
+    validate_appearance(parameters)
     if 'frame_group' in parameters and (not isinstance(parameters['frame_group'],str) or len(parameters['frame_group'])>64):
         raise HTTPException(422,'Некорректная группа рамки')
     if typ.category!='Электроустановки':
@@ -521,7 +533,7 @@ def new_project(db,name):
     p=Project(name=name)
     db.add(p); db.flush()
     for layer_name in LAYERS:
-        db.add(Layer(project_id=p.id,name=layer_name))
+        db.add(Layer(project_id=p.id,name=layer_name,seed_key=layer_name))
     db.flush()
     return p
 
@@ -530,6 +542,13 @@ def create_project(body: NameInput, db: DbSession = Depends(session)):
     p=new_project(db,body.name)
     db.commit()
     return data(p)
+
+@app.patch('/api/projects/{pid}')
+def rename_project(pid: int,body: NameInput,db: DbSession = Depends(session)):
+    project=require(db,Project,pid)
+    name=body.name.strip()
+    if not name: raise HTTPException(422,'Укажите название проекта')
+    project.name=name;db.commit();return data(project)
 
 @app.post('/api/projects/from-pdf',status_code=201)
 async def create_project_from_pdf(file: UploadFile, name: str = Form(min_length=1,max_length=200),
@@ -561,6 +580,7 @@ def type_values(db,body,item=None):
     if any(other.id!=(item.id if item else None) and other.name.casefold()==values['name'].casefold() and other.category.casefold()==values['category'].casefold()
            for other in db.scalars(select(ElementType).where(ElementType.active.is_(True)))):
         raise HTTPException(409,'Позиция с таким названием уже существует в этой категории')
+    validate_appearance(values['defaults'])
     for key in ('quantity','length','ip','voltage','keys'):
         if key not in values['defaults']: continue
         try:
@@ -767,7 +787,7 @@ def backup_project(pid: int, db: DbSession = Depends(session)):
             pdf_files[str(path)]=f'pdf/{len(pdf_files)+1}.pdf'
     manifest=BackupManifest(
         version=1,project_name=project.name,quotation=quotation,
-        layers=[BackupLayer(backup_id=item.id,name=item.name,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity) for item in layers],
+        layers=[BackupLayer(backup_id=item.id,name=item.name,seed_key=item.seed_key,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity) for item in layers],
         rooms=[BackupRoom(
             backup_id=item.id,name=item.name,wet=item.wet,
             page_backup_id=item.page_id,polygon=item.polygon,
@@ -886,7 +906,7 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
         project=Project(name=manifest.project_name); db.add(project); db.flush()
         layer_map={}
         for item in manifest.layers:
-            obj=Layer(project_id=project.id,name=item.name,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity)
+            obj=Layer(project_id=project.id,name=item.name,seed_key=item.seed_key,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity)
             db.add(obj); db.flush(); layer_map[item.backup_id]=obj
         type_map={}
         for item in manifest.types:
@@ -1068,6 +1088,8 @@ def add_layer(pid: int, body: NameInput, db: DbSession = Depends(session)):
 @app.patch('/api/layers/{lid}')
 def edit_layer(lid: int, body: LayerInput, db: DbSession = Depends(session)):
     layer=require(db,Layer,lid)
+    if body.name is not None and not body.name.strip(): raise HTTPException(422,'Укажите название слоя')
+    if body.name is not None: body.name=body.name.strip()
     remember_elements(db,layer.project_id)
     for key,value in body.model_dump(exclude_none=True).items():
         setattr(layer,key,value)
@@ -1217,6 +1239,32 @@ def page_image(page_id: int, edge: int | None = Query(default=None, ge=1, le=819
                     temporary.unlink(missing_ok=True)
     return FileResponse(image,media_type='image/png',headers={'Cache-Control':'private, max-age=86400'})
 
+class AppearanceBatch(BaseModel):
+    element_ids: list[int] = Field(min_length=1,max_length=5000)
+    changes: dict
+
+@app.patch('/api/projects/{pid}/elements/appearance')
+def edit_appearance(pid: int,body: AppearanceBatch,db: DbSession = Depends(session)):
+    require(db,Project,pid)
+    if set(body.changes)-APPEARANCE_KEYS: raise HTTPException(422,'В этой операции можно менять только оформление')
+    validate_appearance({k:v for k,v in body.changes.items() if v is not None})
+    elements=[]
+    for eid in dict.fromkeys(body.element_ids):
+        element=require(db,Element,eid)
+        if element.project_id!=pid: raise HTTPException(422,'Объект принадлежит другому проекту')
+        if require(db,Layer,element.layer_id).locked: raise HTTPException(409,'Слой заблокирован')
+        parameters={**element.parameters}
+        for key,value in body.changes.items():
+            if value is None:
+                default=require(db,ElementType,element.type_id).defaults.get(key)
+                if default is None: parameters.pop(key,None)
+                else: parameters[key]=default
+            else: parameters[key]=value
+        elements.append((element,parameters))
+    remember_elements(db,pid)
+    for element,parameters in elements: element.parameters=parameters
+    db.commit();return {'updated':len(elements)}
+
 @app.post('/api/projects/{pid}/elements',status_code=201)
 def add_element(pid: int, body: ElementInput, db: DbSession = Depends(session)):
     require(db,Project,pid)
@@ -1363,6 +1411,7 @@ def redo_elements(pid: int, db: DbSession = Depends(session)):
 def report_rows(db,pid):
     group_ids=defaultdict(list)
     group_type_ids={}
+    group_custom_names={}
     require(db,Project,pid)
     groups=defaultdict(float)
     frame_groups=defaultdict(float)
@@ -1374,7 +1423,7 @@ def report_rows(db,pid):
         product=db.get(Product,e.product_id) if e.product_id else None
         manufacturer=db.get(Manufacturer,product.manufacturer_id) if product else None
         supplier=db.get(Supplier,product.supplier_id) if product and product.supplier_id else None
-        group_parameters={k:v for k,v in e.parameters.items() if k not in ('length','quantity','frame_posts','frame_group','plan_icon','plan_color')}
+        group_parameters={k:v for k,v in e.parameters.items() if k not in APPEARANCE_KEYS | {'length','quantity','frame_posts','frame_group','manual_length','measured_length'}}
         if is_power_supply(t):
             descriptions=[]
             for strip_id in sorted(linked_strip_ids(e.parameters)):
@@ -1386,15 +1435,16 @@ def report_rows(db,pid):
             group_parameters.pop('led_strip_ids',None)
             group_parameters['led_strip']='; '.join(descriptions)
         key=(
-            room.name if room else 'Без помещения',t.category,t.name,t.unit,
+            room.name if room else 'Без помещения',t.category,e.parameters.get('display_name','').strip() or t.name,t.unit,
             json.dumps(group_parameters,ensure_ascii=False,sort_keys=True),
             product.id if product else None,
             product.name if product else '', product.sku if product else '',
             manufacturer.name if manufacturer else '', supplier.name if supplier else '',
-            float(product.price) if product else 0, product.currency if product else 'RUB',
+            float(product.price) if product else 0, product.currency if product else 'RUB',t.id,
         )
         group_ids[key].append(e.id)
         group_type_ids[key]=t.id
+        group_custom_names[key]=bool(e.parameters.get('display_name','').strip())
         groups[key]+=float(e.parameters.get('length',0) if t.unit=='м' else e.parameters.get('quantity',1))
         frame_group=e.parameters.get('frame_group')
         if t.category=='Электроустановки' and frame_group:
@@ -1419,6 +1469,7 @@ def report_rows(db,pid):
             manufacturer=key[8],supplier=key[9],unit_price=price,
             currency=key[11],quantity=quantity,total=round(quantity*price,2),
         ))
+        if group_custom_names.get(key): rows[-1]['custom_name']=True
     for (room,posts),quantity in frame_groups.items():
         ending='пост' if posts==1 else 'поста' if posts < 5 else 'постов'
         rows.append(dict(
@@ -1456,20 +1507,24 @@ def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
     query=(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id)
            .join(Layer,Element.layer_id==Layer.id).where(Element.page_id==page_id,Layer.export.is_(True)))
     for element,typ,layer in db.execute(query):
-        plan_color='#dc2626' if is_power_supply(typ) else element.parameters.get('plan_color',typ.color)
+        plan_color=element.parameters.get('plan_color',typ.color)
         color=tuple(int(plan_color[index:index+2],16)/255 for index in (1,3,5))
         points=geometry_points(element.geometry or {})
         if points:
             pdf_points=[pymupdf.Point(point['x']*page.width,point['y']*page.height) for point in points]
-            sheet.draw_polyline(pdf_points,color=color,width=2)
+            sheet.draw_polyline(pdf_points,color=color,width=element.parameters.get('line_width',2),dashes={'solid':None,'dashed':'[8 5] 0','dotted':'[1 4] 0'}[element.parameters.get('line_dash','solid')])
             for point in pdf_points: sheet.draw_circle(point,3,color=color,fill=color)
             anchor=pdf_points[0]
+            if element.parameters.get('plan_icon') or element.parameters.get('plan_shape'):
+                draw_marker(sheet,anchor,element.parameters,color)
         else:
             anchor=pymupdf.Point(element.x*page.width,element.y*page.height)
-            if is_power_supply(typ):
-                sheet.draw_rect(pymupdf.Rect(anchor.x-8,anchor.y-5,anchor.x+8,anchor.y+5),color=color,fill=color)
-            else: sheet.draw_circle(anchor,5,color=color,fill=color)
-        sheet.insert_text((anchor.x+7,anchor.y-4),f"{typ.name} #{element.id}"+(f" · {element.parameters['power_watts']:g} Вт" if element.parameters.get('power_watts') else ''),fontsize=7,fontname='CalcPlan',color=color)
+            draw_marker(sheet,anchor,element.parameters,color,is_power_supply(typ))
+        if element.parameters.get('plan_label_visible',True):
+            name=element.parameters.get('display_name','').strip() or typ.name
+            label=name+f" #{element.id}"+(f" · {element.parameters['power_watts']:g} Вт" if element.parameters.get('power_watts') else '')
+            if points: label+=f" · {element.parameters.get('length',0):g} м"
+            sheet.insert_text((anchor.x+7,anchor.y-4),label,fontsize=element.parameters.get('plan_label_size',7),fontname='CalcPlan',color=rgb(element.parameters.get('plan_label_color','#0f172a')))
     content=document.tobytes(deflate=True); document.close()
     return StreamingResponse(
         io.BytesIO(content),media_type='application/pdf',

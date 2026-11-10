@@ -96,6 +96,11 @@ jobs:
           node frontend/tests/quotations.cjs
           node frontend/tests/pdf-quotation-import.cjs
           node frontend/tests/search-and-scroll.cjs
+          node frontend/tests/manual-tools.cjs
+          node frontend/tests/frames.cjs
+          node frontend/tests/power-supplies.cjs
+          node frontend/tests/rooms.cjs
+          node frontend/tests/catalog.cjs
 
       - name: Validate Docker Compose
         run: docker compose config --quiet

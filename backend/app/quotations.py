@@ -36,11 +36,21 @@ class QuoteLine(BaseModel):
     room: str = Field(default='',max_length=500)
     description: str = Field(default='',max_length=2000)
     quantity: Decimal = Field(default=1,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
+    quantity_override: Decimal | None = Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
+    calculated_quantity: Decimal | None = Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
+    overrides: list[Literal['name','sku','manufacturer','room','description','unit_price','currency','image']] = Field(default_factory=list,max_length=8)
     unit: Literal['шт','м'] = 'шт'
     unit_price: Decimal = Field(default=0,ge=0,le=1000000000,max_digits=12,decimal_places=2,allow_inf_nan=False)
     currency: str = Field(default='RUB',pattern='^[A-Z]{3}$')
     image: str = Field(default='',max_length=300000)
     discount: Decimal | None = Field(default=None,ge=0,le=100,max_digits=5,decimal_places=2,allow_inf_nan=False)
+
+    @model_validator(mode='after')
+    def manual_quantity(self):
+        if self.source_key and self.quantity_override is not None: self.quantity=self.quantity_override
+        if not self.source_key:
+            self.quantity_override=None;self.calculated_quantity=None;self.overrides=[]
+        return self
 
 
 class Benefit(BaseModel):
@@ -314,6 +324,9 @@ def product_snapshot(db,line,product):
     try: validate_image(image)
     except (TypeError,ValueError): image=''
     line.image=image
+    description=product.parameters.get('description','')
+    if isinstance(description,str) and description.strip():
+        line.description='\n'.join(dict.fromkeys(filter(None,[line.description,description.strip()])))[:2000]
 
 
 def source_key(row):
@@ -327,20 +340,34 @@ def import_lines(db,pid,quote):
     previous={line.source_key:line for line in quote.lines if line.source_key}
     used_ids=set()
     lines=[]
-    for row in report_rows(db,pid)['rows']:
-        if row['quantity']<=0: continue
+    calculated=[row for row in report_rows(db,pid)['rows'] if row['quantity']>0]
+    for candidate in previous.values():
+        if candidate.quantity_override is None or not candidate.source_ids: continue
+        matching=[row for row in calculated if set(candidate.source_ids).intersection(row.get('element_ids',[]))]
+        if len(matching)>1:
+            raise HTTPException(409,'Позиция с ручным количеством разделилась на несколько строк. Снимите галочку «Вручную» у этой позиции и повторите обновление: '+candidate.name[:100])
+    for row in calculated:
         key=source_key(row)
         old=previous.get(key)
         if old is None and row.get('element_ids'):
             current_ids=set(row['element_ids'])
             matches=[candidate for candidate in previous.values() if current_ids.intersection(candidate.source_ids)]
             if len(matches)==1: old=matches[0]
+            elif len(matches)>1:
+                if any(candidate.quantity_override is not None for candidate in matches):
+                    raise HTTPException(409,'Позиции с ручным количеством объединяются. Снимите галочки «Вручную» перед обновлением: '+row['name'][:100])
+                fields=set(field for candidate in matches for field in candidate.overrides)
+                if fields:
+                    if any(any(getattr(candidate,field)!=getattr(matches[0],field) for candidate in matches[1:]) for field in fields):
+                        raise HTTPException(409,'Объединяются строки с разными ручными правками. Укажите одинаковые значения в этих строках перед обновлением: '+row['name'][:100])
+                    old=matches[0].model_copy(deep=True)
+                    old.overrides=sorted(fields)
         line_id=old.id if old is not None and old.id not in used_ids else uuid.uuid4().hex
         used_ids.add(line_id)
         line=QuoteLine(id=line_id,source_key=key,
             source_ids=row.get('element_ids',[]),type_id=row.get('type_id'),
             name=row['product'] or row['name'],room=row['room'],
-            quantity=str(row['quantity']),unit=row['unit'],unit_price=str(money(row['unit_price'])),
+            quantity=str(row['quantity']),calculated_quantity=str(row['quantity']),quantity_override=old.quantity_override if old else None,overrides=old.overrides if old else [],unit=row['unit'],unit_price=str(money(row['unit_price'])),
             product_id=row['product_id'],sku=row['sku'],manufacturer=row['manufacturer'],
             description=parameters_text(row['parameters'])[:2000],currency=row['currency'],
             discount=old.discount if old else None)
@@ -350,6 +377,9 @@ def import_lines(db,pid,quote):
             # Keep manually entered prices and a product chosen for a calculated frame.
             for field in ('product_id','name','sku','manufacturer','unit_price','currency','type_id','image'):
                 setattr(line,field,getattr(old,field))
+        if row.get('custom_name'): line.name=row['name']
+        if old:
+            for field in old.overrides: setattr(line,field,getattr(old,field))
         lines.append(line)
     lines.extend(line for line in quote.lines if not line.source_key)
     if len(lines)>5000: raise HTTPException(422,'В КП больше 5000 строк')
@@ -375,6 +405,7 @@ def bind_product(db,pid,quote,line_id,product):
         from .main import remember_elements
         remember_elements(db,pid)
         for element in elements: element.product_id=product.id
+    line.overrides=[]
     product_snapshot(db,line,product)
 
 
@@ -385,7 +416,14 @@ def read_quote(db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
     quote=get_quote(db,pid,standalone)
     if quote.revision==0:
         import_lines(db,pid,quote)
-        persist_quote(db,pid,quote,standalone);db.commit()
+        from sqlalchemy.exc import IntegrityError
+        try:
+            persist_quote(db,pid,quote,standalone);db.commit()
+        except (IntegrityError,HTTPException) as exc:
+            if isinstance(exc,HTTPException) and exc.status_code!=409: raise
+            db.rollback()
+            quote=get_quote(db,pid,standalone)
+            if quote.revision==0: raise
     return present(quote)
 
 

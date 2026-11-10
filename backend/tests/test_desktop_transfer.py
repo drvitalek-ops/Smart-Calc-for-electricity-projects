@@ -75,3 +75,30 @@ with TestClient(app) as client:
     with sqlite3.connect(database) as db:
         assert {'active','seed_key'} <= {item[1] for item in db.execute('PRAGMA table_info(element_types)')}
         assert db.execute('SELECT active FROM element_types WHERE id=1').fetchone()==(0,)
+
+
+def test_desktop_upgrades_legacy_layers_and_keeps_manual_names_on_restart(tmp_path):
+    import os
+    import subprocess
+    import sys
+    database=tmp_path/'legacy-layers.db'
+    with sqlite3.connect(database) as db:
+        db.execute('CREATE TABLE projects (id INTEGER PRIMARY KEY,name VARCHAR(200) NOT NULL,created_at DATETIME NOT NULL)')
+        db.execute("INSERT INTO projects VALUES (1,'Старый проект','2026-01-01 00:00:00')")
+        db.execute('CREATE TABLE layers (id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL,name VARCHAR(200) NOT NULL,visible BOOLEAN NOT NULL,locked BOOLEAN NOT NULL,export BOOLEAN NOT NULL,opacity FLOAT NOT NULL)')
+        db.execute("INSERT INTO layers VALUES (9,1,'LED-подсветка',0,0,1,.35)")
+    script='''
+from fastapi.testclient import TestClient
+from app.main import app
+with TestClient(app) as client:
+    layers=client.get('/api/projects/1').json()['layers']
+    original=next(layer for layer in layers if layer['id']==9)
+    assert original['seed_key']=='LED-подсветка' and original['opacity']==.35 and not original['visible']
+    assert client.patch('/api/layers/9',json={'name':'Мой LED'}).status_code==200
+with TestClient(app) as client:
+    layers=client.get('/api/projects/1').json()['layers']
+    assert len(layers)==7
+    assert next(layer for layer in layers if layer['id']==9)['name']=='Мой LED'
+'''
+    result=subprocess.run([sys.executable,'-c',script],env={**os.environ,'DATABASE_URL':f'sqlite:///{database}','AUTO_CREATE_SCHEMA':'1','STORAGE_DIR':str(tmp_path/'storage')},capture_output=True,text=True,timeout=30)
+    assert result.returncode==0,result.stderr

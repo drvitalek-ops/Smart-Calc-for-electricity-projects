@@ -38,7 +38,7 @@ def parameters_text(raw):
             value = json.dumps(value, ensure_ascii=False)
         if key == 'ip':
             value = f'IP{value}'
-        lines.append(f'{PARAMETER_LABELS.get(key, key)}: {value}')
+        lines.append(f'{PARAMETER_LABELS.get(key, key[7:] if key.startswith('custom:') else key)}: {value}')
     return '\n'.join(lines)
 
 

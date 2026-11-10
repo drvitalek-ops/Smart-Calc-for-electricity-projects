@@ -4,7 +4,7 @@ const frontend=process.env.FRAME_TEST_FRONTEND || 'http://127.0.0.1:5174';
 const backend=process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
 const assert=require('node:assert/strict');
 (async()=>{
- const browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE || '/usr/bin/chromium',headless:true,args:['--no-sandbox']});
+ const browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE || chromium.executablePath(),headless:true,args:['--no-sandbox']});
  try {
  const context=await browser.newContext({viewport:{width:1600,height:1100}});
  const page=await context.newPage(); const errors=[];const writes=[];
@@ -19,32 +19,33 @@ const assert=require('node:assert/strict');
  const types=await (await api.get(base+'/types')).json();
  const type=types.find(x=>x.name==='Розетка одинарная');
  for(let i=0;i<2;i++)assert.equal((await api.post(base+`/projects/${pid}/elements`,{data:{page_id:sheets[0].id,layer_id:p.layers[0].id,type_id:type.id,room_id:null,product_id:null,x:.25+i*.15,y:.3,parameters:{quantity:1,ip:20},geometry:{}}})).status(),201);
+ async function tool(name){const button=page.getByRole('button',{name:'Инструмент: '+name,exact:true});if(await button.getAttribute('aria-pressed')!=='true')await button.click();}
  await page.goto(frontend);
  await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));
  await page.locator('.point-symbol').first().waitFor();
  const getElements=async()=> (await (await api.get(base+`/projects/${pid}`)).json()).elements;
  await page.locator('.point-symbol').first().click();
- await page.getByRole('button',{name:'Назначить рамку',exact:true}).click();
+ await tool('Рамки');await page.getByRole('button',{name:'Назначить рамку',exact:true}).click();
  await page.locator('.frame-group-outline').waitFor();
  await page.waitForTimeout(1600);
  let elements=await getElements();
  assert.ok(elements[0].parameters.frame_group,'Frame vanished after autosave; PUT requests: '+JSON.stringify(writes));
  assert.equal(await page.locator('.frame-group-outline').count(),1);
  assert.equal(writes.length,0,'Frame assignment must not trigger an element autosave');
- await page.getByLabel('Комментарий').fill('Property edit preserves frame');
+ await tool('Свойства');await page.getByLabel('Комментарий').fill('Property edit preserves frame');
  await page.waitForTimeout(1400);
  assert.ok((await getElements())[0].parameters.frame_group);
- await page.getByRole('button',{name:'Убрать рамку',exact:true}).click();
+ await tool('Рамки');await page.getByRole('button',{name:'Убрать рамку',exact:true}).click();
  await page.waitForTimeout(1600);
  assert.ok((await getElements()).every(x=>!x.parameters.frame_group),'Removed frame was restored by autosave');
  // An edit immediately followed by assignment must not be lost.
- await page.getByLabel('Комментарий').fill('Pending edit before assignment');
- await page.getByRole('button',{name:'Назначить рамку',exact:true}).click();
+ await tool('Свойства');await page.getByLabel('Комментарий').fill('Pending edit before assignment');
+ await tool('Рамки');await page.getByRole('button',{name:'Назначить рамку',exact:true}).click();
  await page.waitForTimeout(1600);
  elements=await getElements();
  assert.equal(elements[0].comment,'Pending edit before assignment');
  assert.ok(elements[0].parameters.frame_group);
- await page.getByRole('button',{name:'Убрать рамку',exact:true}).click();
+ await tool('Рамки');await page.getByRole('button',{name:'Убрать рамку',exact:true}).click();
  await page.waitForTimeout(1600);
  await page.locator('.point-symbol').nth(1).click({modifiers:['Control']});
  await page.locator('.point-symbol').nth(1).click({button:'right'});

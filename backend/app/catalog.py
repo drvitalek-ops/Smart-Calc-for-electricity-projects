@@ -130,7 +130,12 @@ def seed(db):
     for values in extras: builtin_type(db,**values)
     simplify_momentary_switches(db)
     for project in db.scalars(select(Project)):
-        existing_layers=set(db.scalars(select(Layer.name).where(Layer.project_id==project.id)))
+        layers=list(db.scalars(select(Layer).where(Layer.project_id==project.id).order_by(Layer.id)))
         for name in LAYERS:
-            if name not in existing_layers: db.add(Layer(project_id=project.id,name=name))
+            if any(layer.seed_key==name for layer in layers): continue
+            existing=next((layer for layer in layers if layer.seed_key is None and layer.name==name),None)
+            if existing is not None: existing.seed_key=name
+            else:
+                layer=Layer(project_id=project.id,name=name,seed_key=name)
+                db.add(layer);layers.append(layer)
     db.commit()

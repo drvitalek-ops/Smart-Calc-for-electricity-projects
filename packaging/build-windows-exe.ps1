@@ -91,6 +91,19 @@ try {
         if ($pdfImport.lines.Count -ne 1 -or $pdfImport.lines[0].unit_price -ne "100.00" -or $pdfImport.lines[0].quantity -ne "2.000" -or -not $pdfImport.checks[0].verified) {
             throw "Packaged PDF quotation import failed price, quantity or arithmetic verification"
         }
+        $planPages = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/pdf" -Method Post -Form @{file=(Get-Item $quotePdf)} -TimeoutSec 30
+        $planProject = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)" -TimeoutSec 10
+        $planKinds = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/types" -TimeoutSec 10
+        $planKind = $planKinds | Where-Object {$_.name -eq "Движение"} | Select-Object -First 1
+        $planLayer = $planProject.layers | Where-Object {$_.name -eq $planKind.category} | Select-Object -First 1
+        $annotationBody = @{page_id=$planPages[0].id;layer_id=$planLayer.id;type_id=$planKind.id;x=0.25;y=0.25;parameters=@{quantity=1;plan_color="#a13d72";plan_shape="diamond";plan_icon="X";plan_rotation=30;display_name="Native manual annotation"}} | ConvertTo-Json -Depth 10
+        $annotation = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/elements" -Method Post -ContentType "application/json; charset=utf-8" -Body $annotationBody -TimeoutSec 10
+        if ($annotation.parameters.plan_shape -ne "diamond" -or $annotation.parameters.display_name -ne "Native manual annotation") {
+            throw "Packaged manual plan appearance did not persist"
+        }
+        $planPdf = Join-Path $workDirectory "manual-plan-smoke.pdf"
+        Invoke-WebRequest -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/pages/$($planPages[0].id)/export.pdf" -OutFile $planPdf -TimeoutSec 20
+        if ((Get-Item $planPdf).Length -lt 1000) { throw "Packaged manual plan PDF is invalid" }
         $wordPath = Join-Path $workDirectory "quotation-smoke.docx"
         & $PythonBinary -c 'import sys; from docx import Document; d=Document(); t=d.add_table(rows=1,cols=3); [setattr(c,"text",v) for c,v in zip(t.rows[0].cells,["Name","Price","Quantity"])]; [setattr(c,"text",v) for c,v in zip(t.add_row().cells,["Imported lamp","25.00","3"])]; d.save(sys.argv[1])' $wordPath
         $wordResult = Invoke-RestMethod -Uri "$quoteUrl/import-file" -Method Post -Form @{file=(Get-Item $wordPath)} -TimeoutSec 20

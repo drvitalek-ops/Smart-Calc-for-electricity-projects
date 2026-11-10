@@ -1,13 +1,15 @@
+import ToolRail, {ToolButton, type ToolItem} from "./ToolRail";
 import SearchSelect from "./SearchSelect";
 import { useEffect, useRef, useState } from "react";
 import "./QuotationEditor.css";
 
 export type QuotationKind = { id:number; name:string; category:string; unit:string; active:boolean };
-type Product = { id:number; type_id:number; name:string; sku:string; unit:string; price:number; currency:string; active:boolean; manufacturer:string };
+type Product = { id:number; type_id:number; name:string; sku:string; unit:string; price:number; currency:string; active:boolean; manufacturer:string; parameters?:{image?:string;description?:string} };
 type Catalogue = { products:Product[]; manufacturers:{id:number;name:string}[] };
 type Line = {
   id:string; source_key:string; source_ids:number[]; type_id:number|null; product_id:number|null;
   name:string; sku:string; manufacturer:string; room:string; description:string; quantity:string;
+  quantity_override?:string|null; calculated_quantity?:string|null; overrides?:string[];
   unit:"шт"|"м"; unit_price:string; currency:string; discount:string|null; image:string;
 };
 type Prices = {lines:(Line & {total:string;base_total:string;discount_amount:string;effective_discount:string})[];
@@ -61,7 +63,8 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
   const [catalogue,setCatalogue]=useState<Catalogue>({products:[],manufacturers:[]});
   const [busy,setBusy]=useState(false),[dirty,setDirty]=useState(false),[calculating,setCalculating]=useState(false);
   const [error,setError]=useState(""),[message,setMessage]=useState(""),[mode,setMode]=useState<"client"|"partner">("partner");
-  const [preview,setPreview]=useState(false);
+  const [preview,setPreview]=useState(false),[quoteTool,setQuoteTool]=useState("positions"),[productSearch,setProductSearch]=useState("");
+  function chooseQuoteTool(id:string){setQuoteTool(id);setPreview(id==="preview");}
   const [attachOpen,setAttachOpen]=useState(false),[attachProjects,setAttachProjects]=useState<AttachmentProject[]>([]),[attachTarget,setAttachTarget]=useState("");
   const [imported,setImported]=useState<{filename:string;lines:Line[];warnings:string[];checks?:ImportCheck[]}|null>(null);
   const [importPage,setImportPage]=useState(0);
@@ -72,7 +75,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
   const history=useRef<Quote[]>([]),future=useRef<Quote[]>([]),lastChange=useRef(0);
   const standalone=quotationId!==undefined;
   const base=standalone ? "/quotations/"+quotationId : "/projects/"+projectId+"/quotation";
-  function apply(value:Quote) {setDoc(value);setPrices(value);setDirty(false);history.current=[];future.current=[];lastChange.current=0;}
+  function apply(value:Quote) {setDoc(value);setPrices(value);setDirty(false);setCalculating(false);history.current=[];future.current=[];lastChange.current=0;}
   async function work(action:()=>Promise<void>) {
     setBusy(true);setError("");setMessage("");
     try {await action();} catch(error) {setError(error instanceof Error ? error.message : "Ошибка");}
@@ -91,7 +94,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
     window.addEventListener("beforeunload",unload);return()=>window.removeEventListener("beforeunload",unload);
   },[dirty]);
   useEffect(()=>{
-    if(!doc || !dirty)return;
+    if(!doc || !dirty){setCalculating(false);return;}
     const cancellation=new AbortController();
     setCalculating(true);
     const timer=window.setTimeout(()=>{
@@ -109,7 +112,12 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
     lastChange.current=now;future.current=[];const next=update(current);docRef.current=next;setDoc(next);setDirty(true);setMessage("");
   }
   function editLine(id:string,patch:Partial<Line>) {
-    change(current=>({...current,lines:current.lines.map(line=>line.id===id ? {...line,...patch} : line)}));
+    change(current=>({...current,lines:current.lines.map(line=>{
+      if(line.id!==id)return line;
+      const allowed=['name','sku','manufacturer','room','description','unit_price','currency','image'];
+      const overrides=line.source_key ? [...new Set([...(line.overrides??[]),...Object.keys(patch).filter(key=>allowed.includes(key))])] : line.overrides;
+      return {...line,...patch,overrides};
+    })}));
   }
   function undo(redo=false) {
     if(!doc || busy)return;
@@ -125,6 +133,11 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
     };
     window.addEventListener("keydown",key);return()=>window.removeEventListener("keydown",key);
   },[doc,busy,newProduct,imported,attachOpen]);
+  useEffect(()=>{
+    const controller=new AbortController();
+    api<Catalogue>('/catalog','GET',undefined,controller.signal).then(value=>{if(!controller.signal.aborted)setCatalogue(value);}).catch(error=>{if(!controller.signal.aborted)setError(error instanceof Error?error.message:'Не удалось обновить каталог');});
+    return()=>controller.abort();
+  },[types]);
   async function saveCurrent():Promise<Quote> {
     if(!doc)throw Error("КП ещё не загружено");
     if(!dirty)return doc;
@@ -174,26 +187,26 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
   const unpriced=doc.lines.filter(line=>Number(line.unit_price)===0).length;
   const validProducts=(line:Line)=>catalogue.products.filter(product=>
     (product.active || product.id===line.product_id) && product.unit===line.unit && (!line.source_ids.length || line.type_id===null || product.type_id===line.type_id));
-  return <section className="quotation-editor" aria-label="Редактор коммерческого предложения">
-    <div className="quotation-heading"><div><div className="eyebrow">КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div><h2>{projectName}</h2><p>{standalone ? "Товары → готовое КП → привязка к проекту" : "Расчёт → товары → готовое КП"}</p></div>
-      <div className="quotation-actions">
-        {onBrowse && <button disabled={busy} onClick={onBrowse}>К списку КП</button>}
-        {standalone && <button disabled={busy} className="quote-primary" onClick={()=>void work(async()=>{setAttachProjects(await api<AttachmentProject[]>("/quotations/project-options"));setAttachTarget("");setAttachOpen(true);})}>Прикрепить к проекту</button>}
-        <button disabled={busy || !dirty} onClick={()=>void work(async()=>{await saveCurrent();setMessage("КП сохранено");})}>Сохранить КП</button>
-        <button disabled={busy} onClick={()=>void work(async()=>{
-          if(dirty && !confirm("Отменить несохранённые правки и загрузить сохранённое КП?"))return;
-          await load();
-        })}>Загрузить сохранённое КП</button>
-        <button disabled={busy} onClick={()=>importInput.current?.click()}>Импорт из PDF / Excel / Word</button>
-        <input ref={importInput} hidden type="file" aria-label="Файл внешнего КП" accept=".pdf,.xlsx,.xls,.xlsm,.docx,.csv" disabled={busy} onChange={e=>{void importFile(e.target.files?.[0]);e.target.value="";}}/>
-        <button disabled={busy || standalone} title={standalone ? "Сначала прикрепите КП к проекту" : undefined} onClick={()=>void work(async()=>{
-          if(doc.lines.length && !confirm("Обновить позиции из расчёта? Количество обновится, удалённые на плане позиции уйдут из КП. Ручные строки и скидки сохранятся."))return;
-          const saved=await saveCurrent();apply(await api<Quote>(base+"/import","POST",{revision:saved.revision}));setMessage("Позиции обновлены из расчёта");
-        })}>Обновить из расчёта</button>
-        <button disabled={busy || !doc.lines.length} onClick={()=>void download("client")}>PDF для клиента — без скидок</button>
-        <button className="quote-primary" disabled={busy || !doc.lines.length} onClick={()=>void download("partner")}>PDF для партнёра — со скидками</button>
-      </div>
-    </div>
+  const tools:ToolItem[]=[
+    {id:'positions',label:'Позиции',icon:'list',actionLabel:'Редактировать'},
+    {id:'details',label:'Реквизиты и условия',icon:'edit'},
+    {id:'brand',label:'Оформление КП',icon:'palette'},
+    {id:'catalog',label:'Товары',icon:'catalog'},
+    {id:'preview',label:'Предпросмотр',icon:'eye',actionLabel:'Предпросмотр'},
+    {id:'save',label:'Сохранить',icon:'save',actionLabel:'Сохранить КП',disabled:busy||!dirty,command:()=>void work(async()=>{await saveCurrent();setMessage('КП сохранено');})},
+    {id:'load',label:'Загрузить сохранённое',icon:'refresh',actionLabel:'Загрузить сохранённое КП',disabled:busy,command:()=>void work(async()=>{if(dirty&&!confirm('Отменить несохранённые правки и загрузить сохранённое КП?'))return;await load();})},
+    {id:'import',label:'Импорт из файла',icon:'import',actionLabel:'Импорт из PDF / Excel / Word',disabled:busy,command:()=>importInput.current?.click()},
+    {id:'sync',label:'Обновить из расчёта',icon:'refresh',actionLabel:'Обновить из расчёта',disabled:busy||standalone,command:()=>void work(async()=>{if(doc.lines.length&&!confirm('Обновить позиции из расчёта? Ручные правки, количество и скидки сохранятся. Удалённые на плане позиции уйдут из КП.'))return;const saved=await saveCurrent();apply(await api<Quote>(base+'/import','POST',{revision:saved.revision}));setMessage('Позиции обновлены из расчёта');})},
+    {id:'client',label:'PDF клиенту',icon:'pdf',actionLabel:'PDF для клиента — без скидок',disabled:busy||!doc.lines.length,command:()=>void download('client')},
+    {id:'partner',label:'PDF партнёру',icon:'pdf',actionLabel:'PDF для партнёра — со скидками',disabled:busy||!doc.lines.length,command:()=>void download('partner')},
+    ...(standalone?[{id:'attach',label:'Прикрепить к проекту',icon:'link',actionLabel:'Прикрепить к проекту',disabled:busy,command:()=>void work(async()=>{setAttachProjects(await api<AttachmentProject[]>("/quotations/project-options"));setAttachTarget("");setAttachOpen(true);})}]:[]),
+    ...(onBrowse?[{id:'browse',label:'К списку КП',icon:'back',actionLabel:'К списку КП',disabled:busy,command:onBrowse}]:[]),
+  ];
+  return <section className="quotation-editor quote-workspace" aria-label="Редактор коммерческого предложения">
+    <ToolRail label="Инструменты коммерческого предложения" active={quoteTool} onSelect={chooseQuoteTool} items={tools}/>
+    <div className="quotation-content" data-tool={quoteTool}>
+    <div className="quotation-heading"><div><div className="eyebrow">КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div><h2>КП № {doc.number}</h2><p>{projectName} · {tools.find(tool=>tool.id===quoteTool)?.label}</p></div></div>
+    <input ref={importInput} hidden type="file" aria-label="Файл внешнего КП" accept=".pdf,.xlsx,.xls,.xlsm,.docx,.csv" disabled={busy} onChange={event=>{void importFile(event.target.files?.[0]);event.target.value='';}}/>
     {!newProduct && !imported && !attachOpen && error && <p className="catalog-error" role="alert">{error}</p>}
     {message && <p className="catalog-success" role="status">{message}</p>}
     <div className="quotation-status" role="status">{busy ? "Сохранение…" : dirty ? "Есть несохранённые изменения" : "КП сохранено"}{calculating ? " · Пересчёт итогов…" : ""}</div>
@@ -204,7 +217,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
         {target==="partner" && Object.entries(calculated.partner.totals).map(([code,total])=><span key={code}>Скидка: {amount(total.discount,code)}</span>)}
       </article>)}
     </div>
-    <div className="quotation-switch"><button className={!preview ? "active" : ""} onClick={()=>setPreview(false)}>Редактировать</button><button className={preview ? "active" : ""} onClick={()=>setPreview(true)}>Предпросмотр</button>
+    <div className="quotation-switch">
       <label>Цены<SearchSelect aria-label="Цены предпросмотра КП" value={mode} onChange={event=>setMode(event.target.value as "client"|"partner")}><option value="partner">Партнёр — со скидками</option><option value="client">Клиент — без скидок</option></SearchSelect></label>
     </div>
     {!preview ? <>
@@ -218,8 +231,8 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
       </fieldset>
       <p className="hint">Пустая скидка строки использует общую. Индивидуальная скидка, включая 0%, заменяет общую. В клиентском PDF все скидки отключены.</p>
       {unpriced>0 && <p className="warning">Позиций без цены: {unpriced}. Выберите товар или укажите цену перед отправкой КП.</p>}
-      <div className="quotation-line-actions"><button disabled={busy} onClick={()=>change(q=>({...q,lines:[...q.lines,newLine()]}),true)}>＋ Добавить строку КП</button>
-        <button disabled={busy || !history.current.length} onClick={()=>undo()}>Отменить правку КП</button><button disabled={busy || !future.current.length} onClick={()=>undo(true)}>Вернуть правку КП</button></div>
+      <div className="quotation-line-actions"><ToolButton icon="plus" disabled={busy} onClick={()=>change(q=>({...q,lines:[...q.lines,newLine()]}),true)}>＋ Добавить строку КП</ToolButton>
+        <ToolButton icon="undo" disabled={busy || !history.current.length} onClick={()=>undo()}>Отменить правку КП</ToolButton><ToolButton icon="redo" disabled={busy || !future.current.length} onClick={()=>undo(true)}>Вернуть правку КП</ToolButton></div>
       <div className="quotation-table-wrap"><table className="quotation-table"><thead><tr><th>Позиция / товар</th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Валюта</th><th>Скидка, %</th><th>Сумма</th><th></th></tr></thead>
         <tbody>{doc.lines.map((line,index)=><tr key={line.id} data-quote-line={line.id}>
           <td><div className="quotation-line-name">{line.image && <img src={line.image} alt=""/>}<div><input aria-label={"Наименование строки "+(index+1)} value={line.name} disabled={busy} onChange={e=>editLine(line.id,{name:e.target.value})}/><small>{line.room}{line.source_ids.length ? " · На плане: "+line.source_ids.length : line.source_key.startsWith("frame:") ? " · Рамка по расчёту" : " · Ручная строка"}</small></div></div>
@@ -228,9 +241,12 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
               <label className="quote-file">Фото<input type="file" accept="image/png,image/jpeg" disabled={busy} aria-label={"Фото строки "+(index+1)} onChange={e=>{void upload(e.target.files?.[0],image=>editLine(line.id,{image}));e.target.value="";}}/></label>
               {line.image && <button disabled={busy} onClick={()=>editLine(line.id,{image:""})}>Убрать фото</button>}
             </div>
-            <details><summary>Описание и артикул</summary><input aria-label={"Артикул строки "+(index+1)} placeholder="Артикул" value={line.sku} disabled={busy} onChange={e=>editLine(line.id,{sku:e.target.value})}/><textarea aria-label={"Описание строки "+(index+1)} value={line.description} disabled={busy} onChange={e=>editLine(line.id,{description:e.target.value})}/></details>
+            <details><summary>Описание и артикул</summary><input aria-label={"Артикул строки "+(index+1)} placeholder="Артикул" value={line.sku} disabled={busy} onChange={e=>editLine(line.id,{sku:e.target.value})}/><input aria-label={"Производитель строки "+(index+1)} placeholder="Производитель" list="row-manufacturers" value={line.manufacturer} disabled={busy} onChange={event=>editLine(line.id,{manufacturer:event.target.value})}/><input aria-label={"Помещение строки "+(index+1)} placeholder="Помещение" value={line.room} disabled={busy} onChange={event=>editLine(line.id,{room:event.target.value})}/>
+            <label>Номенклатура<SearchSelect aria-label={"Номенклатура строки "+(index+1)} disabled={busy||Boolean(line.source_ids.length)} value={line.type_id??''} onChange={event=>{const type=types.find(type=>type.id===Number(event.target.value));editLine(line.id,{type_id:type?.id??null,product_id:null});}}><option value="">Без категории</option>{types.filter(type=>type.active&&type.unit===line.unit).map(type=><option key={type.id} value={type.id}>{type.category} · {type.name}</option>)}</SearchSelect></label>
+            <ToolButton icon="copy" type="button" disabled={busy} aria-label={"Дублировать строку "+(index+1)+" в КП"} onClick={()=>change(quote=>({...quote,lines:[...quote.lines,{...line,id:crypto.randomUUID(),source_key:'',source_ids:[],quantity_override:null,calculated_quantity:null,overrides:[]}]}),true)}>Ручная копия строки</ToolButton>
+            <textarea aria-label={"Описание строки "+(index+1)} value={line.description} disabled={busy} onChange={e=>editLine(line.id,{description:e.target.value})}/></details>
           </td>
-          <td><input aria-label={"Количество строки "+(index+1)} type="number" min=".001" max="1000000" step=".001" value={line.quantity} disabled={busy || Boolean(line.source_key)} onChange={e=>editLine(line.id,{quantity:e.target.value})}/>{line.source_key && <small>Из расчёта</small>}</td>
+          <td><input aria-label={"Количество строки "+(index+1)} type="number" min=".001" max="1000000" step=".001" value={line.quantity} disabled={busy || (Boolean(line.source_key)&&line.quantity_override==null)} onChange={e=>editLine(line.id,{quantity:e.target.value,...(line.source_key?{quantity_override:e.target.value}:{})})}/>{line.source_key&&<><label className="manual-quantity"><input type="checkbox" aria-label={"Ручное количество строки "+(index+1)} checked={line.quantity_override!=null} onChange={event=>editLine(line.id,event.target.checked?{calculated_quantity:line.calculated_quantity??line.quantity,quantity_override:line.quantity}:{quantity_override:null,quantity:line.calculated_quantity??line.quantity})}/>Вручную</label><small>По плану: {line.calculated_quantity??line.quantity}</small></>}</td>
           <td><SearchSelect aria-label={"Единица строки "+(index+1)} value={line.unit} disabled={busy || Boolean(line.source_key) || Boolean(line.product_id)} onChange={e=>editLine(line.id,{unit:e.target.value as "шт"|"м"})}><option value="шт">шт</option><option value="м">м</option></SearchSelect></td>
           <td><input aria-label={"Цена строки "+(index+1)} type="number" min="0" max="1000000000" step=".01" value={line.unit_price} disabled={busy} onChange={e=>editLine(line.id,{unit_price:e.target.value})}/></td>
           <td><input aria-label={"Валюта строки "+(index+1)} maxLength={3} value={line.currency} disabled={busy} onChange={e=>editLine(line.id,{currency:e.target.value.toUpperCase()})}/></td>
@@ -239,8 +255,12 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
           <td><button aria-label={"Удалить строку "+(index+1)+" из КП"} title="Убрать только из КП" disabled={busy} onClick={()=>change(q=>({...q,lines:q.lines.filter(item=>item.id!==line.id)}),true)}>×</button></td>
         </tr>)}</tbody></table></div>
       {!doc.lines.length && <p className="hint">Пока нет позиций. Добавьте строку вручную или импортируйте расчёт проекта.</p>}
+      <datalist id="row-manufacturers">{catalogue.manufacturers.map(m=><option key={m.id} value={m.name}/>)}</datalist>
+      <section className="quote-catalog-panel" aria-label="Товары для КП"><h3>Добавить товар из базы</h3><input aria-label="Поиск товаров для КП" type="search" placeholder="Название, артикул, производитель…" value={productSearch} onChange={event=>setProductSearch(event.target.value)}/>
+        <div className="quote-catalog-products">{catalogue.products.filter(product=>product.active&&[product.name,product.sku,product.manufacturer].join(' ').toLocaleLowerCase().includes(productSearch.toLocaleLowerCase())).map(product=><article key={product.id}><strong>{product.name}</strong><small>{product.manufacturer} · {product.sku}</small><b>{amount(product.price,product.currency)} / {product.unit}</b><ToolButton icon="plus" disabled={busy} onClick={()=>{change(quote=>({...quote,lines:[...quote.lines,{...newLine(),name:product.name,sku:product.sku,manufacturer:product.manufacturer,product_id:product.id,type_id:product.type_id,unit:product.unit as 'шт'|'м',unit_price:String(product.price),currency:product.currency,image:product.parameters?.image??'',description:product.parameters?.description??''}]}),true);chooseQuoteTool('positions');}}>Добавить в КП</ToolButton></article>)}</div>
+      </section>
       <fieldset disabled={busy} className="quotation-notes"><label>Условия предложения<textarea aria-label="Условия КП" rows={4} value={doc.terms} onChange={e=>change(q=>({...q,terms:e.target.value}))}/></label></fieldset>
-      <details className="quotation-brand"><summary>Оформление и реквизиты</summary><fieldset disabled={busy} className="quotation-fields">
+      <details open className="quotation-brand"><summary>Оформление и реквизиты</summary><fieldset disabled={busy} className="quotation-fields">
         {([["title","Заголовок КП"],["seller","Компания"],["city","Город"],["phone","Телефон"],["email","E-mail"],["website","Сайт"],["address","Адрес"],["slogan","Слоган"],["tax_note","Примечание о НДС"]] as const).map(([key,label])=><label key={key}>{label}<input aria-label={label+" КП"} value={doc[key]} onChange={e=>change(q=>({...q,[key]:e.target.value}))}/></label>)}
         <label className="quote-file">Логотип PNG/JPEG<input aria-label="Логотип КП" type="file" accept="image/png,image/jpeg" onChange={e=>{void upload(e.target.files?.[0],logo=>change(q=>({...q,logo})),true);e.target.value="";}}/></label>
         {doc.logo && <div><img className="quotation-logo" src={doc.logo} alt="Логотип"/><button onClick={()=>change(q=>({...q,logo:""}))}>Убрать логотип</button></div>}
@@ -257,6 +277,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
         {doc.terms && <p className="quotation-paper-terms">{doc.terms}</p>}<footer><strong>{doc.seller}</strong><p>{doc.address}</p><p>{doc.phone} · {doc.email} · {doc.website}</p></footer>
       </div>
     </div>}
+    </div>
     {newProduct && <QuoteDialog title="Новый товар из КП" busy={busy} onClose={()=>{setNewProduct(null);setError("");}}>
       <h2>Новый товар в базу</h2><p>{standalone ? "Товар сохранится в общем каталоге и строке КП." : "Товар сохранится в общем каталоге и будет привязан к этой строке и её объектам на плане."}</p>
       <form onSubmit={event=>{event.preventDefault();void work(async()=>{

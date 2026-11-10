@@ -1,3 +1,5 @@
+import ToolRail, {ToolButton,ActionIcon} from "./ToolRail";
+import {AppearanceEditor,CustomFieldsEditor,CoordinateEditor,PlanSymbol,appearanceKeys} from "./PlanAppearance";
 import SearchSelect, {matchesSearch,SearchHighlight} from "./SearchSelect";
 import { useEffect, useRef, useState } from "react";
 import QuotationEditor from "./QuotationEditor";
@@ -368,62 +370,11 @@ function polygonSelfIntersects(points: Point[]) {
   }
   return false;
 }
-function PointMarker({
-  scale,
-  color,
-  selected,
-  icon,
-  powerSupply = false,
-}: {
-  powerSupply?: boolean;
-  scale: number;
-  color: string;
-  selected: boolean;
-  icon: string;
-}) {
-  return (
-    <g className={"point-symbol " + (selected ? "selected-object" : "")}>
-      {selected && (
-        <>
-          <circle
-            className="selection-halo"
-            r={(powerSupply ? 32 : 24) * scale}
-            fill="#38bdf8"
-            fillOpacity=".2"
-            stroke="#0284c7"
-            strokeWidth="5"
-            vectorEffect="non-scaling-stroke"
-          />
-          <circle
-            className="selection-ring"
-            r={(powerSupply ? 26 : 17) * scale}
-            fill="none"
-            stroke="white"
-            strokeWidth="3"
-            vectorEffect="non-scaling-stroke"
-          />
-        </>
-      )}
-      {powerSupply ? <rect className="power-supply-symbol" x={-22*scale} y={-8*scale} width={44*scale} height={16*scale} rx={2*scale} fill="#dc2626" stroke={selected ? "#0f172a" : "white"} strokeWidth={selected ? 5 : 3} vectorEffect="non-scaling-stroke" /> : <circle
-        r={12 * scale}
-        fill={color}
-        stroke={selected ? "#0f172a" : "white"}
-        strokeWidth={selected ? 5 : 3}
-        vectorEffect="non-scaling-stroke"
-      />}
-      {icon && (
-        <text
-          className="custom-icon"
-          textAnchor="middle"
-          dominantBaseline="central"
-          fontSize={Math.max(1, 12 * scale)}
-          fill="white"
-        >
-          {icon}
-        </text>
-      )}
-    </g>
-  );
+function PointMarker({scale,color,selected,icon,powerSupply=false,parameters={}}:{scale:number;color:string;selected:boolean;icon:string;powerSupply?:boolean;parameters?:Record<string,unknown>}) {
+  return <g className={"point-symbol "+(selected?"selected-object":"")}>
+    {selected&&<><circle className="selection-halo" r={24*scale*Number(parameters.plan_size??1)} fill="#38bdf8" fillOpacity=".2" stroke="#0284c7" strokeWidth="5" vectorEffect="non-scaling-stroke"/><circle className="selection-ring" r={17*scale*Number(parameters.plan_size??1)} fill="none" stroke="white" strokeWidth="3" vectorEffect="non-scaling-stroke"/></>}
+    <PlanSymbol parameters={{...parameters,plan_icon:icon}} color={color} selected={selected} power={powerSupply} radius={12*scale}/>
+  </g>;
 }
 type LegendEntry = { key: string; name: string; color: string; symbol: string };
 function makeLegend(
@@ -442,7 +393,7 @@ function makeLegend(
     if (!kind) continue;
     const icon = String(item.parameters.plan_icon ?? "").trim(),
       symbol = isPowerSupply(kind) ? "▭" : icon || (isTrack(kind) ? "➜" : kind.unit === "м" ? "━" : "●"),
-      color = isPowerSupply(kind) ? "#dc2626" : String(item.parameters.plan_color ?? kind.color),
+      color = String(item.parameters.plan_color ?? kind.color),
       key = `${kind.id}:${symbol}:${color}`;
     entries.set(key, { key, name: kind.name, color, symbol });
     if (item.parameters.frame_group) {
@@ -551,11 +502,11 @@ function NomenclatureEditor({types,onChanged}:{types:Kind[];onChanged:()=>Promis
         <label>Название<input aria-label="Название номенклатуры" required maxLength={200} value={form.name} onChange={event=>setForm({...form,name:event.target.value})} /></label>
         <label>Категория<input aria-label="Категория номенклатуры" required list="nomenclature-categories" maxLength={200} value={form.category} onChange={event=>setForm({...form,category:event.target.value})} /></label>
         <datalist id="nomenclature-categories">{[...new Set(["Электроустановки","Освещение","LED-подсветка","Датчики","Электрокарнизы","Умные устройства","Профиль",...types.map(item=>item.category)])].map(category=><option key={category} value={category} />)}</datalist>
-        <label>Единица измерения<SearchSelect aria-label="Единица номенклатуры" value={form.unit} onChange={event=>setForm({...form,unit:event.target.value,defaults:event.target.value === "м" ? {length:1} : {quantity:1}})}><option value="шт">Штуки</option><option value="м">Метры</option></SearchSelect></label>
+        <label>Единица измерения<SearchSelect aria-label="Единица номенклатуры" value={form.unit} onChange={event=>setForm({...form,unit:event.target.value,defaults:{...Object.fromEntries(Object.entries(form.defaults).filter(([key])=>!["length","quantity"].includes(key))),...(event.target.value === "м" ? {length:1} : {quantity:1})}})}><option value="шт">Штуки</option><option value="м">Метры</option></SearchSelect></label>
         <label>Цвет на плане<input aria-label="Цвет номенклатуры" type="color" value={form.color} onChange={event=>setForm({...form,color:event.target.value})} /></label>
         <label>Рекомендуемый IP во влажной зоне<input aria-label="Минимальный IP номенклатуры" type="number" min="0" max="69" placeholder="Не задан" value={form.wet_min_ip} onChange={event=>setForm({...form,wet_min_ip:event.target.value})} /></label>
-        <h3>Параметры по умолчанию</h3>
-        {Object.entries(form.defaults).map(([key,value])=><label key={key} className="nomenclature-param">{labels[key] ?? key}<span><input aria-label={`По умолчанию: ${labels[key] ?? key}`} type={typeof value === "number" ? "number" : "text"} step="any" value={String(value)} onChange={event=>setForm({...form,defaults:{...form.defaults,[key]:typeof value === "number" ? Number(event.target.value) : event.target.value}})} /><button type="button" aria-label={`Убрать параметр ${labels[key] ?? key}`} onClick={()=> {const defaults={...form.defaults};delete defaults[key];setForm({...form,defaults});}}>×</button></span></label>)}
+        <details className="manual-properties"><summary>Значок по умолчанию для новых объектов</summary><AppearanceEditor value={form.defaults} onChange={defaults=>setForm({...form,defaults})} color={form.color} allowName={false} line={form.unit==="м"}/></details><CustomFieldsEditor value={form.defaults} onChange={defaults=>setForm({...form,defaults})}/><h3>Параметры по умолчанию</h3>
+        {Object.entries(form.defaults).filter(([key])=>!appearanceKeys.includes(key)&&!key.startsWith("custom:")).map(([key,value])=><label key={key} className="nomenclature-param">{labels[key] ?? (key.startsWith("custom:")?key.slice(7):key)}<span><input aria-label={`По умолчанию: ${labels[key] ?? (key.startsWith("custom:")?key.slice(7):key)}`} type={typeof value === "number" ? "number" : "text"} step="any" value={String(value)} onChange={event=>setForm({...form,defaults:{...form.defaults,[key]:typeof value === "number" ? Number(event.target.value) : event.target.value}})} /><button type="button" aria-label={`Убрать параметр ${labels[key] ?? (key.startsWith("custom:")?key.slice(7):key)}`} onClick={()=> {const defaults={...form.defaults};delete defaults[key];setForm({...form,defaults});}}>×</button></span></label>)}
         <label>Добавить характеристику<SearchSelect aria-label="Новая характеристика" value={parameter} onChange={event=>setParameter(event.target.value)}>{Object.entries(labels).filter(([key])=>!["led_strip","frame_posts","contact_type"].includes(key)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</SearchSelect></label>
         <button type="button" onClick={()=>setForm({...form,defaults:{...form.defaults,[parameter]:form.defaults[parameter] ?? (["quantity","length","ip","voltage","keys","power_watts","connectors","end_caps"].includes(parameter) ? 1 : "")}})}>Добавить характеристику</button>
         <button className="primary" disabled={saving}>{form.id ? "Сохранить позицию" : "Добавить позицию"}</button>
@@ -568,6 +519,7 @@ function NomenclatureEditor({types,onChanged}:{types:Kind[];onChanged:()=>Promis
         <label className="check"><input type="checkbox" checked={showDeleted} onChange={event=>setShowDeleted(event.target.checked)} />Показывать удалённые</label>
         <div className="nomenclature-rows">{groupKinds(visible).map(group=><section className="nomenclature-group" key={group.label} aria-label={`Группа ${group.label}`}><h4>{group.label}<small>{group.items.length}</small></h4>{group.items.map(item=><article key={item.id} className={!item.active ? "inactive" : ""} data-type-id={item.id}>
           <div><strong><i style={{background:item.color}} />{item.name}</strong><small>{item.category} · {item.unit}{!item.active ? " · удалена из библиотеки" : ""}</small></div>
+          <ToolButton type="button" icon="copy" aria-label={`Создать копию ${item.name}`} onClick={()=>{setForm({id:0,name:item.name+' — копия',category:item.category,unit:item.unit,color:item.color,wet_min_ip:item.wet_min_ip==null?'':String(item.wet_min_ip),defaults:{...item.defaults}});setError('');setMessage('');}}>Копия</ToolButton>
           <button type="button" disabled={saving} aria-label={`Редактировать ${item.name}`} onClick={()=> {setForm({id:item.id,name:item.name,category:item.category,unit:item.unit,color:item.color,wet_min_ip:item.wet_min_ip==null ? "" : String(item.wet_min_ip),defaults:{...item.defaults}});setError("");setMessage("");}}>Редактировать</button>
           {item.active ? <button type="button" className="danger" disabled={saving} aria-label={`Удалить ${item.name}`} onClick={()=> {
             if(!confirm(`Удалить «${item.name}» из библиотеки? Уже размещённые объекты и отчёты сохранятся.`)) return;
@@ -602,6 +554,7 @@ function CatalogManager({
     price: 0,
     currency: "RUB",
     active: true,
+    parameters:{} as Record<string,unknown>,
   };
   const [form, setForm] = useState(blank),
     [manufacturer, setManufacturer] = useState(""),
@@ -640,7 +593,7 @@ function CatalogManager({
         price: Number(form.price),
         currency: form.currency.toUpperCase(),
         active: form.active,
-        parameters: {},
+        parameters: form.parameters,
       };
       await api(
         form.id ? `/products/${form.id}` : "/products",
@@ -667,6 +620,7 @@ function CatalogManager({
       price: product.price,
       currency: product.currency,
       active: product.active,
+      parameters:{...product.parameters},
     });
   }
   return (
@@ -939,6 +893,9 @@ function CatalogManager({
                 />
                 Доступен для выбора
               </label>
+              <label>Описание товара<textarea aria-label="Описание товара в каталоге" value={String(form.parameters.description??'')} onChange={event=>setForm({...form,parameters:{...form.parameters,description:event.target.value}})}/></label>
+              <CustomFieldsEditor value={form.parameters} onChange={parameters=>setForm({...form,parameters})}/>
+              {typeof form.parameters.image==='string'&&form.parameters.image&&<div><img src={form.parameters.image} alt="Фото товара" style={{width:70,height:70,objectFit:'contain'}}/></div>}
               <button
                 className="primary"
                 disabled={saving || !catalog.manufacturers.length}
@@ -1000,6 +957,11 @@ export default function App() {
     [layerId, setLayerId] = useState<number | null>(null),
     [typeId, setTypeId] = useState<number | null>(null),
     [roomId, setRoomId] = useState<number | null>(null);
+  const pendingActions=useRef(0),elementSaveQueue=useRef<Promise<void>>(Promise.resolve());
+  const [leftTool,setLeftTool]=useState<string|null>(null),[rightTool,setRightTool]=useState<string|null>(null);
+  const [batchStyle,setBatchStyle]=useState<Record<string,unknown>>({});
+  function selectLeftTool(id:string){if(roomMode&&id!=="rooms"){setError("Сначала завершите или отмените контур помещения");return;}if(placing&&id!=="objects"&&linePoints.length){setError("Сначала завершите или отмените линию");return;}if(id!=="objects")setPlacing(false);setLeftTool(current=>current===id?null:id);if(window.innerWidth<1100)setRightTool(null);}
+  function selectRightTool(id:string){setRightTool(current=>current===id?null:id);if(window.innerWidth<1100)setLeftTool(null);if(id==='layers')setElementLayersExpanded(true);}
   const [libraryGroup,setLibraryGroup]=useState("");
   const [selected, setSelected] = useState<Item | null>(null),
     [selectedIds, setSelectedIds] = useState<number[]>([]),
@@ -1160,28 +1122,35 @@ export default function App() {
     layer = project?.layers.find((l) => l.id === layerId);
   async function run(work: () => Promise<void>) {
     setError("");
-    setBusy(true);
+    pendingActions.current+=1;setBusy(true);
     try {
       await work();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка");
     } finally {
-      setBusy(false);
+      pendingActions.current-=1;if(!pendingActions.current)setBusy(false);
     }
+  }
+  function openCatalog(){
+    void run(async()=>{const [nextCatalog,nextTypes]=await Promise.all([api<Catalog>('/catalog'),api<Kind[]>('/types?include_inactive=true')]);setCatalog(nextCatalog);setTypes(nextTypes);setCatalogOpen(true);});
   }
   function canLeaveQuote() {
     return !["quote","quotations"].includes(view) || !quoteDirty || confirm("В КП есть несохранённые изменения. Выйти без сохранения?");
   }
-  function changeView(next:"plan"|"report"|"quote"|"quotations") {
-    if(busy || quoteBusy || next===view || !canLeaveQuote())return;
-    if(next==="quote" || next==="quotations") {
-      void run(async()=>{
-        const stored=selected && project?.elements.find(item=>item.id===selected.id);
-        if(selected && stored && !sameItem(selected,stored))await save(selected);
-        setView(next);
-      });
-    } else setView(next);
+  async function saveDraftBeforeNavigation(){
+    if(view!=="plan"||!selected||selectedIds.length!==1)return;
+    const stored=project?.elements.find(item=>item.id===selected.id);
+    if(stored&&!sameItem(selected,stored))await save({...selected});
   }
+  function changeView(next:"plan"|"report"|"quote"|"quotations") {
+    if(busy||quoteBusy||next===view||!canLeaveQuote())return;
+    void run(async()=>{await saveDraftBeforeNavigation();setView(next);});
+  }
+  useEffect(()=>{
+    const stored=selected&&project?.elements.find(item=>item.id===selected.id);
+    const unload=(event:BeforeUnloadEvent)=>{if(view==='plan'&&selected&&stored&&!sameItem(selected,stored)){event.preventDefault();event.returnValue='';}};
+    window.addEventListener('beforeunload',unload);return()=>window.removeEventListener('beforeunload',unload);
+  },[selected,project,view]);
   function requestPdfImport(files:File[]) {
     if(busy || quoteBusy) {setError("Дождитесь завершения сохранения или загрузки");return;}
     if(["quote","quotations"].includes(view) && quoteDirty){setError("Сначала сохраните изменения КП");return;}
@@ -1286,14 +1255,15 @@ export default function App() {
     });
   }, []);
   async function save(item: Item) {
-    const e = await api<Item>(`/elements/${item.id}`, "PUT", {
-      ...item,
-      geometry: item.geometry ?? {},
-    });
-    setSelected((current) =>
-      current?.id === item.id && sameItem(current, item) ? e : current,
-    );
-    await refresh(project!.id);
+    const projectId=project!.id,original=project!.elements.find(current=>current.id===item.id);
+    const persist=async()=>{
+      const saved=await api<Item>(`/elements/${item.id}`,"PUT",{...item,geometry:item.geometry??{}});
+      setSelected(current=>current?.id===item.id&&(sameItem(current,item)||(original&&sameItem(current,original)))?saved:current);
+      await refresh(projectId);
+    };
+    const task=elementSaveQueue.current.then(persist,persist);
+    elementSaveQueue.current=task.catch(()=>{});
+    await task;
   }
   function stripLabel(item: Item) {
     const sheet=project?.pages.find(sheet => sheet.id === item.page_id);
@@ -1377,7 +1347,7 @@ export default function App() {
     );
   }
   useEffect(() => {
-    if (!selected || !project || busy || ["quote","quotations"].includes(view) || deletingProject || drag.current || nodeDrag.current)
+    if (!selected || selectedIds.length!==1 || !project || busy || ["quote","quotations"].includes(view) || deletingProject || drag.current || nodeDrag.current)
       return;
     const stored = project.elements.find((item) => item.id === selected.id);
     if (!stored || sameItem(selected, stored)) return;
@@ -1386,7 +1356,7 @@ export default function App() {
       600,
     );
     return () => window.clearTimeout(timeout);
-  }, [selected, project, busy, deletingProject, view]);
+  }, [selected, selectedIds.length, project, busy, deletingProject, view]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
       if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject) return;
@@ -1698,6 +1668,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", roomKeys);
   }, [roomMode, roomPoints, roomUndo, roomRedo, busy, project, page, editingRoomId, settingsOpen, pdfImport, supplyLinking, deletingProject, view]);
   function editRoomArea(room: Room) {
+    setLeftPanelVisible(true);setLeftTool("rooms");
     setRoomUndo([]);
     setRoomRedo([]);
     setCalibrating(false);
@@ -1797,6 +1768,10 @@ export default function App() {
     setRoomPointMenu(null);
   }
   function choose(item: Item, additive: boolean) {
+    const stored=selected&&project?.elements.find(current=>current.id===selected.id);
+    if(selected&&stored&&selected.id!==item.id&&!sameItem(selected,stored))void run(()=>save({...selected}));
+    setLeftPanelVisible(true);
+    setLeftTool(current=>current==="frames"||current==="style"?current:"properties");
     if (additive) {
       setSelectedIds((ids) =>
         ids.includes(item.id)
@@ -1850,6 +1825,7 @@ export default function App() {
       .map((candidate) => candidate.id);
     setSelectedIds(ids);
     setSelected(item);
+    setLeftTool("frames");
     setFramePosts(Math.min(6, Math.max(1, ids.length)));
     focusItem(item);
   }
@@ -1873,6 +1849,7 @@ export default function App() {
       if (key in selected.parameters)
         parameters[key] = selected.parameters[key];
     }
+    for(const [key,value] of Object.entries(selected.parameters))if(appearanceKeys.includes(key)||key.startsWith("custom:"))parameters[key]=value;
     if (isElectrical(nextKind) && isElectrical(currentKind)) {
       for (const key of [
         "plan_icon",
@@ -1884,6 +1861,7 @@ export default function App() {
           parameters[key] = selected.parameters[key];
       }
     }
+    if(nextKind.unit==="м"&&selected.parameters.manual_length!==undefined)parameters.manual_length=selected.parameters.manual_length;
     if (isPowerSupply(nextKind)) {
       if (isPowerSupply(currentKind)) {
         parameters.led_strip_ids = powerStripIds(selected.parameters);
@@ -2056,7 +2034,7 @@ export default function App() {
           <button className={view==="quotations" ? "active" : ""} disabled={busy || quoteBusy} onClick={()=>changeView("quotations")}>Все КП</button>
         </nav>
         <button className="icon-button" disabled={busy || quoteBusy} onClick={()=>pdfInput.current?.click()} title="Создать новый проект из PDF"><ToolIcon name="pdf"/>Новый из PDF</button>
-        <button disabled={busy || quoteBusy} onClick={() => setCatalogOpen(true)}>Каталог и цены</button>
+        <button disabled={busy || quoteBusy} onClick={() => openCatalog()}>Каталог и цены</button>
         <button className="icon-button settings-button" aria-label="Настройки" title="Настройки и папка данных" disabled={busy || quoteBusy} onClick={()=>setSettingsOpen(true)}><ToolIcon name="settings"/>Настройки</button>
         <label className="restore-project">
           Восстановить ZIP
@@ -2090,7 +2068,7 @@ export default function App() {
           value={project?.id ?? ""}
           onChange={(e) => {
             if(!canLeaveQuote()){e.target.value=String(project?.id ?? "");return;}
-            void run(()=>open(+e.target.value));
+            const id=+e.target.value;void run(async()=>{await saveDraftBeforeNavigation();await open(id);});
           }}
         >
           <option value="" disabled>
@@ -2102,12 +2080,14 @@ export default function App() {
             </option>
           ))}
         </SearchSelect>
+        <ToolButton icon="edit" aria-label="Переименовать проект" disabled={busy||quoteBusy||!project} onClick={()=>{if(!project)return;const name=prompt('Название проекта',project.name);if(name?.trim())void run(async()=>{await api(`/projects/${project.id}`,"PATCH",{name:name.trim()});setProjects(await api('/projects'));await refresh(project.id);});}}>Название</ToolButton>
         <button className="icon-button delete-project" disabled={busy || quoteBusy || !project} onClick={()=>{setDeleteProjectError("");setDeletingProject(project);}} title="Удалить выбранный проект"><ToolIcon name="trash"/>Удалить проект</button>
         <form
           onSubmit={(e) => {
             e.preventDefault();
             if(!canLeaveQuote())return;
             void run(async () => {
+              await saveDraftBeforeNavigation();
               const p = await api<{ id: number }>("/projects", "POST", {
                 name,
               });
@@ -2204,10 +2184,13 @@ export default function App() {
           ) : view === "plan" ? (
             <main
               className={`workspace ${leftPanelVisible ? "" : "left-collapsed"} ${rightPanelVisible ? "" : "right-collapsed"}`}
+              style={{gridTemplateColumns:[...(leftPanelVisible?[leftTool?"310px":"56px"]:[]),"minmax(0,1fr)",...(rightPanelVisible?[rightTool?"325px":"56px"]:[])].join(" ")}}
             >
               {leftPanelVisible && (
-                <aside aria-label="Объекты и рамки" className="objects-panel" inert={Boolean(supplyLinking)}>
-                  <h3>Библиотека</h3>
+                <aside aria-label="Объекты и рамки" className={"objects-panel tool-panel "+(!leftTool?'tool-closed':'')} data-active-tool={leftTool??''} inert={Boolean(supplyLinking)}>
+                  <ToolRail label="Инструменты объектов" active={leftTool} onSelect={selectLeftTool} items={[{id:'objects',label:'Объекты'},{id:'properties',label:'Свойства',icon:'edit'},{id:'style',label:'Оформление',icon:'palette'},{id:'frames',label:'Рамки',icon:'frame'},{id:'rooms',label:'Помещения',icon:'room'},{id:'catalog',label:'Каталог',icon:'catalog',command:()=>openCatalog()}]}/>
+                  <div className="tool-panel-content">
+<section data-tool-section="objects"><h3>Библиотека</h3>
                   <label>Группа<SearchSelect aria-label="Группа элементов" value={libraryGroup} onChange={event=> {
                     const group=event.target.value;
                     setLibraryGroup(group);
@@ -2297,7 +2280,46 @@ export default function App() {
                       : "Нажмите на план для размещения. Перетаскивайте объекты левой кнопкой."}{" "}
                     План перемещается средней кнопкой.
                   </p>
-                  <details>
+                  </section><section data-tool-section="rooms"><h3>Помещения</h3><div className="room-drawing-tools">                    {page &&
+                      (roomMode ? (
+                        <>
+                          <ToolButton icon="room"
+                            className="active"
+                            disabled={roomPoints.length < 3 || busy}
+                            onClick={() => void run(finishRoom)}
+                          >
+                            Замкнуть область · Enter
+                          </ToolButton>
+                          <ToolButton icon="undo"
+                            disabled={!roomUndo.length || busy}
+                            onClick={() => undoRoomPoint()}
+                          >
+                            ↶ Отменить точку
+                          </ToolButton>
+                          <ToolButton icon="redo" disabled={!roomRedo.length || busy} onClick={() => undoRoomPoint(true)}>↷ Вернуть</ToolButton>
+                          <label><input type="checkbox" checked={roomSnap} onChange={event => setRoomSnap(event.target.checked)} /> Привязка углов</label>
+                          <ToolButton icon="room" onClick={cancelRoom}>Отмена · Esc</ToolButton>
+                        </>
+                      ) : (
+                        <ToolButton icon="room"
+                          onClick={() => {
+                            setLeftTool("rooms");setRoomMode("new");
+                            setRoomUndo([]);
+                            setRoomRedo([]);
+                            setRoomPoints([]);
+                            setRoomCursor(null);
+                            setEditingRoomId(null);
+                            setRoomMenu(null);
+                            setRoomPointMenu(null);
+                            setObjectMenu(null);
+                            setPlacing(false);
+                            setCalibrating(false);
+                          }}
+                        >
+                          ◇ Область помещения
+                        </ToolButton>
+                      ))}
+</div>{roomMode&&<><label>Название помещения<input aria-label="Название контура помещения" maxLength={200} value={roomName} onChange={event=>setRoomName(event.target.value)}/></label><label className="check"><input type="checkbox" checked={wet} onChange={event=>setWet(event.target.checked)}/>Влажная зона</label><p className="hint">Отмечайте углы на плане. Первая точка или Enter замыкает контур. Ctrl+Z отменяет точку.</p></>}{!roomMode&&<details open>
                     <summary>Добавить помещение</summary>
                     <form
                       onSubmit={(e) => {
@@ -2330,15 +2352,8 @@ export default function App() {
                       </label>
                       <button disabled={busy}>Добавить</button>
                     </form>
-                  </details>
-                  <button className="new-type" onClick={()=>setCatalogOpen(true)}>＋ Номенклатура: добавить / изменить</button>
-                  <button
-                    className="new-type"
-                    onClick={() => setCatalogOpen(true)}
-                  >
-                    Каталог и цены
-                  </button>
-                  <h3>Выбранные объекты</h3>
+                  </details>}
+                  </section><section data-tool-section="frames"><h3>Выбранные объекты</h3>
                   {selectedIds.length > 0 ? (
                     <div className="frame-editor">
                       <strong>Выбрано: {selectedIds.length}</strong>
@@ -2392,9 +2407,9 @@ export default function App() {
                       Выделите объекты рамкой мыши или кликами с зажатым Ctrl.
                     </p>
                   )}
-                  <h3>Свойства объекта</h3>
+                  </section><section data-tool-section="properties"><h3>Свойства объекта</h3>
                   {selected && selectedIds.length === 1 ? (
-                    <>
+                    <fieldset disabled={busy||project.layers.find(layer=>layer.id===selected.layer_id)?.locked} style={{border:0,padding:0}}>
                       <div className="object-title">
                         <button
                           type="button"
@@ -2403,7 +2418,7 @@ export default function App() {
                           onClick={() => focusItem(selected)}
                           onDoubleClick={() => selectSameType(selected)}
                         >
-                          {selectedKind?.name}
+                          {String(selected.parameters.display_name || selectedKind?.name || "")}
                         </button>
                         <button
                           type="button"
@@ -2502,72 +2517,6 @@ export default function App() {
                             ))}
                         </SearchSelect>
                       </label>
-                      {isElectrical(selectedKind) && (
-                        <label>
-                          Иконка на плане
-                          <input
-                            aria-label="Иконка электроустановки"
-                            list="plan-icon-options"
-                            maxLength={4}
-                            placeholder="Например: R, TV, ⚡"
-                            value={String(selected.parameters.plan_icon ?? "")}
-                            onChange={(e) =>
-                              setSelected({
-                                ...selected,
-                                parameters: {
-                                  ...selected.parameters,
-                                  plan_icon: e.target.value,
-                                },
-                              })
-                            }
-                          />
-                          <datalist id="plan-icon-options">
-                            <option value="R" />
-                            <option value="S" />
-                            <option value="TV" />
-                            <option value="USB" />
-                            <option value="HDMI" />
-                            <option value="⚡" />
-                            <option value="⊗" />
-                            <option value="◉" />
-                          </datalist>
-                        </label>
-                      )}
-                      {isElectrical(selectedKind) && (
-                        <label>
-                          Цвет точки
-                          <span className="color-editor">
-                            <input
-                              aria-label="Цвет обозначения электроустановки"
-                              type="color"
-                              value={String(
-                                selected.parameters.plan_color ??
-                                  selectedKind?.color ??
-                                  "#64748b",
-                              )}
-                              onChange={(e) =>
-                                setSelected({
-                                  ...selected,
-                                  parameters: {
-                                    ...selected.parameters,
-                                    plan_color: e.target.value,
-                                  },
-                                })
-                              }
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const parameters = { ...selected.parameters };
-                                delete parameters.plan_color;
-                                setSelected({ ...selected, parameters });
-                              }}
-                            >
-                              По умолчанию
-                            </button>
-                          </span>
-                        </label>
-                      )}
                       {isPowerSupply(selectedKind) && <div className="supply-linked-list">
                         <label>Питает LED-ленты</label>
                         <ul>{powerStripIds(selected.parameters).map(id=> {const strip=project.elements.find(item=>item.id===id);return <li key={id}>{strip ? stripLabel(strip) : `Лента №${id} не найдена`}</li>;})}</ul>
@@ -2580,17 +2529,18 @@ export default function App() {
                         .filter(
                           ([key]) =>
                             ![
+                              ...appearanceKeys,"manual_length","measured_length",
                               "frame_posts",
                               "frame_group",
                               "plan_icon",
                               "plan_color",
                               "led_strip_id", "led_strip_ids",
                               ...((isPowerSupply(selectedKind) || isLedStrip(selectedKind)) ? ["power_watts"] : []),
-                            ].includes(key),
+                            ].includes(key) && !key.startsWith("custom:"),
                         )
                         .map(([key, value]) => (
                           <label key={key}>
-                            {labels[key] ?? key}
+                            {labels[key] ?? (key.startsWith("custom:")?key.slice(7):key)}
                             <input
                               value={String(value)}
                               disabled={
@@ -2617,6 +2567,13 @@ export default function App() {
                             />
                           </label>
                         ))}
+                      <label>Название этой позиции<input aria-label="Своё название объекта" maxLength={200} value={String(selected.parameters.display_name??'')} placeholder={selectedKind?.name} onChange={event=>setSelected({...selected,parameters:{...selected.parameters,display_name:event.target.value}})}/></label>
+                      {selectedKind?.unit==='м'&&Boolean(selected.geometry?.points?.length)&&<div className="manual-properties">
+                        <label className="check"><input aria-label="Ручной метраж" type="checkbox" checked={selected.parameters.manual_length!==undefined} onChange={event=>{const parameters={...selected.parameters};if(event.target.checked)parameters.manual_length=Number(parameters.length)||1;else delete parameters.manual_length;setSelected({...selected,parameters});}}/>Указать метраж вручную</label>
+                        {selected.parameters.manual_length!==undefined&&<><label>Длина для расчёта, м<input aria-label="Ручная длина, м" type="number" min=".001" max="1000000" step=".001" value={String(selected.parameters.manual_length)} onChange={event=>setSelected({...selected,parameters:{...selected.parameters,manual_length:Number(event.target.value)||.001}})}/></label><small>По геометрии: {String(selected.parameters.measured_length??selected.parameters.length)} м. Калибровка сохраняет ручное значение.</small></>}
+                      </div>}
+                      <CoordinateEditor key={selected.id} item={selected} page={project.pages.find(p=>p.id===selected.page_id)!} onChange={change=>setSelected({...selected,...change})}/>
+                      <CustomFieldsEditor value={selected.parameters} onChange={parameters=>setSelected({...selected,parameters})}/>
                       <label>
                         Комментарий
                         <textarea
@@ -2632,10 +2589,10 @@ export default function App() {
                       <p className="autosave-note">
                         {busy ? "Сохранение…" : "Изменения сохраняются автоматически"}
                       </p>
-                    </>
+                    </fieldset>
                   ) : selectedIds.length > 1 ? (
                     <p className="hint">
-                      Для нескольких объектов доступны операции с рамкой и
+                      Для нескольких объектов доступны рамки, оформление и
                       удаление.
                     </p>
                   ) : (
@@ -2643,7 +2600,12 @@ export default function App() {
                       Выберите объект на плане, чтобы изменить параметры.
                     </p>
                   )}
-                </aside>
+                </section><section data-tool-section="style"><h3>Оформление на плане</h3>
+                  {selected&&selectedIds.length===1 ? <fieldset disabled={busy||project.layers.find(layer=>layer.id===selected.layer_id)?.locked} style={{border:0,padding:0}}><AppearanceEditor value={selected.parameters} onChange={parameters=>setSelected({...selected,parameters})} color={selectedKind?.color??'#38bdf8'} power={isPowerSupply(selectedKind)} line={selectedKind?.unit==='м'} electrical={isElectrical(selectedKind)} allowName={false}/><p className="autosave-note">Изменения сохраняются автоматически</p></fieldset> : selectedIds.length>1 ? <>
+                    <p>Выбрано объектов: {selectedIds.length}. Применятся только изменённые настройки.</p><AppearanceEditor partial value={batchStyle} onChange={setBatchStyle} color="#38bdf8" line allowName={false}/>
+                    <div className="appearance-actions"><ToolButton icon="save" disabled={busy||!Object.keys(batchStyle).length} onClick={()=>void run(async()=>{await api(`/projects/${project.id}/elements/appearance`,"PATCH",{element_ids:selectedIds,changes:batchStyle});setBatchStyle({});const updated=await refresh(project.id);setSelected(current=>current?updated.elements.find(item=>item.id===current.id)??null:null);})}>Применить к выбранным</ToolButton>
+                    <ToolButton icon="refresh" disabled={busy} onClick={()=>void run(async()=>{await api(`/projects/${project.id}/elements/appearance`,"PATCH",{element_ids:selectedIds,changes:Object.fromEntries(appearanceKeys.filter(key=>key!=='display_name').map(key=>[key,null]))});setBatchStyle({});const updated=await refresh(project.id);setSelected(current=>current?updated.elements.find(item=>item.id===current.id)??null:null);})}>Сбросить оформление выбранных</ToolButton></div></> : <p className="hint">Выберите объект на плане или несколько объектов с Ctrl.</p>}
+</section></div></aside>
               )}
               <section className="plan-area">
                 {supplyLinking && <div className="supply-link-toolbar" role="region" aria-label="Привязка LED-лент">
@@ -2694,45 +2656,6 @@ export default function App() {
                     >
                       {rightPanelVisible ? "Правая ▶" : "◀ Правая"}
                     </button>
-                    {page &&
-                      (roomMode ? (
-                        <>
-                          <button
-                            className="active"
-                            disabled={roomPoints.length < 3 || busy}
-                            onClick={() => void run(finishRoom)}
-                          >
-                            Замкнуть область · Enter
-                          </button>
-                          <button
-                            disabled={!roomUndo.length || busy}
-                            onClick={() => undoRoomPoint()}
-                          >
-                            ↶ Отменить точку
-                          </button>
-                          <button disabled={!roomRedo.length || busy} onClick={() => undoRoomPoint(true)}>↷ Вернуть</button>
-                          <label><input type="checkbox" checked={roomSnap} onChange={event => setRoomSnap(event.target.checked)} /> Привязка углов</label>
-                          <button onClick={cancelRoom}>Отмена · Esc</button>
-                        </>
-                      ) : (
-                        <button
-                          onClick={() => {
-                            setRoomMode("new");
-                            setRoomUndo([]);
-                            setRoomRedo([]);
-                            setRoomPoints([]);
-                            setRoomCursor(null);
-                            setEditingRoomId(null);
-                            setRoomMenu(null);
-                            setRoomPointMenu(null);
-                            setObjectMenu(null);
-                            setPlacing(false);
-                            setCalibrating(false);
-                          }}
-                        >
-                          ◇ Область помещения
-                        </button>
-                      ))}
                     {page && <button aria-pressed={showRoomContours} onClick={() => setShowRoomContours(value => !value)}>Контуры помещений</button>}
                     <button
                       className={elementsVisible ? "" : "active clean-plan-toggle"}
@@ -2923,7 +2846,7 @@ export default function App() {
                           onClick={() => {
                             setSelectedIds([item.id]);
                             setSelected(item);
-                            setLeftPanelVisible(true);
+                            setLeftPanelVisible(true);setLeftTool("properties");
                             setObjectMenu(null);
                           }}
                         >
@@ -3543,8 +3466,8 @@ export default function App() {
                                 <polyline
                                   points={coords}
                                   fill="none"
-                                  stroke={supplyLinking?.stripIds.includes(item.id) ? "#2563eb" : t?.color}
-                                  strokeWidth={supplyLinking?.stripIds.includes(item.id) ? 10 : isSelected ? 9 : 6}
+                                  stroke={supplyLinking?.stripIds.includes(item.id) ? "#2563eb" : String(item.parameters.plan_color??t?.color??"#64748b")}
+                                  strokeWidth={supplyLinking?.stripIds.includes(item.id) ? 10 : Number(item.parameters.line_width??2)*3+(isSelected?3:0)} strokeDasharray={item.parameters.line_dash==="dashed"?"12 8":item.parameters.line_dash==="dotted"?"2 7":undefined}
                                   vectorEffect="non-scaling-stroke"
                                 />
                                 {track
@@ -3556,7 +3479,7 @@ export default function App() {
                                         key={index}
                                         d={`M ${-13 * symbolScale} ${-9 * symbolScale} L ${13 * symbolScale} 0 L ${-13 * symbolScale} ${9 * symbolScale} Z`}
                                         transform={`translate(${point.x * 1000} ${point.y * 1000}) rotate(${pointAngle(transformed, index)})`}
-                                        fill={t?.color}
+                                        fill={String(item.parameters.plan_color??t?.color??"#64748b")}
                                         stroke="white"
                                         strokeWidth="3"
                                         vectorEffect="non-scaling-stroke"
@@ -3585,7 +3508,7 @@ export default function App() {
                                         cy={point.y * 1000}
                                         r={13 * symbolScale}
                                         fill="white"
-                                        stroke={t?.color}
+                                        stroke={String(item.parameters.plan_color??t?.color??"#64748b")}
                                         strokeWidth="5"
                                         vectorEffect="non-scaling-stroke"
                                         onPointerDown={(e) => {
@@ -3599,18 +3522,19 @@ export default function App() {
                                         }}
                                       />
                                     ))}
-                                {labelsVisible && (
+                                {Boolean(item.parameters.plan_icon||item.parameters.plan_shape)&&<g transform={`translate(${anchor.x*1000},${anchor.y*1000})`}><PlanSymbol parameters={item.parameters} color={String(item.parameters.plan_color??t?.color??"#64748b")} radius={12*symbolScale}/></g>}
+                                {labelsVisible && item.parameters.plan_label_visible!==false && (
                                   <text
                                     className="object-label"
                                     x={anchor.x * 1000 + 18 * symbolScale}
                                     y={anchor.y * 1000 - 10 * symbolScale}
-                                    fontSize="14"
-                                    fill="#0f172a"
+                                    fontSize={Number(item.parameters.plan_label_size??7)*2}
+                                    fill={String(item.parameters.plan_label_color??"#0f172a")}
                                     stroke="white"
                                     strokeWidth="3"
                                     paintOrder="stroke"
                                   >
-                                    {t?.name} #{item.id}{(isPowerSupply(t) || isLedStrip(t)) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""} ·{" "}
+                                    {String(item.parameters.display_name || t?.name || "")} #{item.id}{(isPowerSupply(t) || isLedStrip(t)) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""} ·{" "}
                                     {String(item.parameters.length)} м
                                   </text>
                                 )}
@@ -3656,6 +3580,7 @@ export default function App() {
                               }}
                             >
                               <PointMarker
+                                parameters={item.parameters}
                                 scale={symbolScale}
                                 powerSupply={isPowerSupply(t)}
                                 color={supplyLinking?.stripIds.includes(item.id) ? "#2563eb" : String(
@@ -3666,18 +3591,18 @@ export default function App() {
                                 selected={supplyLinking ? supplyLinking.stripIds.includes(item.id) : isSelected}
                                 icon={planIcon}
                               />
-                              {labelsVisible && (
+                              {labelsVisible && item.parameters.plan_label_visible!==false && (
                                 <text
                                   className="object-label"
-                                  x={(isPowerSupply(t) ? 27 : 17) * symbolScale}
+                                  x={(isPowerSupply(t) ? 27 : 17) * symbolScale * Number(item.parameters.plan_size??1)}
                                   y="5"
-                                  fontSize="14"
-                                  fill="#0f172a"
+                                  fontSize={Number(item.parameters.plan_label_size??7)*2}
+                                  fill={String(item.parameters.plan_label_color??"#0f172a")}
                                   stroke="white"
                                   strokeWidth="3"
                                   paintOrder="stroke"
                                 >
-                                  {t?.name} #{item.id}{(isPowerSupply(t) || isLedStrip(t)) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""}
+                                  {String(item.parameters.display_name || t?.name || "")} #{item.id}{(isPowerSupply(t) || isLedStrip(t)) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""}
                                 </text>
                               )}
                             </g>
@@ -3784,8 +3709,7 @@ export default function App() {
                 </div>
               </section>
               {rightPanelVisible && (
-                <aside className="right layers-panel" aria-label="Слои и страницы">
-                  <h3 className="element-layers-heading">
+                <aside className={"right layers-panel tool-panel "+(!rightTool?'tool-closed':'')} aria-label="Слои и страницы" data-active-tool={rightTool??''}><div className="tool-panel-content"><section data-tool-section="layers"><h3 className="element-layers-heading">
                     <button type="button" aria-expanded={elementLayersExpanded} aria-controls="element-layers-list" onClick={()=>setElementLayersExpanded(expanded=>!expanded)} title={elementLayersExpanded ? "Свернуть список слоёв" : "Развернуть список слоёв"}>
                       <span>Слои элементов</span>
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
@@ -3797,18 +3721,18 @@ export default function App() {
                       className={"layer " + (l.id === layerId ? "active" : "")}
                       key={l.id}
                     >
-                      <button onClick={() => setLayerId(l.id)}>{l.name}</button>
+                      <button onClick={() => setLayerId(l.id)}>{l.name}</button><ToolButton icon="edit" aria-label={"Переименовать слой "+l.name} title="Переименовать слой" onClick={()=>{const name=prompt('Название слоя',l.name);if(name?.trim())void run(async()=>{await api(`/layers/${l.id}`,"PATCH",{name:name.trim()});await refresh(project.id);});}}/>
                       <button
                         title="Видимость"
                         onClick={() => void run(() => patch(l, "visible"))}
                       >
-                        {l.visible ? "◉" : "○"}
+                        <ActionIcon name={l.visible?"eye":"eyeOff"}/>
                       </button>
                       <button
                         title="Блокировка"
                         onClick={() => void run(() => patch(l, "locked"))}
                       >
-                        {l.locked ? "🔒" : "◇"}
+                        <ActionIcon name={l.locked?"lock":"unlock"}/>
                       </button>
                       <input
                         aria-label={`Экспорт ${l.name}`}
@@ -3819,7 +3743,7 @@ export default function App() {
                     </div>
                   ))}
                   <p className="hint">
-                    ◉ видимость · ◇ блокировка · ☑ ведомость
+                    Видимость · блокировка · включение в ведомость
                   </p>
                   <button
                     onClick={() => {
@@ -3836,7 +3760,7 @@ export default function App() {
                     ＋ Слой
                   </button>
                   </div>
-                  <div className="page-file-tools">                    <label className="upload">
+                  </section><section data-tool-section="pages"><div className="page-file-tools">                    <label className="upload">
                       Загрузить PDF
                       <input
                         type="file"
@@ -3927,7 +3851,7 @@ export default function App() {
                         </label>
                         <button
                           className="page"
-                          onClick={() => {
+                          onClick={()=>void run(async()=>{await saveDraftBeforeNavigation();
                             cancelAlignment();
                             setPageId(p.id);
                             setRoomMode(null);
@@ -3941,7 +3865,7 @@ export default function App() {
                             setLineRedo([]);
                             setLineCursor(null);
                             setCalibrationStart(null);
-                          }}
+                          })}
                         >
                           <img src={`/api/pages/${p.id}/image`} alt="" />
                           <span>{p.name || `Лист ${p.number}`}</span>
@@ -4128,7 +4052,7 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                </aside>
+                </section></div><ToolRail label="Инструменты слоёв и страниц" side="right" active={rightTool} onSelect={selectRightTool} items={[{id:'layers',label:'Слои',icon:'layers'},{id:'pages',label:'Страницы PDF',icon:'pages'},{id:'settings',label:'Настройки',icon:'settings',command:()=>setSettingsOpen(true)}]}/></aside>
               )}
             </main>
           ) : (
@@ -4209,7 +4133,7 @@ export default function App() {
                                     {Object.entries(JSON.parse(row.parameters))
                                       .map(
                                         ([key, value]) =>
-                                          `${labels[key] ?? key}: ${value}`,
+                                          `${labels[key] ?? (key.startsWith("custom:")?key.slice(7):key)}: ${value}`,
                                       )
                                       .join(" · ") || "—"}
                                   </td>
@@ -4246,7 +4170,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.40</span>
+        <span>SMART HOME CALC / 1.0.41</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

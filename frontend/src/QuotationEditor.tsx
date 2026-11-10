@@ -1,3 +1,4 @@
+import SearchSelect from "./SearchSelect";
 import { useEffect, useRef, useState } from "react";
 import "./QuotationEditor.css";
 
@@ -23,6 +24,7 @@ type Props = {
   onDirtyChange:(dirty:boolean)=>void; onBusyChange:(busy:boolean)=>void;
 } & ({projectId:number;quotationId?:never;onAttached?:never} | {quotationId:number;projectId?:never;onAttached:(projectId:number)=>Promise<void>});
 type AttachmentProject={id:number;name:string;quote_revision:number};
+type ImportCheck={line_id:string;page:number;source_total:string|null;issues:string[];verified:boolean;modified?:boolean};
 
 async function api<T>(path:string,method="GET",body?:unknown,signal?:AbortSignal):Promise<T> {
   const response=await fetch("/api"+path,{method,headers:{"Content-Type":"application/json"},
@@ -61,7 +63,8 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
   const [error,setError]=useState(""),[message,setMessage]=useState(""),[mode,setMode]=useState<"client"|"partner">("partner");
   const [preview,setPreview]=useState(false);
   const [attachOpen,setAttachOpen]=useState(false),[attachProjects,setAttachProjects]=useState<AttachmentProject[]>([]),[attachTarget,setAttachTarget]=useState("");
-  const [imported,setImported]=useState<{filename:string;lines:Line[];warnings:string[]}|null>(null);
+  const [imported,setImported]=useState<{filename:string;lines:Line[];warnings:string[];checks?:ImportCheck[]}|null>(null);
+  const [importPage,setImportPage]=useState(0);
   const [importMode,setImportMode]=useState<"append"|"replace">("append");
   const importInput=useRef<HTMLInputElement>(null);
   const [newProduct,setNewProduct]=useState<{lineId:string;name:string;manufacturer:string;sku:string;typeId:string;price:string;currency:string;image:string}|null>(null);
@@ -153,8 +156,12 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
       const response=await fetch("/api"+base+"/import-file",{method:"POST",body:form});
       const value=await response.json();
       if(!response.ok)throw Error(typeof value.detail==="string" ? value.detail : "Не удалось прочитать КП");
-      setImported(value);setImportMode("append");
+      setImported(value);setImportMode("append");setImportPage(0);
     });
+  }
+  function editImportedLine(id:string,patch:Partial<Line>) {
+    setImported(current=>current ? {...current,lines:current.lines.map(line=>line.id===id ? {...line,...patch} : line),
+      checks:current.checks?.map(check=>check.line_id===id ? {...check,modified:true} : check)} : null);
   }
   async function upload(file:File|undefined,done:(value:string)=>void,logo=false) {
     if(!file)return;
@@ -198,7 +205,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
       </article>)}
     </div>
     <div className="quotation-switch"><button className={!preview ? "active" : ""} onClick={()=>setPreview(false)}>Редактировать</button><button className={preview ? "active" : ""} onClick={()=>setPreview(true)}>Предпросмотр</button>
-      <label>Цены<select aria-label="Цены предпросмотра КП" value={mode} onChange={event=>setMode(event.target.value as "client"|"partner")}><option value="partner">Партнёр — со скидками</option><option value="client">Клиент — без скидок</option></select></label>
+      <label>Цены<SearchSelect aria-label="Цены предпросмотра КП" value={mode} onChange={event=>setMode(event.target.value as "client"|"partner")}><option value="partner">Партнёр — со скидками</option><option value="client">Клиент — без скидок</option></SearchSelect></label>
     </div>
     {!preview ? <>
       <fieldset disabled={busy} className="quotation-fields">
@@ -216,7 +223,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
       <div className="quotation-table-wrap"><table className="quotation-table"><thead><tr><th>Позиция / товар</th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Валюта</th><th>Скидка, %</th><th>Сумма</th><th></th></tr></thead>
         <tbody>{doc.lines.map((line,index)=><tr key={line.id} data-quote-line={line.id}>
           <td><div className="quotation-line-name">{line.image && <img src={line.image} alt=""/>}<div><input aria-label={"Наименование строки "+(index+1)} value={line.name} disabled={busy} onChange={e=>editLine(line.id,{name:e.target.value})}/><small>{line.room}{line.source_ids.length ? " · На плане: "+line.source_ids.length : line.source_key.startsWith("frame:") ? " · Рамка по расчёту" : " · Ручная строка"}</small></div></div>
-            <select aria-label={"Товар строки "+(index+1)} value={line.product_id ?? ""} disabled={busy} onChange={e=>void bind(line.id,e.target.value)}><option value="">Без привязки к товару</option>{validProducts(line).map(product=><option key={product.id} value={product.id} disabled={!product.active && product.id!==line.product_id}>{product.manufacturer} · {product.name}{product.sku ? " · "+product.sku : ""}</option>)}</select>
+            <SearchSelect aria-label={"Товар строки "+(index+1)} value={line.product_id ?? ""} disabled={busy} onChange={e=>void bind(line.id,e.target.value)}><option value="">Без привязки к товару</option>{validProducts(line).map(product=><option key={product.id} value={product.id} disabled={!product.active && product.id!==line.product_id}>{product.manufacturer} · {product.name}{product.sku ? " · "+product.sku : ""}</option>)}</SearchSelect>
             <div className="quotation-inline-actions"><button type="button" disabled={busy} onClick={()=>{setError("");setNewProduct({lineId:line.id,name:line.name,manufacturer:line.manufacturer,sku:line.sku,typeId:line.type_id ? String(line.type_id) : "",price:line.unit_price,currency:line.currency,image:line.image});}}>＋ Товар в базу</button>
               <label className="quote-file">Фото<input type="file" accept="image/png,image/jpeg" disabled={busy} aria-label={"Фото строки "+(index+1)} onChange={e=>{void upload(e.target.files?.[0],image=>editLine(line.id,{image}));e.target.value="";}}/></label>
               {line.image && <button disabled={busy} onClick={()=>editLine(line.id,{image:""})}>Убрать фото</button>}
@@ -224,7 +231,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
             <details><summary>Описание и артикул</summary><input aria-label={"Артикул строки "+(index+1)} placeholder="Артикул" value={line.sku} disabled={busy} onChange={e=>editLine(line.id,{sku:e.target.value})}/><textarea aria-label={"Описание строки "+(index+1)} value={line.description} disabled={busy} onChange={e=>editLine(line.id,{description:e.target.value})}/></details>
           </td>
           <td><input aria-label={"Количество строки "+(index+1)} type="number" min=".001" max="1000000" step=".001" value={line.quantity} disabled={busy || Boolean(line.source_key)} onChange={e=>editLine(line.id,{quantity:e.target.value})}/>{line.source_key && <small>Из расчёта</small>}</td>
-          <td><select aria-label={"Единица строки "+(index+1)} value={line.unit} disabled={busy || Boolean(line.source_key) || Boolean(line.product_id)} onChange={e=>editLine(line.id,{unit:e.target.value as "шт"|"м"})}><option value="шт">шт</option><option value="м">м</option></select></td>
+          <td><SearchSelect aria-label={"Единица строки "+(index+1)} value={line.unit} disabled={busy || Boolean(line.source_key) || Boolean(line.product_id)} onChange={e=>editLine(line.id,{unit:e.target.value as "шт"|"м"})}><option value="шт">шт</option><option value="м">м</option></SearchSelect></td>
           <td><input aria-label={"Цена строки "+(index+1)} type="number" min="0" max="1000000000" step=".01" value={line.unit_price} disabled={busy} onChange={e=>editLine(line.id,{unit_price:e.target.value})}/></td>
           <td><input aria-label={"Валюта строки "+(index+1)} maxLength={3} value={line.currency} disabled={busy} onChange={e=>editLine(line.id,{currency:e.target.value.toUpperCase()})}/></td>
           <td><input aria-label={"Скидка строки "+(index+1)} type="number" min="0" max="100" step=".01" placeholder="Общая" value={line.discount ?? ""} disabled={busy} onChange={e=>editLine(line.id,{discount:e.target.value==="" ? null : e.target.value})}/><small>{line.discount===null ? "По общей" : "Индивидуальная"}</small></td>
@@ -260,7 +267,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
       });}}>
         <fieldset disabled={busy}>
           <label>Название<input autoFocus aria-label="Название нового товара КП" required maxLength={500} value={newProduct.name} onChange={e=>setNewProduct({...newProduct,name:e.target.value})}/></label>
-          <label>Номенклатура<select aria-label="Номенклатура нового товара КП" required={!doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:")} value={newProduct.typeId} onChange={e=>setNewProduct({...newProduct,typeId:e.target.value})}><option value="">{doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:") ? "Рамка по расчёту" : "Выберите номенклатуру"}</option>{types.filter(type=>type.active && type.unit===doc.lines.find(line=>line.id===newProduct.lineId)?.unit && (!doc.lines.find(line=>line.id===newProduct.lineId)?.source_ids.length || type.id===doc.lines.find(line=>line.id===newProduct.lineId)?.type_id)).map(type=><option key={type.id} value={type.id}>{type.name}</option>)}</select></label>
+          <label>Номенклатура<SearchSelect aria-label="Номенклатура нового товара КП" required={!doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:")} value={newProduct.typeId} onChange={e=>setNewProduct({...newProduct,typeId:e.target.value})}><option value="">{doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:") ? "Рамка по расчёту" : "Выберите номенклатуру"}</option>{types.filter(type=>type.active && type.unit===doc.lines.find(line=>line.id===newProduct.lineId)?.unit && (!doc.lines.find(line=>line.id===newProduct.lineId)?.source_ids.length || type.id===doc.lines.find(line=>line.id===newProduct.lineId)?.type_id)).map(type=><option key={type.id} value={type.id}>{type.name}</option>)}</SearchSelect></label>
           <label>Производитель<input aria-label="Производитель нового товара КП" required list="quote-manufacturers" value={newProduct.manufacturer} onChange={e=>setNewProduct({...newProduct,manufacturer:e.target.value})}/></label><datalist id="quote-manufacturers">{catalogue.manufacturers.map(m=><option key={m.id} value={m.name}/>)}</datalist>
           <label>Артикул<input aria-label="Артикул нового товара КП" value={newProduct.sku} onChange={e=>setNewProduct({...newProduct,sku:e.target.value})}/></label>
           <label>Цена<input aria-label="Цена нового товара КП" required type="number" min="0" max="1000000000" step=".01" value={newProduct.price} onChange={e=>setNewProduct({...newProduct,price:e.target.value})}/></label>
@@ -274,7 +281,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
     {attachOpen && <QuoteDialog title="Прикрепить КП к проекту" busy={busy} onClose={()=>{setAttachOpen(false);setError("");}}>
       <h2>Прикрепить КП к проекту</h2>
       <p>КП целиком перейдёт в выбранный проект: позиции, цены, скидки, реквизиты и фотографии сохранятся.</p>
-      <label>Проект<select aria-label="Проект для КП" disabled={busy} value={attachTarget} onChange={e=>setAttachTarget(e.target.value)}><option value="">Выберите проект</option>{attachProjects.map(project=><option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+      <label>Проект<SearchSelect aria-label="Проект для КП" disabled={busy} value={attachTarget} onChange={e=>setAttachTarget(e.target.value)}><option value="">Выберите проект</option>{attachProjects.map(project=><option key={project.id} value={project.id}>{project.name}</option>)}</SearchSelect></label>
       {attachProjects.length===0 && <p className="hint">Сначала создайте проект, затем вернитесь к этому КП и прикрепите его.</p>}
       {attachProjects.find(project=>project.id===Number(attachTarget))?.quote_revision ? <p className="hint">Текущее КП проекта будет сохранено отдельно в списке «КП без проекта».</p> : null}
       <button disabled={busy} onClick={()=>void work(async()=>setAttachProjects(await api<AttachmentProject[]>("/quotations/project-options")))}>Обновить список проектов</button>
@@ -289,11 +296,28 @@ export default function QuotationEditor({projectId,quotationId,projectName,types
     {imported && <QuoteDialog title="Проверка импорта КП" busy={busy} className="quotation-import-modal" onClose={()=>{setImported(null);setError("");}}>
       <h2>{imported.filename}</h2><p>Распознано позиций: {imported.lines.length}. Проверьте цены и количество. После переноса все строки можно редактировать.</p>
       {imported.warnings.map((warning,index)=><p key={index} className="warning">{warning}</p>)}
-      <label>Перенос<select aria-label="Режим импорта КП" value={importMode} onChange={e=>setImportMode(e.target.value as "append"|"replace")}><option value="append">Добавить к текущим позициям</option><option value="replace">Заменить позиции текущего КП</option></select></label>
-      <div className="quotation-import-table"><table><thead><tr><th>Наименование</th><th>Количество</th><th>Ед.</th><th>Цена</th><th>Валюта</th></tr></thead><tbody>{imported.lines.slice(0,100).map((line,index)=><tr key={line.id}><td><input aria-label={"Импорт: наименование "+(index+1)} value={line.name} onChange={e=>setImported({...imported,lines:imported.lines.map((item,i)=>i===index ? {...item,name:e.target.value} : item)})}/></td><td><input aria-label={"Импорт: количество "+(index+1)} type="number" min=".001" step=".001" value={line.quantity} onChange={e=>setImported({...imported,lines:imported.lines.map((item,i)=>i===index ? {...item,quantity:e.target.value} : item)})}/></td><td>{line.unit}</td><td><input aria-label={"Импорт: цена "+(index+1)} type="number" min="0" step=".01" value={line.unit_price} onChange={e=>setImported({...imported,lines:imported.lines.map((item,i)=>i===index ? {...item,unit_price:e.target.value} : item)})}/></td><td>{line.currency}</td></tr>)}</tbody></table></div>
-      {imported.lines.length>100 && <p className="hint">Показаны первые 100 строк. Все {imported.lines.length} позиций будут перенесены; остальные можно проверить в редакторе.</p>}
+      <label>Перенос<SearchSelect aria-label="Режим импорта КП" value={importMode} onChange={e=>setImportMode(e.target.value as "append"|"replace")}><option value="append">Добавить к текущим позициям</option><option value="replace">Заменить позиции текущего КП</option></SearchSelect></label>
+      {!!imported.checks?.length && <p className="hint">Суммы совпали с PDF: {imported.checks.filter(check=>check.verified&&!check.modified&&imported.lines.some(line=>line.id===check.line_id)).length}. Отметка относится к исходным значениям. Цена за единицу и скидка перенесены раздельно.</p>}
+      <div className="quotation-import-table"><table><thead><tr><th>Наименование / артикул</th><th>Количество</th><th>Ед.</th><th>Цена за ед.</th><th>Скидка %</th><th>Валюта</th><th>Проверка PDF</th><th></th></tr></thead><tbody>{imported.lines.slice(importPage*100,(importPage+1)*100).map((line,offset)=>{
+        const index=importPage*100+offset,check=imported.checks?.find(item=>item.line_id===line.id);
+        return <tr key={line.id} className={check?.issues.length ? "quotation-import-review" : ""}>
+          <td><input aria-label={"Импорт: наименование "+(index+1)} value={line.name} onChange={e=>editImportedLine(line.id,{name:e.target.value})}/><input aria-label={"Импорт: артикул "+(index+1)} placeholder="Артикул" value={line.sku} onChange={e=>editImportedLine(line.id,{sku:e.target.value})}/></td>
+          <td><input aria-label={"Импорт: количество "+(index+1)} type="number" min=".001" step=".001" value={line.quantity} onChange={e=>editImportedLine(line.id,{quantity:e.target.value})}/></td>
+          <td><SearchSelect aria-label={"Импорт: единица "+(index+1)} value={line.unit} onChange={e=>editImportedLine(line.id,{unit:e.target.value as Line["unit"]})}><option>шт</option><option>м</option></SearchSelect></td>
+          <td><input aria-label={"Импорт: цена "+(index+1)} type="number" min="0" step=".01" value={line.unit_price} onChange={e=>editImportedLine(line.id,{unit_price:e.target.value})}/></td>
+          <td><input aria-label={"Импорт: скидка "+(index+1)} type="number" min="0" max="100" step=".01" placeholder="Нет" value={line.discount??""} onChange={e=>editImportedLine(line.id,{discount:e.target.value||null})}/></td>
+          <td><input aria-label={"Импорт: валюта "+(index+1)} maxLength={3} value={line.currency} onChange={e=>editImportedLine(line.id,{currency:e.target.value.toUpperCase()})}/></td>
+          <td>{check ? <><small>Стр. {check.page}{check.source_total!==null ? " · Сумма "+cash(check.source_total)+" "+line.currency : ""}</small><small>{check.modified ? "Изменено вручную" : check.verified ? "Сумма совпала" : "Проверьте строку"}</small>{check.issues.map((issue,i)=><small key={i} className="warning">{issue}</small>)}</> : "—"}</td>
+          <td><button aria-label={"Удалить импортированную строку "+(index+1)} onClick={()=>{
+            const lines=imported.lines.filter(item=>item.id!==line.id);setImported({...imported,lines});setImportPage(Math.min(importPage,Math.max(0,Math.ceil(lines.length/100)-1)));
+          }}>×</button></td>
+        </tr>;
+      })}</tbody></table></div>
+      {imported.lines.length>100 && <div className="quotation-import-pages"><button disabled={importPage===0} onClick={()=>setImportPage(importPage-1)}>Назад</button><span>Строки {importPage*100+1}–{Math.min((importPage+1)*100,imported.lines.length)} из {imported.lines.length}</span><button disabled={(importPage+1)*100>=imported.lines.length} onClick={()=>setImportPage(importPage+1)}>Далее</button></div>}
       {error && <p className="catalog-error" role="alert">{error}</p>}
       <div className="modal-actions"><button onClick={()=>setImported(null)}>Отмена</button><button className="quote-primary" onClick={()=>{
+        const invalid=imported.lines.findIndex(line=>!line.name.trim() || !/^\d+(?:[.]\d{1,3})?$/.test(line.quantity) || +line.quantity<=0 || +line.quantity>1000000 || !/^\d+(?:[.]\d{1,2})?$/.test(line.unit_price) || +line.unit_price>1000000000 || !/^[A-Z]{3}$/.test(line.currency) || (line.discount!==null && (!Number.isFinite(+line.discount) || +line.discount<0 || +line.discount>100)));
+        if(!imported.lines.length || invalid>=0){setError(invalid>=0 ? "Проверьте название, количество, цену, валюту и скидку в строке "+(invalid+1) : "Нет позиций для переноса");return;}
         if((importMode==="append" ? doc.lines.length : 0)+imported.lines.length>5000){setError("В КП допускается не больше 5000 строк");return;}
         change(q=>({...q,lines:importMode==="append" ? [...q.lines,...imported.lines] : imported.lines}),true);
         setImported(null);setMessage("Позиции перенесены. Проверьте КП и сохраните изменения.");
@@ -312,7 +336,7 @@ function QuoteDialog({title,busy,onClose,children,className=""}:{title:string;bu
   },[]);
   useEffect(()=>{
     const key=(event:KeyboardEvent)=>{
-      if(event.key==="Escape"){event.preventDefault();event.stopImmediatePropagation();if(!busy)onClose();}
+      if(event.key==="Escape" && !(event.target as HTMLElement)?.closest("[data-search-popup]")){event.preventDefault();event.stopImmediatePropagation();if(!busy)onClose();}
     };
     window.addEventListener("keydown",key,true);return()=>window.removeEventListener("keydown",key,true);
   },[busy,onClose]);

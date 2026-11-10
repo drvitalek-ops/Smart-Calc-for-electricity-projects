@@ -87,6 +87,10 @@ try {
         if ($pdfBytes.Length -lt 1000 -or [Text.Encoding]::ASCII.GetString($pdfBytes,0,4) -ne "%PDF") {
             throw "Packaged quotation PDF is invalid"
         }
+        $pdfImport = Invoke-RestMethod -Uri "$quoteUrl/import-file" -Method Post -Form @{file=(Get-Item $quotePdf)} -TimeoutSec 30
+        if ($pdfImport.lines.Count -ne 1 -or $pdfImport.lines[0].unit_price -ne "100.00" -or $pdfImport.lines[0].quantity -ne "2.000" -or -not $pdfImport.checks[0].verified) {
+            throw "Packaged PDF quotation import failed price, quantity or arithmetic verification"
+        }
         $wordPath = Join-Path $workDirectory "quotation-smoke.docx"
         & $PythonBinary -c 'import sys; from docx import Document; d=Document(); t=d.add_table(rows=1,cols=3); [setattr(c,"text",v) for c,v in zip(t.rows[0].cells,["Name","Price","Quantity"])]; [setattr(c,"text",v) for c,v in zip(t.add_row().cells,["Imported lamp","25.00","3"])]; d.save(sys.argv[1])' $wordPath
         $wordResult = Invoke-RestMethod -Uri "$quoteUrl/import-file" -Method Post -Form @{file=(Get-Item $wordPath)} -TimeoutSec 20

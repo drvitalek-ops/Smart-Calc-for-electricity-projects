@@ -5,7 +5,7 @@ from .nomenclature import nomenclature_key
 
 CATEGORY_ORDER = {name: index for index, name in enumerate((
     'Электроустановки', 'Рамки', 'Умные устройства', 'Освещение',
-    'LED-подсветка', 'Датчики', 'Электрокарнизы',
+    'LED-подсветка', 'Профиль', 'Датчики', 'Электрокарнизы',
 ))}
 
 

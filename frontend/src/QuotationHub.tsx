@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import {matchesSearch} from "./SearchSelect";
 import QuotationEditor, { type QuotationKind } from "./QuotationEditor";
 
 type Draft={id:number;revision:number;number:string;customer:string;date:string;lines_count:number};
@@ -14,6 +15,7 @@ async function api<T>(path:string,method="GET",body?:unknown):Promise<T> {
 }
 
 export default function QuotationHub({types,onChanged,onOpenProject,onDirtyChange,onBusyChange}:Props) {
+  const [search,setSearch]=useState("");
   const [listing,setListing]=useState<Listing>({standalone:[],projects:[]});
   const [selectedId,setSelectedId]=useState<number|null>(null),[busy,setBusy]=useState(false),[dirty,setDirty]=useState(false),[error,setError]=useState("");
   const busyChanged=useCallback((value:boolean)=>{setBusy(value);onBusyChange(value);},[onBusyChange]);
@@ -37,9 +39,10 @@ export default function QuotationHub({types,onChanged,onOpenProject,onDirtyChang
     </div>
     {error && <p role="alert" className="catalog-error">{error}</p>}
     {busy && <p role="status">Загрузка списка КП…</p>}
+    <label>Поиск КП<input type="search" aria-label="Поиск КП" placeholder="Номер, клиент или проект…" value={search} onChange={event=>setSearch(event.target.value)}/></label>
     <h3>КП без проекта</h3>
     {!listing.standalone.length && !busy && <p className="hint">Здесь появятся самостоятельно созданные КП. В них доступны товары, фотографии, импорт документов, скидки и оба PDF.</p>}
-    <div className="quotation-cards">{listing.standalone.map(item=><article key={item.id} data-standalone-quote={item.id}>
+    <div className="quotation-cards">{listing.standalone.filter(item=>matchesSearch(item.number+" "+item.customer,search)).map(item=><article key={item.id} data-standalone-quote={item.id}>
       <div><strong>КП № {item.number || item.id}</strong><p>{item.customer || "Клиент пока не указан"}</p><small>{item.date} · Позиций: {item.lines_count}</small></div>
       <div><button disabled={busy} onClick={()=>setSelectedId(item.id)} aria-label={"Открыть КП "+item.number}>Открыть</button>
         <button disabled={busy} className="quote-delete" aria-label={"Удалить КП "+item.number} onClick={()=>void work(async()=>{
@@ -49,7 +52,7 @@ export default function QuotationHub({types,onChanged,onOpenProject,onDirtyChang
     </article>)}</div>
     <h3>КП проектов</h3>
     {!listing.projects.length && !busy && <p className="hint">КП, связанные с проектами, появятся здесь после создания или привязки.</p>}
-    <div className="quotation-cards">{listing.projects.map(item=><article key={item.project_id}>
+    <div className="quotation-cards">{listing.projects.filter(item=>matchesSearch(item.name+" "+item.number+" "+item.customer,search)).map(item=><article key={item.project_id}>
       <div><strong>{item.name}</strong><p>КП № {item.number} {item.customer ? "· "+item.customer : ""}</p><small>Позиций: {item.lines_count}</small></div>
       <button disabled={busy} onClick={()=>void work(()=>onOpenProject(item.project_id))} aria-label={"Открыть КП проекта "+item.name}>Открыть КП проекта</button>
     </article>)}</div>

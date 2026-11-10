@@ -37,7 +37,7 @@ def test_health_identifies_desktop_backend(client,monkeypatch):
     health=client.get('/api/health')
     assert health.status_code==200
     assert health.json()=={
-        'status':'ok','version':'1.0.39','instance':'test-instance',
+        'status':'ok','version':'1.0.40','instance':'test-instance',
     }
 
 def test_full_workflow_and_exports(client):
@@ -826,7 +826,7 @@ def test_pdf_creates_named_project_with_all_pages_atomically(client,monkeypatch)
     project=client.get(f"/api/projects/{response.json()['id']}").json()
     assert project['name']=='Квартира из PDF'
     assert len(project['pages'])==2 and [item['number'] for item in project['pages']]==[1,2]
-    assert len(project['layers'])==6
+    assert len(project['layers'])==7 and 'Профиль' in {layer['name'] for layer in project['layers']}
     assert client.get(f"/api/pages/{project['pages'][0]['id']}/image").content.startswith(b'\x89PNG')
     projects_before=client.get('/api/projects').json()
     files_before=set(main_module.STORAGE.iterdir())
@@ -1126,3 +1126,18 @@ def test_blanking_plate_and_cable_outlet_frames_exports_and_restore(client):
     updated=client.get('/api/types').json()
     for name in names:
         assert sum(item['name']==name for item in updated)==1
+
+
+def test_profile_category_is_measured_and_available_in_quotation(client):
+    pid,body=setup(client)
+    profile=next(item for item in client.get('/api/types').json() if item['name']=='Алюминиевый профиль')
+    assert profile['category']=='Профиль' and profile['unit']=='м'
+    project=client.get(f'/api/projects/{pid}').json()
+    body.update(type_id=profile['id'],layer_id=next(layer['id'] for layer in project['layers'] if layer['name']=='Профиль'),parameters={'length':2.5})
+    created=client.post(f'/api/projects/{pid}/elements',json=body)
+    assert created.status_code==201,created.text
+    row=next(row for row in client.get(f'/api/projects/{pid}/report').json()['rows'] if row['type_id']==profile['id'])
+    assert row['unit']=='м' and row['quantity']==2.5
+    quote=client.get(f'/api/projects/{pid}/quotation').json()
+    assert len(quote['lines'])==1 and quote['lines'][0]['type_id']==profile['id']
+    assert float(quote['lines'][0]['quantity'])==2.5

@@ -94,6 +94,8 @@ jobs:
           PY
           node frontend/tests/standalone-quotations.cjs
           node frontend/tests/quotations.cjs
+          node frontend/tests/pdf-quotation-import.cjs
+          node frontend/tests/search-and-scroll.cjs
 
       - name: Validate Docker Compose
         run: docker compose config --quiet

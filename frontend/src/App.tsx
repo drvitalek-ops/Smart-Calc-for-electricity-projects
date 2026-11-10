@@ -1,3 +1,4 @@
+import SearchSelect, {matchesSearch,SearchHighlight} from "./SearchSelect";
 import { useEffect, useRef, useState } from "react";
 import QuotationEditor from "./QuotationEditor";
 import QuotationHub from "./QuotationHub";
@@ -475,7 +476,7 @@ function AppModal({title,onClose,busy=false,children,className=""}:{title:string
   },[]);
   useEffect(()=> {
     const keyboard=(event:KeyboardEvent)=> {
-      if(event.key==="Escape") {event.preventDefault();event.stopImmediatePropagation();if(!busy)onClose();}
+      if(event.key==="Escape" && !(event.target as HTMLElement)?.closest("[data-search-popup]")) {event.preventDefault();event.stopImmediatePropagation();if(!busy)onClose();}
       if(event.key==="Tab" && !modal.current?.contains(document.activeElement)) {
         event.preventDefault();modal.current?.querySelector<HTMLElement>('button:not([disabled]),input:not([disabled]),select')?.focus();
       }
@@ -549,20 +550,20 @@ function NomenclatureEditor({types,onChanged}:{types:Kind[];onChanged:()=>Promis
         <h3>{form.id ? "Редактирование позиции" : "Новая позиция"}</h3>
         <label>Название<input aria-label="Название номенклатуры" required maxLength={200} value={form.name} onChange={event=>setForm({...form,name:event.target.value})} /></label>
         <label>Категория<input aria-label="Категория номенклатуры" required list="nomenclature-categories" maxLength={200} value={form.category} onChange={event=>setForm({...form,category:event.target.value})} /></label>
-        <datalist id="nomenclature-categories">{[...new Set(["Электроустановки","Освещение","LED-подсветка","Датчики","Электрокарнизы","Умные устройства",...types.map(item=>item.category)])].map(category=><option key={category} value={category} />)}</datalist>
-        <label>Единица измерения<select aria-label="Единица номенклатуры" value={form.unit} onChange={event=>setForm({...form,unit:event.target.value,defaults:event.target.value === "м" ? {length:1} : {quantity:1}})}><option value="шт">Штуки</option><option value="м">Метры</option></select></label>
+        <datalist id="nomenclature-categories">{[...new Set(["Электроустановки","Освещение","LED-подсветка","Датчики","Электрокарнизы","Умные устройства","Профиль",...types.map(item=>item.category)])].map(category=><option key={category} value={category} />)}</datalist>
+        <label>Единица измерения<SearchSelect aria-label="Единица номенклатуры" value={form.unit} onChange={event=>setForm({...form,unit:event.target.value,defaults:event.target.value === "м" ? {length:1} : {quantity:1}})}><option value="шт">Штуки</option><option value="м">Метры</option></SearchSelect></label>
         <label>Цвет на плане<input aria-label="Цвет номенклатуры" type="color" value={form.color} onChange={event=>setForm({...form,color:event.target.value})} /></label>
         <label>Рекомендуемый IP во влажной зоне<input aria-label="Минимальный IP номенклатуры" type="number" min="0" max="69" placeholder="Не задан" value={form.wet_min_ip} onChange={event=>setForm({...form,wet_min_ip:event.target.value})} /></label>
         <h3>Параметры по умолчанию</h3>
         {Object.entries(form.defaults).map(([key,value])=><label key={key} className="nomenclature-param">{labels[key] ?? key}<span><input aria-label={`По умолчанию: ${labels[key] ?? key}`} type={typeof value === "number" ? "number" : "text"} step="any" value={String(value)} onChange={event=>setForm({...form,defaults:{...form.defaults,[key]:typeof value === "number" ? Number(event.target.value) : event.target.value}})} /><button type="button" aria-label={`Убрать параметр ${labels[key] ?? key}`} onClick={()=> {const defaults={...form.defaults};delete defaults[key];setForm({...form,defaults});}}>×</button></span></label>)}
-        <label>Добавить характеристику<select aria-label="Новая характеристика" value={parameter} onChange={event=>setParameter(event.target.value)}>{Object.entries(labels).filter(([key])=>!["led_strip","frame_posts","contact_type"].includes(key)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+        <label>Добавить характеристику<SearchSelect aria-label="Новая характеристика" value={parameter} onChange={event=>setParameter(event.target.value)}>{Object.entries(labels).filter(([key])=>!["led_strip","frame_posts","contact_type"].includes(key)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</SearchSelect></label>
         <button type="button" onClick={()=>setForm({...form,defaults:{...form.defaults,[parameter]:form.defaults[parameter] ?? (["quantity","length","ip","voltage","keys","power_watts","connectors","end_caps"].includes(parameter) ? 1 : "")}})}>Добавить характеристику</button>
         <button className="primary" disabled={saving}>{form.id ? "Сохранить позицию" : "Добавить позицию"}</button>
         {form.id>0 && <button type="button" onClick={()=>setForm(empty())}>Отменить редактирование позиции</button>}
         <p className="hint">Название и цвет обновляются во всех проектах. Для используемой позиции категория и единица измерения защищены.</p>
       </form>
       <div className="nomenclature-list">
-        <label>Группа<select aria-label="Группа номенклатуры" value={groupFilter} onChange={event=>setGroupFilter(event.target.value)}><option value="">Все группы</option>{groups.map(group=><option key={group.label} value={group.label}>{group.label}</option>)}</select></label>
+        <label>Группа<SearchSelect aria-label="Группа номенклатуры" value={groupFilter} onChange={event=>setGroupFilter(event.target.value)}><option value="">Все группы</option>{groups.map(group=><option key={group.label} value={group.label}>{group.label}</option>)}</SearchSelect></label>
         <label>Поиск<input aria-label="Поиск номенклатуры" type="search" value={search} onChange={event=>setSearch(event.target.value)} /></label>
         <label className="check"><input type="checkbox" checked={showDeleted} onChange={event=>setShowDeleted(event.target.checked)} />Показывать удалённые</label>
         <div className="nomenclature-rows">{groupKinds(visible).map(group=><section className="nomenclature-group" key={group.label} aria-label={`Группа ${group.label}`}><h4>{group.label}<small>{group.items.length}</small></h4>{group.items.map(item=><article key={item.id} className={!item.active ? "inactive" : ""} data-type-id={item.id}>
@@ -590,6 +591,7 @@ function CatalogManager({
   onChanged: () => Promise<void>;
 }) {
   const [tab,setTab]=useState<"types"|"products">("types");
+  const [databaseSearch,setDatabaseSearch]=useState("");
   const blank = {
     id: 0,
     name: "",
@@ -691,6 +693,7 @@ function CatalogManager({
           <button className={tab==="products" ? "active" : ""} onClick={()=>setTab("products")}>Товары и цены</button>
         </nav>
         {tab==="types" ? <NomenclatureEditor types={types} onChanged={onChanged} /> : <>
+        <label>Поиск в базе<input type="search" aria-label="Поиск в базе товаров" placeholder="Название, артикул, производитель, категория…" value={databaseSearch} onChange={event=>setDatabaseSearch(event.target.value)}/></label>
         <div className="catalog-grid">
           <div>
             <h3>Производители</h3>
@@ -728,7 +731,7 @@ function CatalogManager({
               </button>
             </form>
             <div className="tag-list">
-              {catalog.manufacturers.map((item) => (
+              {catalog.manufacturers.filter(item=>matchesSearch(item.name,databaseSearch)).map((item) => (
                 <button
                   type="button"
                   key={item.id}
@@ -780,7 +783,7 @@ function CatalogManager({
               </button>
             </form>
             <div className="tag-list">
-              {catalog.suppliers.map((item) => (
+              {catalog.suppliers.filter(item=>matchesSearch(item.name+" "+item.contact,databaseSearch)).map((item) => (
                 <button
                   type="button"
                   key={item.id}
@@ -855,7 +858,7 @@ function CatalogManager({
               </label>
               <label>
                 Тип
-                <select
+                <SearchSelect
                   required
                   value={form.type_id || ""}
                   onChange={(e) =>
@@ -863,11 +866,11 @@ function CatalogManager({
                   }
                 >
                   <KindOptions types={types.filter(item=>item.active || item.id===form.type_id)} showUnits />
-                </select>
+                </SearchSelect>
               </label>
               <label>
                 Производитель
-                <select
+                <SearchSelect
                   required
                   value={form.manufacturer_id || ""}
                   onChange={(e) =>
@@ -882,11 +885,11 @@ function CatalogManager({
                       {item.name}
                     </option>
                   ))}
-                </select>
+                </SearchSelect>
               </label>
               <label>
                 Поставщик
-                <select
+                <SearchSelect
                   value={form.supplier_id || ""}
                   onChange={(e) =>
                     setForm({ ...form, supplier_id: +e.target.value })
@@ -898,7 +901,7 @@ function CatalogManager({
                       {item.name}
                     </option>
                   ))}
-                </select>
+                </SearchSelect>
               </label>
               <div className="price-fields">
                 <label>
@@ -955,16 +958,16 @@ function CatalogManager({
           </div>
           <div className="product-list">
             <h3>Товары · {catalog.products.length}</h3>
-            {catalog.products.map((item) => (
+            {catalog.products.filter(item=>matchesSearch([item.name,item.sku,item.manufacturer,item.supplier,types.find(type=>type.id===item.type_id)?.name,types.find(type=>type.id===item.type_id)?.category].join(" "),databaseSearch)).map((item) => (
               <button
                 type="button"
                 key={item.id}
                 className={!item.active ? "inactive" : ""}
                 onClick={() => edit(item)}
               >
-                <strong>{item.name}</strong>
+                <strong><SearchHighlight text={item.name} query={databaseSearch}/></strong>
                 <span>
-                  {item.manufacturer} · {item.sku || "без артикула"}
+                  <SearchHighlight text={item.manufacturer+" · "+(item.sku || "без артикула")} query={databaseSearch}/>
                 </span>
                 <span>
                   {item.price} {item.currency} / {item.unit}
@@ -2081,7 +2084,7 @@ export default function App() {
           />
         </label>
         <div className="project-controls">
-        <select
+        <SearchSelect
           aria-label="Проект"
           disabled={busy || quoteBusy}
           value={project?.id ?? ""}
@@ -2098,7 +2101,7 @@ export default function App() {
               {p.name}
             </option>
           ))}
-        </select>
+        </SearchSelect>
         <button className="icon-button delete-project" disabled={busy || quoteBusy || !project} onClick={()=>{setDeleteProjectError("");setDeletingProject(project);}} title="Удалить выбранный проект"><ToolIcon name="trash"/>Удалить проект</button>
         <form
           onSubmit={(e) => {
@@ -2205,14 +2208,14 @@ export default function App() {
               {leftPanelVisible && (
                 <aside aria-label="Объекты и рамки" className="objects-panel" inert={Boolean(supplyLinking)}>
                   <h3>Библиотека</h3>
-                  <label>Группа<select aria-label="Группа элементов" value={libraryGroup} onChange={event=> {
+                  <label>Группа<SearchSelect aria-label="Группа элементов" value={libraryGroup} onChange={event=> {
                     const group=event.target.value;
                     setLibraryGroup(group);
                     const items=availableTypes.filter(item=>!group || (item.group ?? item.category)===group);
                     if(!items.some(item=>item.id===typeId))setTypeId(items[0]?.id ?? null);
                     setPlacing(false);setCalibrating(false);setCalibrationStart(null);setLinePoints([]);setLineRedo([]);setLineCursor(null);
-                  }}><option value="">Все группы</option>{groupKinds(availableTypes).map(group=><option key={group.label} value={group.label}>{group.label}</option>)}</select></label>
-                  <select
+                  }}><option value="">Все группы</option>{groupKinds(availableTypes).map(group=><option key={group.label} value={group.label}>{group.label}</option>)}</SearchSelect></label>
+                  <SearchSelect
                     aria-label="Тип элемента"
                     value={typeId ?? ""}
                     onChange={(e) => {
@@ -2223,7 +2226,7 @@ export default function App() {
                     }}
                   >
                     <KindOptions types={libraryTypes} />
-                  </select>
+                  </SearchSelect>
                   <p className="hint">
                     {kind?.group ?? kind?.category} · {kind?.unit}
                     {kind?.unit === "м" && !page?.meters_per_point
@@ -2232,7 +2235,7 @@ export default function App() {
                   </p>
                   <label>
                     Помещение
-                    <select
+                    <SearchSelect
                       value={roomId ?? ""}
                       onChange={(e) =>
                         setRoomId(e.target.value ? +e.target.value : null)
@@ -2245,7 +2248,7 @@ export default function App() {
                           {r.wet ? " · влажная зона" : ""}
                         </option>
                       ))}
-                    </select>
+                    </SearchSelect>
                   </label>
                   <button
                     className="primary"
@@ -2345,7 +2348,7 @@ export default function App() {
                       </p>
                       <label>
                         Количество постов
-                        <select
+                        <SearchSelect
                           aria-label="Количество постов рамки"
                           value={framePosts}
                           onChange={(e) => setFramePosts(+e.target.value)}
@@ -2360,7 +2363,7 @@ export default function App() {
                                   : "постов"}
                             </option>
                           ))}
-                        </select>
+                        </SearchSelect>
                       </label>
                       <button
                         className="primary"
@@ -2421,7 +2424,7 @@ export default function App() {
                       {typeEditorOpen && (
                         <label className="nomenclature-editor">
                           Номенклатура для замены
-                          <select
+                          <SearchSelect
                             autoFocus
                             aria-label="Номенклатура объекта"
                             value={selected.type_id}
@@ -2432,7 +2435,7 @@ export default function App() {
                           >
                             {selectedKind?.active === false && <option value={selectedKind.id} disabled>{selectedKind.name} · удалена из библиотеки</option>}
                             <KindOptions types={types.filter(type=>type.active && type.unit===selectedKind?.unit)} />
-                          </select>
+                          </SearchSelect>
                           <small>
                             При замене привязка к товару будет сброшена.
                           </small>
@@ -2454,7 +2457,7 @@ export default function App() {
                       )}
                       <label>
                         Помещение
-                        <select
+                        <SearchSelect
                           aria-label="Помещение объекта"
                           value={selected.room_id ?? ""}
                           onChange={(e) =>
@@ -2470,11 +2473,11 @@ export default function App() {
                               {r.name}
                             </option>
                           ))}
-                        </select>
+                        </SearchSelect>
                       </label>
                       <label>
                         Товар
-                        <select
+                        <SearchSelect
                           aria-label="Товар объекта"
                           value={selected.product_id ?? ""}
                           onChange={(e) =>
@@ -2497,7 +2500,7 @@ export default function App() {
                                 {p.currency}
                               </option>
                             ))}
-                        </select>
+                        </SearchSelect>
                       </label>
                       {isElectrical(selectedKind) && (
                         <label>
@@ -4243,7 +4246,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.39</span>
+        <span>SMART HOME CALC / 1.0.40</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

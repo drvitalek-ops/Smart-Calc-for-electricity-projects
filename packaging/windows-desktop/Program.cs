@@ -25,7 +25,7 @@ internal static class Program
 
 internal sealed class MainWindow : Form
 {
-    private const string ApplicationVersion = "1.0.39";
+    private const string ApplicationVersion = "1.0.40";
     private static readonly string InstallDirectory = Path.GetDirectoryName(Environment.ProcessPath)
         ?? AppContext.BaseDirectory;
     private readonly int backendPort = FindAvailablePort();

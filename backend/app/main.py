@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session as DbSession
 from .db import Base, engine, session, Session
 from .models import (
     Project, Page, Room, Layer, Element, ElementType, Manufacturer, Supplier,
-    Product, Report,
+    Product, Report, Quotation,
 )
 from .catalog import LAYERS, seed
 from .nomenclature import nomenclature_key, nomenclature_group, nomenclature_group_order
@@ -101,7 +101,7 @@ async def lifespan(app):
         db.commit()
     yield
 
-APP_VERSION = '1.0.37'
+APP_VERSION = '1.0.38'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -304,6 +304,7 @@ class BackupManifest(BaseModel):
     products: list[BackupProduct] = Field(max_length=10000)
     pages: list[BackupPage] = Field(max_length=1000)
     elements: list[BackupElement] = Field(max_length=100000)
+    quotation: dict | None = None
 
 def catalog_product(db, product):
     row=data(product)
@@ -743,8 +744,14 @@ def backup_project(pid: int, db: DbSession = Depends(session)):
     rooms=list(db.scalars(select(Room).where(Room.project_id==pid).order_by(Room.id)))
     layers=list(db.scalars(select(Layer).where(Layer.project_id==pid).order_by(Layer.id)))
     elements=list(db.scalars(select(Element).where(Element.project_id==pid).order_by(Element.id)))
+    from .quotations import backup_quote
+    quotation=backup_quote(db,pid)
+    quote_lines=(quotation or {}).get('lines',[])
     type_ids={item.type_id for item in elements}
+    type_ids.update(line['type_id'] for line in quote_lines if line.get('type_id') is not None)
     product_ids={item.product_id for item in elements if item.product_id is not None}
+    product_ids.update(line['product_id'] for line in quote_lines if line.get('product_id') is not None)
+    for product_id in product_ids: type_ids.add(require(db,Product,product_id).type_id)
     types=[require(db,ElementType,item_id) for item_id in sorted(type_ids)]
     products=[require(db,Product,item_id) for item_id in sorted(product_ids)]
     pdf_files={}
@@ -759,7 +766,7 @@ def backup_project(pid: int, db: DbSession = Depends(session)):
                 raise HTTPException(413,'Суммарный размер PDF проекта превышает 90 МБ')
             pdf_files[str(path)]=f'pdf/{len(pdf_files)+1}.pdf'
     manifest=BackupManifest(
-        version=1,project_name=project.name,
+        version=1,project_name=project.name,quotation=quotation,
         layers=[BackupLayer(backup_id=item.id,name=item.name,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity) for item in layers],
         rooms=[BackupRoom(
             backup_id=item.id,name=item.name,wet=item.wet,
@@ -961,6 +968,9 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
                 parameters={**obj.parameters,'led_strip_ids':[strip.id for strip in strips]}
                 parameters.pop('led_strip_id',None)
                 obj.parameters=validate_element(db,project.id,ElementInput(**{**data(obj),'parameters':parameters}),check_locked=False)
+        if manifest.quotation is not None:
+            from .quotations import restore_quote
+            restore_quote(db,project.id,manifest.quotation,type_map,product_map,element_map)
         db.commit()
         result=data(project); result['pages']=len(page_map); result['elements']=len(manifest.elements)
         return result
@@ -990,7 +1000,7 @@ def remove_project(pid: int, db: DbSession = Depends(session)):
             image=Path(page.image_path)
             paths.update((Path(page.pdf_path),image))
             paths.update(image.with_name(f'{image.stem}-q{level}.png') for level in (1024,2048,4096,8192))
-        for model in (Element,Room,Report,Layer,Page):
+        for model in (Quotation,Element,Room,Report,Layer,Page):
             db.execute(delete(model).where(model.project_id==pid))
         db.delete(target)
         # Keep files used by another project, including legacy shared paths.
@@ -1351,6 +1361,8 @@ def redo_elements(pid: int, db: DbSession = Depends(session)):
     return restore_edit_history(pid,db,True)
 
 def report_rows(db,pid):
+    group_ids=defaultdict(list)
+    group_type_ids={}
     require(db,Project,pid)
     groups=defaultdict(float)
     frame_groups=defaultdict(float)
@@ -1381,6 +1393,8 @@ def report_rows(db,pid):
             manufacturer.name if manufacturer else '', supplier.name if supplier else '',
             float(product.price) if product else 0, product.currency if product else 'RUB',
         )
+        group_ids[key].append(e.id)
+        group_type_ids[key]=t.id
         groups[key]+=float(e.parameters.get('length',0) if t.unit=='м' else e.parameters.get('quantity',1))
         frame_group=e.parameters.get('frame_group')
         if t.category=='Электроустановки' and frame_group:
@@ -1400,6 +1414,7 @@ def report_rows(db,pid):
         quantity=round(value,3); price=key[10]
         rows.append(dict(
             room=key[0],category=key[1],name=key[2],unit=key[3],
+            element_ids=group_ids[key],type_id=group_type_ids[key],
             parameters=key[4],product_id=key[5],product=key[6],sku=key[7],
             manufacturer=key[8],supplier=key[9],unit_price=price,
             currency=key[11],quantity=quantity,total=round(quantity*price,2),
@@ -1407,6 +1422,7 @@ def report_rows(db,pid):
     for (room,posts),quantity in frame_groups.items():
         ending='пост' if posts==1 else 'поста' if posts < 5 else 'постов'
         rows.append(dict(
+            element_ids=[],type_id=None,
             room=room,category='Рамки',name=f'Рамка на {posts} {ending}',unit='шт',
             parameters=json.dumps({'frame_posts':posts},ensure_ascii=False),product_id=None,
             product='',sku='',manufacturer='',supplier='',unit_price=0,currency='RUB',
@@ -1476,6 +1492,9 @@ def export(pid: int, format: str, db: DbSession = Depends(session)):
     db.add(Report(project_id=pid,format=format)); db.commit()
     output.seek(0)
     return StreamingResponse(output,media_type=media,headers={'Content-Disposition':f'attachment; filename="smart-home-{pid}.{format}"'})
+
+from .quotations import router as quotations_router
+app.include_router(quotations_router)
 
 STATIC_DIR = Path(os.getenv(
     'STATIC_DIR',

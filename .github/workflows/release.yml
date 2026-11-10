@@ -4,12 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: startsWith(github.ref, 'refs/tags/') || contains(github.event.head_commit.message, '[release]')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,10 +51,17 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ github.sha }}
         run: |
-          gh release create $env:GITHUB_REF_NAME `
+          $match = Select-String -Path backend/app/main.py -Pattern "APP_VERSION = '(?<version>[^']+)'"
+          $releaseTag = "v" + $match.Matches[0].Groups["version"].Value
+          if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne $releaseTag) {
+            throw "Release tag does not match application version"
+          }
+          gh release create $releaseTag `
             release/SmartHomeCalc-Windows-x64.exe `
             release/SmartHomeCalc-Windows-x64.exe.sha256 `
             --repo $env:GITHUB_REPOSITORY `
-            --title "Smart Home Calc $env:GITHUB_REF_NAME" `
+            --target $env:RELEASE_COMMIT `
+            --title "Smart Home Calc $releaseTag" `
             --notes "Автономное офлайн-приложение Smart Home Calc для Windows x64. Docker и PostgreSQL устанавливать не требуется."

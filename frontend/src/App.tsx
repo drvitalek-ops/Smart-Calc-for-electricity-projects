@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import QuotationEditor from "./QuotationEditor";
 type Point = { x: number; y: number };
 type Page = {
   id: number;
@@ -1021,7 +1022,8 @@ export default function App() {
     [placing, setPlacing] = useState(false),
     [calibrating, setCalibrating] = useState(false),
     [catalogOpen, setCatalogOpen] = useState(false),
-    [view, setView] = useState<"plan" | "report">("plan");
+    [view, setView] = useState<"plan" | "report" | "quote">("plan");
+  const [quoteDirty,setQuoteDirty]=useState(false),[quoteBusy,setQuoteBusy]=useState(false);
   const [alignPageId, setAlignPageId] = useState<number | null>(null);
   const [alignOriginal, setAlignOriginal] = useState<{
     overlay_visible: boolean;
@@ -1163,8 +1165,22 @@ export default function App() {
       setBusy(false);
     }
   }
+  function canLeaveQuote() {
+    return view!=="quote" || !quoteDirty || confirm("В КП есть несохранённые изменения. Выйти без сохранения?");
+  }
+  function changeView(next:"plan"|"report"|"quote") {
+    if(busy || quoteBusy || next===view || !canLeaveQuote())return;
+    if(next==="quote") {
+      void run(async()=>{
+        const stored=selected && project?.elements.find(item=>item.id===selected.id);
+        if(selected && stored && !sameItem(selected,stored))await save(selected);
+        setView(next);
+      });
+    } else setView(next);
+  }
   function requestPdfImport(files:File[]) {
-    if(busy) {setError("Дождитесь завершения сохранения или загрузки");return;}
+    if(busy || quoteBusy) {setError("Дождитесь завершения сохранения или загрузки");return;}
+    if(view==="quote" && quoteDirty){setError("Сначала сохраните изменения КП");return;}
     if(supplyLinking){setError("Сначала завершите или отмените привязку LED-лент");return;}
     if(settingsOpen || catalogOpen || pdfImport || deletingProject) {setError("Закройте открытое окно перед импортом PDF");return;}
     if(files.length!==1) {setError("Перетащите один PDF-файл проекта");return;}
@@ -1357,7 +1373,7 @@ export default function App() {
     );
   }
   useEffect(() => {
-    if (!selected || !project || busy || deletingProject || drag.current || nodeDrag.current)
+    if (!selected || !project || busy || view==="quote" || deletingProject || drag.current || nodeDrag.current)
       return;
     const stored = project.elements.find((item) => item.id === selected.id);
     if (!stored || sameItem(selected, stored)) return;
@@ -1366,10 +1382,10 @@ export default function App() {
       600,
     );
     return () => window.clearTimeout(timeout);
-  }, [selected, project, busy, deletingProject]);
+  }, [selected, project, busy, deletingProject, view]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
-      if (settingsOpen || pdfImport || deletingProject) return;
+      if (view==="quote" || settingsOpen || pdfImport || deletingProject) return;
       if(supplyLinking) {
         if((event.target as HTMLElement|null)?.matches('input,textarea,[contenteditable="true"]'))return;
         const modifier=event.ctrlKey || event.metaKey,key=event.key.toLowerCase();
@@ -1424,13 +1440,13 @@ export default function App() {
     }
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport, deletingProject]);
+  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport, deletingProject, view]);
   useEffect(() => {
-    if (!busy && !deletingProject && pendingHistory.current.length) {
+    if (!busy && view!=="quote" && !deletingProject && pendingHistory.current.length) {
       const redo = pendingHistory.current.shift()!;
       void run(() => undoLast(redo));
     }
-  }, [busy, selected, project, deletingProject]);
+  }, [busy, selected, project, deletingProject, view]);
   useEffect(() => {
     function wheel(event: WheelEvent) {
       if (!event.ctrlKey) return;
@@ -1650,7 +1666,7 @@ export default function App() {
     function roomKeys(event: KeyboardEvent) {
       if (
         !roomMode ||
-        settingsOpen || pdfImport || supplyLinking || deletingProject ||
+        view==="quote" || settingsOpen || pdfImport || supplyLinking || deletingProject ||
         busy ||
         (event.target as HTMLElement | null)?.matches(
           'input:not([type="checkbox"]):not([type="range"]),textarea,[contenteditable="true"]',
@@ -1676,7 +1692,7 @@ export default function App() {
     }
     window.addEventListener("keydown", roomKeys);
     return () => window.removeEventListener("keydown", roomKeys);
-  }, [roomMode, roomPoints, roomUndo, roomRedo, busy, project, page, editingRoomId, settingsOpen, pdfImport, supplyLinking, deletingProject]);
+  }, [roomMode, roomPoints, roomUndo, roomRedo, busy, project, page, editingRoomId, settingsOpen, pdfImport, supplyLinking, deletingProject, view]);
   function editRoomArea(room: Room) {
     setRoomUndo([]);
     setRoomRedo([]);
@@ -2020,28 +2036,31 @@ export default function App() {
         <nav className="app-tabs" aria-label="Разделы приложения">
           <button
             className={view === "plan" ? "active" : ""}
-            onClick={() => setView("plan")}
+            onClick={() => changeView("plan")}
+            disabled={busy || quoteBusy}
           >
             План
           </button>
           <button
             className={view === "report" ? "active" : ""}
-            disabled={!project}
-            onClick={() => setView("report")}
+            disabled={!project || busy || quoteBusy}
+            onClick={() => changeView("report")}
           >
             Спецификация
           </button>
+          <button className={view==="quote" ? "active" : ""} disabled={!project || busy || quoteBusy} onClick={()=>changeView("quote")}>КП</button>
         </nav>
-        <button className="icon-button" disabled={busy} onClick={()=>pdfInput.current?.click()} title="Создать новый проект из PDF"><ToolIcon name="pdf"/>Новый из PDF</button>
-        <button onClick={() => setCatalogOpen(true)}>Каталог и цены</button>
-        <button className="icon-button settings-button" aria-label="Настройки" title="Настройки и папка данных" onClick={()=>setSettingsOpen(true)}><ToolIcon name="settings"/>Настройки</button>
+        <button className="icon-button" disabled={busy || quoteBusy} onClick={()=>pdfInput.current?.click()} title="Создать новый проект из PDF"><ToolIcon name="pdf"/>Новый из PDF</button>
+        <button disabled={busy || quoteBusy} onClick={() => setCatalogOpen(true)}>Каталог и цены</button>
+        <button className="icon-button settings-button" aria-label="Настройки" title="Настройки и папка данных" disabled={busy || quoteBusy} onClick={()=>setSettingsOpen(true)}><ToolIcon name="settings"/>Настройки</button>
         <label className="restore-project">
           Восстановить ZIP
           <input
             type="file"
             accept=".zip,application/zip"
-            disabled={busy}
+            disabled={busy || quoteBusy}
             onChange={(e) => {
+              if(!canLeaveQuote()){e.target.value="";return;}
               const file = e.target.files?.[0];
               if (file)
                 void run(async () => {
@@ -2062,9 +2081,12 @@ export default function App() {
         <div className="project-controls">
         <select
           aria-label="Проект"
-          disabled={busy}
+          disabled={busy || quoteBusy}
           value={project?.id ?? ""}
-          onChange={(e) => void run(() => open(+e.target.value))}
+          onChange={(e) => {
+            if(!canLeaveQuote()){e.target.value=String(project?.id ?? "");return;}
+            void run(()=>open(+e.target.value));
+          }}
         >
           <option value="" disabled>
             Выберите проект
@@ -2075,10 +2097,11 @@ export default function App() {
             </option>
           ))}
         </select>
-        <button className="icon-button delete-project" disabled={busy || !project} onClick={()=>{setDeleteProjectError("");setDeletingProject(project);}} title="Удалить выбранный проект"><ToolIcon name="trash"/>Удалить проект</button>
+        <button className="icon-button delete-project" disabled={busy || quoteBusy || !project} onClick={()=>{setDeleteProjectError("");setDeletingProject(project);}} title="Удалить выбранный проект"><ToolIcon name="trash"/>Удалить проект</button>
         <form
           onSubmit={(e) => {
             e.preventDefault();
+            if(!canLeaveQuote())return;
             void run(async () => {
               const p = await api<{ id: number }>("/projects", "POST", {
                 name,
@@ -2095,7 +2118,7 @@ export default function App() {
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
-          <button disabled={busy}>Создать</button>
+          <button disabled={busy || quoteBusy}>Создать</button>
         </form>
         </div>
       </header>
@@ -2161,7 +2184,15 @@ export default function App() {
         </main>
       ) : (
         <>
-          {view === "plan" ? (
+          {view === "quote" ? (
+            <QuotationEditor key={project.id} projectId={project.id} projectName={project.name} types={types}
+              onDirtyChange={setQuoteDirty} onBusyChange={setQuoteBusy} onChanged={async()=>{
+                setCatalog(await api("/catalog"));
+                setTypes(await api<Kind[]>("/types?include_inactive=true"));
+                const updated=await refresh(project.id);
+                setSelected(current=>current ? updated.elements.find(item=>item.id===current.id) ?? null : null);
+              }}/>
+          ) : view === "plan" ? (
             <main
               className={`workspace ${leftPanelVisible ? "" : "left-collapsed"} ${rightPanelVisible ? "" : "right-collapsed"}`}
             >
@@ -4206,7 +4237,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.37</span>
+        <span>SMART HOME CALC / 1.0.38</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

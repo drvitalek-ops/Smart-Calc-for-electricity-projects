@@ -43,7 +43,7 @@ jobs:
           DATABASE_URL: postgresql+psycopg://smart_calc:smart_calc_test@127.0.0.1:5432/smart_calc_test
           STORAGE_DIR: /tmp/smart-calc-test-files
           PYTHONPATH: .
-        run: pytest -q
+        run: pytest -q -s
 
       - name: Validate database migrations
         working-directory: backend
@@ -66,6 +66,33 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm run build
+
+      - name: Install quotation browser test dependencies
+        working-directory: frontend
+        run: |
+          npm install --no-save --package-lock=false playwright@1.56.1
+          npx playwright install --with-deps chromium
+
+      - name: Test quotation editor in browser
+        shell: bash
+        env:
+          NODE_PATH: frontend/node_modules
+        run: |
+          DATABASE_URL=sqlite:////tmp/quotation-browser.sqlite STORAGE_DIR=/tmp/quotation-browser-storage AUTO_CREATE_SCHEMA=1 PYTHONPATH=backend uvicorn app.main:app --host 127.0.0.1 --port 8014 >/tmp/quotation-api.log 2>&1 &
+          npm run dev --prefix frontend -- --host 127.0.0.1 --port 5174 >/tmp/quotation-ui.log 2>&1 &
+          python - <<'PY'
+          import time,urllib.request
+          for address in ('http://127.0.0.1:8014/api/health','http://127.0.0.1:5174'):
+              for attempt in range(60):
+                  try:
+                      urllib.request.urlopen(address,timeout=2).read()
+                      break
+                  except Exception:
+                      time.sleep(1)
+              else:
+                  raise RuntimeError('Test server did not become ready: '+address)
+          PY
+          node frontend/tests/quotations.cjs
 
       - name: Validate Docker Compose
         run: docker compose config --quiet
@@ -109,6 +136,7 @@ jobs:
         run: ./packaging/build-windows-exe.ps1
 
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: SmartHomeCalc-Windows-x64
           path: |

@@ -1,0 +1,84 @@
+const {chromium}=require('playwright');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const frontend=process.env.FRAME_TEST_FRONTEND||'http://127.0.0.1:5174';
+const backend=process.env.FRAME_TEST_BACKEND||'http://127.0.0.1:8014';
+const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFIvSW5mbzw8L1Byb2R1Y2VyKE11UERGIDEuMjguMik+Pj4+CmVuZG9iagoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0NvdW50IDEvS2lkc1s0IDAgUl0+PgplbmRvYmoKCjMgMCBvYmoKPDw+PgplbmRvYmoKCjQgMCBvYmoKPDwvVHlwZS9QYWdlL01lZGlhQm94WzAgMCA1OTUgODQyXS9Sb3RhdGUgMC9SZXNvdXJjZXMgMyAwIFIvUGFyZW50IDIgMCBSPj4KZW5kb2JqCgp4cmVmCjAgNQowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwNDIgMDAwMDAgbiAKMDAwMDAwMDEyMCAwMDAwMCBuIAowMDAwMDAwMTcyIDAwMDAwIG4gCjAwMDAwMDAxOTMgMDAwMDAgbiAKCnRyYWlsZXIKPDwvU2l6ZSA1L1Jvb3QgMSAwIFIvSURbPEMyOUIyMEMyQjRDMkJDNTZDMzhBMkIxMjE4QzI4M0MyPjwxMUMwRDIyMDM3NzE0QkMxRjgyRDE0RDA3ODUxNUM1Mj5dPj4Kc3RhcnR4cmVmCjI4NAolJUVPRgo=','base64');
+(async()=>{
+ const browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE||chromium.executablePath(),headless:true,args:['--no-sandbox']});
+ try{
+  const context=await browser.newContext({viewport:{width:1700,height:1400}}),page=await context.newPage(),errors=[];
+  page.on('pageerror',error=>errors.push(String(error)));
+  page.on('dialog',dialog=>dialog.accept());
+  await page.route('**/api/**',route=>route.continue({url:route.request().url().replace(frontend,backend)}));
+  const api=context.request,base=backend+'/api';
+  const pid=(await(await api.post(base+'/projects',{data:{name:'КП — проверка интеграции'}})).json()).id;
+  const sheets=await(await api.post(base+'/projects/'+pid+'/pdf',{multipart:{file:{name:'plan.pdf',mimeType:'application/pdf',buffer:pdf}}})).json();
+  const project=await(await api.get(base+'/projects/'+pid)).json(),types=await(await api.get(base+'/types')).json();
+  for(const [name,quantity,x] of [['Розетка одинарная',2,.2],['Встроенный светильник',3,.5]]){
+   const type=types.find(item=>item.name===name);
+   const added=await api.post(base+'/projects/'+pid+'/elements',{data:{page_id:sheets[0].id,layer_id:project.layers.find(layer=>layer.name===type.category).id,type_id:type.id,x,y:.3,parameters:{quantity,ip:44}}});
+   assert.equal(added.status(),201);
+  }
+  await page.goto(frontend);await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));await page.locator('.sheet > svg').waitFor();
+  await page.getByRole('button',{name:'КП',exact:true}).click();
+  const editor=page.getByRole('region',{name:'Редактор коммерческого предложения',exact:true});await editor.waitFor();
+  await editor.locator('[data-quote-line]').first().waitFor();
+  assert.equal(await editor.locator('[data-quote-line]').count(),2);
+  const first=editor.locator('[data-quote-line]').first();
+  await first.getByRole('button',{name:'＋ Товар в базу',exact:true}).click();
+  const product=page.getByRole('dialog',{name:'Новый товар из КП',exact:true});await product.waitFor();
+  await product.getByLabel('Название нового товара КП',{exact:true}).fill('Розетка клиентская');
+  await product.getByLabel('Производитель нового товара КП',{exact:true}).fill('ЛЭД-ПРОФИ');
+  await product.getByLabel('Артикул нового товара КП',{exact:true}).fill('SOCKET-001');
+  await product.getByLabel('Цена нового товара КП',{exact:true}).fill('1250');
+  const image=await page.evaluate(()=>{const canvas=document.createElement('canvas');canvas.width=80;canvas.height=80;const ctx=canvas.getContext('2d');ctx.fillStyle='#f1f5f3';ctx.fillRect(0,0,80,80);ctx.fillStyle='#0caf45';ctx.fillRect(15,15,50,50);return canvas.toDataURL('image/png').split(',')[1];});
+  await product.getByLabel('Фото нового товара КП',{exact:true}).setInputFiles({name:'socket.png',mimeType:'image/png',buffer:Buffer.from(image,'base64')});
+  await product.locator('.quotation-product-image').waitFor();
+  const created=page.waitForResponse(r=>r.url().endsWith('/quotation/product')&&r.request().method()==='POST');
+  await product.getByRole('button',{name:'Создать и привязать товар',exact:true}).click();assert.equal((await created).status(),201);
+  await product.waitFor({state:'detached'});
+  await editor.getByRole('status').filter({hasText:'Товар создан в каталоге'}).waitFor();
+  let stored=await(await api.get(base+'/projects/'+pid+'/quotation')).json();
+  const current=await(await api.get(base+'/projects/'+pid)).json();
+  assert.equal(current.elements[0].product_id,stored.lines[0].product_id);
+  assert.ok(stored.lines[0].image.startsWith('data:image/'));
+  await editor.getByLabel('Цена строки 2',{exact:true}).fill('200');
+  await editor.getByLabel('Общая скидка КП',{exact:true}).fill('10');
+  await editor.getByLabel('Скидка строки 1',{exact:true}).fill('20');
+  let savedResponse=page.waitForResponse(r=>r.url().endsWith('/quotation')&&r.request().method()==='PUT');
+  await editor.getByRole('button',{name:'Сохранить КП',exact:true}).click();
+  stored=await(await savedResponse).json();assert.equal(stored.client.totals.RUB.total,'3100.00');assert.equal(stored.partner.totals.RUB.total,'2540.00');
+  await page.waitForFunction(()=>!document.querySelector('[aria-label="Файл внешнего КП"]')?.disabled);
+  await editor.getByLabel('Файл внешнего КП',{exact:true}).setInputFiles({name:'Другой КП.csv',mimeType:'text/csv',buffer:Buffer.from('Наименование;Цена;Количество;Ед.\nИмпортированный светильник;500,00;2;шт\n')});
+  const importing=page.getByRole('dialog',{name:'Проверка импорта КП',exact:true});await importing.waitFor();
+  assert.equal((await(await api.get(base+'/projects/'+pid+'/quotation')).json()).lines.length,2);
+  await importing.getByLabel('Импорт: количество 1',{exact:true}).fill('3');
+  await importing.getByLabel('Импорт: цена 1',{exact:true}).fill('600');
+  await importing.getByRole('button',{name:'Перенести позиции в КП',exact:true}).click();await importing.waitFor({state:'detached'});
+  assert.equal(await editor.locator('[data-quote-line]').count(),3);
+  assert.equal(await editor.getByLabel('Количество строки 3',{exact:true}).isDisabled(),false);
+  savedResponse=page.waitForResponse(r=>r.url().endsWith('/quotation')&&r.request().method()==='PUT');
+  await editor.getByRole('button',{name:'Сохранить КП',exact:true}).click();stored=await(await savedResponse).json();
+  assert.equal(stored.client.totals.RUB.total,'4900.00');assert.equal(stored.partner.totals.RUB.total,'4160.00');
+  assert.equal((await(await api.get(base+'/projects/'+pid)).json()).elements.length,2,'External rows must not create plan objects');
+  await editor.getByRole('button',{name:'Предпросмотр',exact:true}).click();
+  await editor.locator('.quotation-paper').waitFor();
+  const screenshot=await editor.locator('.quotation-paper').screenshot();
+  console.log('QUOTE_UI_PREVIEW='+screenshot.toString('base64'));
+  for(const [label,kind] of [['PDF для клиента — без скидок','client'],['PDF для партнёра — со скидками','partner']]){
+   const ready=page.waitForEvent('download');
+   await editor.getByRole('button',{name:label,exact:true}).click();const download=await ready;
+   assert.ok(download.suggestedFilename().includes(kind));
+   assert.equal(fs.readFileSync(await download.path()).subarray(0,4).toString(),'%PDF');
+  }
+  await editor.getByLabel('Цены предпросмотра КП',{exact:true}).selectOption('client');
+  assert.equal(await editor.locator('.quotation-paper th').filter({hasText:'Скидка'}).count(),0);
+  await page.getByRole('button',{name:'План',exact:true}).click();await page.locator('.sheet > svg').waitFor();
+  await page.getByRole('button',{name:'КП',exact:true}).click();await editor.locator('[data-quote-line]').first().waitFor();
+  assert.equal(await editor.locator('[data-quote-line]').count(),3);
+  assert.equal(await editor.getByLabel('Общая скидка КП',{exact:true}).inputValue(),'10');
+  assert.deepEqual(errors,[]);
+  console.log('PASS: automatic plan import, inline product creation with photo, plan binding, global/row discounts, external import review/edit, separate client/partner PDF downloads, preview and persistence.');
+ }finally{await browser.close();}
+})().catch(error=>{console.error(error);process.exitCode=1;});

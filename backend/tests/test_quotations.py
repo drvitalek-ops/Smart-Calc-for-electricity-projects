@@ -189,3 +189,23 @@ def test_external_import_rejects_scans_unsupported_and_invalid_documents():
 def test_imported_money_supports_russian_and_international_numbers(value,expected):
     from app.quotation_import import numeric
     assert numeric(value)==Decimal(expected)
+
+
+def test_adding_plan_positions_keeps_manual_price_and_individual_discount(client):
+    pid,body=setup(client)
+    assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==201
+    initial=quote(client,pid)
+    initial['lines'][0]['unit_price']='100'
+    initial['lines'][0]['discount']='20'
+    saved=put(client,pid,initial)
+    body['x']=.7
+    assert client.post(f'/api/projects/{pid}/elements',json=body).status_code==201
+    refreshed=client.post(f'/api/projects/{pid}/quotation/import',json={'revision':saved['revision']})
+    assert refreshed.status_code==200,refreshed.text
+    current=refreshed.json()
+    assert len(current['lines'])==1 and len(current['lines'][0]['source_ids'])==2
+    assert current['lines'][0]['id']==saved['lines'][0]['id']
+    assert Decimal(current['lines'][0]['quantity'])==7
+    assert Decimal(current['lines'][0]['unit_price'])==100
+    assert Decimal(current['lines'][0]['discount'])==20
+    assert current['partner']['totals']['RUB']['total']=='560.00'

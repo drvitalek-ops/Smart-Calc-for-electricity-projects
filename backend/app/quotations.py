@@ -230,12 +230,19 @@ def import_lines(db,pid,quote):
     from .main import report_rows
     from .report_export import parameters_text
     previous={line.source_key:line for line in quote.lines if line.source_key}
+    used_ids=set()
     lines=[]
     for row in report_rows(db,pid)['rows']:
         if row['quantity']<=0: continue
         key=source_key(row)
         old=previous.get(key)
-        line=QuoteLine(id=old.id if old else uuid.uuid4().hex,source_key=key,
+        if old is None and row.get('element_ids'):
+            current_ids=set(row['element_ids'])
+            matches=[candidate for candidate in previous.values() if current_ids.intersection(candidate.source_ids)]
+            if len(matches)==1: old=matches[0]
+        line_id=old.id if old is not None and old.id not in used_ids else uuid.uuid4().hex
+        used_ids.add(line_id)
+        line=QuoteLine(id=line_id,source_key=key,
             source_ids=row.get('element_ids',[]),type_id=row.get('type_id'),
             name=row['product'] or row['name'],room=row['room'],
             quantity=str(row['quantity']),unit=row['unit'],unit_price=str(money(row['unit_price'])),

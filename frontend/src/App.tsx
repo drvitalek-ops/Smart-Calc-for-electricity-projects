@@ -2000,15 +2000,18 @@ export default function App() {
     .filter((value) => value !== null);
   return (
     <div className="app-shell" onDragEnterCapture={event=> {
+      if(Array.from(event.dataTransfer.items).some(item=>item.type.startsWith('image/')))return;
       if((event.target as HTMLElement).closest("[data-image-dropzone],[data-image-target]")||!event.dataTransfer.types.includes("Files"))return;
       event.preventDefault();dragDepth.current++;setDraggingPdf(true);
     }} onDragOverCapture={event=> {
+      if(Array.from(event.dataTransfer.items).some(item=>item.type.startsWith('image/'))){event.preventDefault();event.dataTransfer.dropEffect=(event.target as HTMLElement).closest('[data-image-dropzone],[data-image-target]')?'copy':'none';return;}
       if((event.target as HTMLElement).closest("[data-image-dropzone],[data-image-target]")||!event.dataTransfer.types.includes("Files"))return;
       event.preventDefault();event.dataTransfer.dropEffect=busy ? "none" : "copy";
     }} onDragLeaveCapture={event=> {
       if(!dragDepth.current)return;
       event.preventDefault();dragDepth.current=Math.max(0,dragDepth.current-1);if(!dragDepth.current)setDraggingPdf(false);
     }} onDropCapture={event=> {
+      if(Array.from(event.dataTransfer.items).some(item=>item.type.startsWith('image/'))){event.preventDefault();resetPdfDrag();if(!(event.target as HTMLElement).closest('[data-image-dropzone],[data-image-target]')){event.stopPropagation();requestPdfImport([...event.dataTransfer.files]);}return;}
       if((event.target as HTMLElement).closest("[data-image-dropzone],[data-image-target]")||!event.dataTransfer.types.includes("Files"))return;
       event.preventDefault();event.stopPropagation();resetPdfDrag();requestPdfImport([...event.dataTransfer.files]);
     }}>

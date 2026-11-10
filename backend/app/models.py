@@ -109,3 +109,9 @@ class Report(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'))
     format: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+class Quotation(Base):
+    __tablename__ = 'quotations'
+    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'), primary_key=True)
+    revision: Mapped[int] = mapped_column(default=1)
+    content: Mapped[dict] = mapped_column(JSON, default=dict)

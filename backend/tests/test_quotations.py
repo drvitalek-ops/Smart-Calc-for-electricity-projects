@@ -180,3 +180,12 @@ def test_external_import_rejects_scans_unsupported_and_invalid_documents():
     with pytest.raises(ValueError,match='сканы'): parse_quote_file(data,'скан.pdf')
     with pytest.raises(ValueError,match='docx'): parse_quote_file(b'old word','old.doc')
     with pytest.raises(ValueError): parse_quote_file(b'broken','broken.xlsx')
+
+
+@pytest.mark.parametrize('value,expected',[
+    ('25 904,00 ₽','25904.00'),('1,234.50 $','1234.50'),('1.234,50 €','1234.50'),
+    ('1.2e3','1200'),('(1 200,00)','-1200.00'),('−150,50','-150.50'),
+])
+def test_imported_money_supports_russian_and_international_numbers(value,expected):
+    from app.quotation_import import numeric
+    assert numeric(value)==Decimal(expected)

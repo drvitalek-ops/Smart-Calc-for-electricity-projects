@@ -21,9 +21,17 @@ def numeric(value):
     if isinstance(value,(int,float,Decimal)):
         result=Decimal(str(value))
         return result if result.is_finite() else None
-    value=re.sub(r'[^0-9,.\-]','',str(value or ''))
+    original=str(value or '').strip().replace('−','-')
+    if re.fullmatch(r'[+-]?\d+(?:[.,]\d+)?[eE][+-]?\d+',original):
+        try: return Decimal(original.replace(',','.'))
+        except InvalidOperation: return None
+    value=re.sub(r'[^0-9,.\-]','',original)
+    if original.startswith('(') and original.endswith(')'): value='-'+value.lstrip('-')
     if not value or value in ('-',',','.'): return None
-    if ',' in value: value=value.replace('.','').replace(',','.')
+    if ',' in value and '.' in value:
+        if value.rfind(',')>value.rfind('.'): value=value.replace('.','').replace(',','.')
+        else: value=value.replace(',','')
+    elif ',' in value: value=value.replace(',','.')
     elif value.count('.')>1:
         parts=value.split('.');value=''.join(parts[:-1])+'.'+parts[-1]
     try:
@@ -112,7 +120,10 @@ def pdf_rows(data,warnings):
                     name=next((item for item in band if any(key in normalized(item[4]) for key in ('наименован','название','номенклат','товар','description'))),None)
                     qty=next((item for item in band if any(key in normalized(item[4]) for key in ('колво','кол','quantity','qty'))),None)
                     unit=next((item for item in band if normalized(item[4]) in ('ед','unit','едизм')),None)
-                    if name and qty: headers.append((word,name,qty,unit))
+                    if name and qty:
+                        headers.append((word,name,qty,unit))
+                        if any('скидк' in normalized(item[4]) or 'discount' in normalized(item[4]) for item in band):
+                            warnings.append('В исходном PDF есть скидки. Импортированы цены из колонки «Цена»; проверьте скидки в редакторе.')
             rules=[]
             for drawing in page.get_drawings():
                 for item in drawing['items']:

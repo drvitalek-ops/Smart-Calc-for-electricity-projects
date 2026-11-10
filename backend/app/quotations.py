@@ -215,6 +215,7 @@ def product_snapshot(db,line,product):
     line.manufacturer=db.get(Manufacturer,product.manufacturer_id).name
     line.unit_price=money(product.price);line.currency=product.currency
     image=product.parameters.get('image','')
+    if not isinstance(image,str): image=''
     try: validate_image(image)
     except (TypeError,ValueError): image=''
     line.image=image

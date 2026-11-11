@@ -58,10 +58,15 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq "tag" -and $env:GITHUB_REF_NAME -ne $releaseTag) {
             throw "Release tag does not match application version"
           }
+          $releaseNotes = "docs/$releaseTag.md"
+          if (-not (Test-Path $releaseNotes)) {
+            $releaseNotes = "release/release-notes.md"
+            [IO.File]::WriteAllText($releaseNotes, "Автономное офлайн-приложение Smart Home Calc для Windows x64. Docker и PostgreSQL устанавливать не требуется.", [Text.UTF8Encoding]::new($false))
+          }
           gh release create $releaseTag `
             release/SmartHomeCalc-Windows-x64.exe `
             release/SmartHomeCalc-Windows-x64.exe.sha256 `
             --repo $env:GITHUB_REPOSITORY `
             --target $env:RELEASE_COMMIT `
             --title "Smart Home Calc $releaseTag" `
-            --notes "Автономное офлайн-приложение Smart Home Calc для Windows x64. Docker и PostgreSQL устанавливать не требуется."
+            --notes-file $releaseNotes

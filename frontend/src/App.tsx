@@ -415,10 +415,10 @@ function makeLegend(
   });
 }
 function ToolIcon({name}:{name:"settings"|"pdf"|"folder"|"trash"}) {return <ActionIcon name={name} className="tool-icon"/>;}
-function AppModal({title,onClose,busy=false,children,className=""}:{title:string;onClose:()=>void;busy?:boolean;children:React.ReactNode;className?:string}) {
+function AppModal({title,onClose,busy=false,children,className="",returnFocus}:{title:string;onClose:()=>void;busy?:boolean;children:React.ReactNode;className?:string;returnFocus?:HTMLElement|null}) {
   const modal=useRef<HTMLDivElement>(null);
   useEffect(()=> {
-    const previous=document.activeElement as HTMLElement|null;
+    const previous=returnFocus??document.activeElement as HTMLElement|null;
     const frame=requestAnimationFrame(()=>modal.current?.querySelector<HTMLElement>('[data-dialog-autofocus],button,input,select')?.focus());
     return ()=> {cancelAnimationFrame(frame);if(previous?.isConnected)previous.focus();};
   },[]);
@@ -448,12 +448,12 @@ function AppModal({title,onClose,busy=false,children,className=""}:{title:string
   </div>;
 }
 type AppSettings={version:string;can_open_data_folder:boolean;data_directory:string|null;instance:string;can_backup_all?:boolean;rollback_version?:string|null;rollback_directory?:string|null;rollback_has_data?:boolean;rollback_warning?:string};
-function SettingsDialog({onClose,onBusyChange,backupBlocked=false}:{onClose:()=>void;onBusyChange:(busy:boolean)=>void;backupBlocked?:boolean}) {
+function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{onClose:()=>void;onBusyChange:(busy:boolean)=>void;backupBlocked?:boolean;returnFocus?:HTMLElement|null}) {
   const [adaptiveLabels,setAdaptiveLabels]=usePreference<boolean>('adaptive-labels',true),[showGrid,setShowGrid]=usePreference<boolean>('canvas-grid',true);
   const [info,setInfo]=useState<AppSettings|null>(null),[error,setError]=useState(""),[message,setMessage]=useState(""),[opening,setOpening]=useState(false);
   useEffect(()=>{onBusyChange(opening);return()=>onBusyChange(false);},[opening,onBusyChange]);
   useEffect(()=> {let active=true;api<AppSettings>("/settings").then(info=> {if(active)setInfo(info);}).catch(error=> {if(active)setError(error instanceof Error ? error.message : "Не удалось загрузить настройки");});return()=>{active=false;};},[]);
-  return <AppModal title="Настройки" onClose={onClose} busy={opening} className="settings-modal">
+  return <AppModal title="Настройки" onClose={onClose} returnFocus={returnFocus} busy={opening} className="settings-modal">
     <div className="settings-heading"><ToolIcon name="folder"/><div><h3>Данные и перенос на другой компьютер</h3><p>Здесь хранятся все проекты, общий каталог, PDF-планы и изображения.</p></div></div>
     {!info && !error && <p role="status">Загрузка настроек…</p>}
     {info?.data_directory && <label>Папка всех данных<input aria-label="Папка всех данных" readOnly value={info.data_directory} onFocus={event=>event.target.select()} /></label>}
@@ -1021,6 +1021,7 @@ export default function App() {
   const [settingsOpen,setSettingsOpen]=useState(false),[draggingPdf,setDraggingPdf]=useState(false),
     [pdfImport,setPdfImport]=useState<{file:File;name:string}|null>(null),[pdfImportError,setPdfImportError]=useState("");
   const [deletingProject,setDeletingProject]=useState<Project|null>(null),[deleteProjectError,setDeleteProjectError]=useState("");
+  const settingsTrigger=useRef<HTMLElement|null>(null);
   const dragDepth=useRef(0),pdfInput=useRef<HTMLInputElement>(null);
   const viewportRef = useRef<HTMLDivElement | null>(null),sheetRef = useRef<HTMLDivElement | null>(null);
   const {zoom,zoomAt,reset:setZoom,fit:fitPlan,current:cameraZoom}=usePlanCamera(viewportRef,sheetRef);
@@ -1186,7 +1187,7 @@ export default function App() {
   function openCatalog(){
     void run(async()=>{const [nextCatalog,nextTypes]=await Promise.all([api<Catalog>('/catalog'),api<Kind[]>('/types?include_inactive=true')]);setCatalog(nextCatalog);setTypes(nextTypes);setCatalogOpen(true);});
   }
-  function openSettings(){void run(async()=>{await saveDraftBeforeNavigation();setSettingsOpen(true);});}
+  function openSettings(){settingsTrigger.current=document.activeElement as HTMLElement|null;void run(async()=>{await saveDraftBeforeNavigation();setSettingsOpen(true);});}
   function canLeaveQuote() {
     return !["quote","quotations"].includes(view) || !quoteDirty || confirm("В КП есть несохранённые изменения. Выйти без сохранения?");
   }
@@ -2160,7 +2161,7 @@ export default function App() {
         {deleteProjectError && <p className="catalog-error" role="alert">{deleteProjectError}</p>}
         <div className="modal-actions"><button type="button" data-dialog-autofocus disabled={busy} onClick={()=>setDeletingProject(null)}>Отмена</button><button className="confirm-delete" disabled={busy} onClick={()=>{setDeleteProjectError("");void run(deleteCurrentProject);}}>{busy ? "Удаление…" : "Удалить навсегда"}</button></div>
       </AppModal>}
-      {settingsOpen && <SettingsDialog onClose={()=>setSettingsOpen(false)} onBusyChange={setSettingsBusy} backupBlocked={unsavedWorkbench}/>}
+      {settingsOpen && <SettingsDialog onClose={()=>setSettingsOpen(false)} returnFocus={settingsTrigger.current} onBusyChange={setSettingsBusy} backupBlocked={unsavedWorkbench}/>}
       {pdfImport && <AppModal title="Новый проект из PDF" onClose={()=>setPdfImport(null)} busy={busy} className="pdf-import-modal">
         <div className="pdf-import-file"><ToolIcon name="pdf"/><div><strong>{pdfImport.file.name}</strong><small>{(pdfImport.file.size/(pdfImport.file.size<1024*1024 ? 1024 : 1024*1024)).toLocaleString("ru-RU",{maximumFractionDigits:1})} {pdfImport.file.size<1024*1024 ? "КБ" : "МБ"} · все страницы PDF</small></div></div>
         <form onSubmit={event=> {event.preventDefault();setPdfImportError("");void run(importPdfProject);}}>
@@ -2703,6 +2704,15 @@ export default function App() {
                     >
                       {rightPanelVisible ? "Правая ▶" : "◀ Правая"}
                     </button>
+                <button
+                  className={
+                    "label-toggle " + (labelsVisible ? "" : "inactive")
+                  }
+                  aria-pressed={labelsVisible}
+                  onClick={() => setLabelsVisible((value) => !value)}
+                >
+                  {labelsVisible ? denseLabels?"Подписи: авто":"Скрыть надписи" : "Показать надписи"}
+                </button>
                     {page && <button aria-pressed={showRoomContours} onClick={() => setShowRoomContours(value => !value)}>Контуры помещений</button>}
                     <button
                       className={elementsVisible ? "" : "active clean-plan-toggle"}
@@ -2776,15 +2786,7 @@ export default function App() {
 
                   </div>
                 </div>
-                <button
-                  className={
-                    "label-toggle " + (labelsVisible ? "" : "inactive")
-                  }
-                  aria-pressed={labelsVisible}
-                  onClick={() => setLabelsVisible((value) => !value)}
-                >
-                  {labelsVisible ? denseLabels?"Подписи: авто":"Скрыть надписи" : "Показать надписи"}
-                </button>
+
                 {legend.length>0&&<PlanLegend entries={legend}/>}
                 {roomMenu &&
                   (() => {

@@ -1,0 +1,14 @@
+**
+!frontend/
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/index.html
+!frontend/tsconfig.json
+!frontend/vite.config.ts
+!frontend/nginx.conf
+!frontend/src/
+!frontend/src/**
+!backend/
+!backend/app/
+!backend/app/assets/
+!backend/app/assets/plan-symbols.json

@@ -225,7 +225,7 @@ def persist_quote(db,pid,quote,standalone=False):
     model=StandaloneQuotation if standalone else Quotation
     primary_key=StandaloneQuotation.id if standalone else Quotation.project_id
     stored=db.get(model,pid)
-    if not standalone:sync_plan_quantities(db,pid,quote)
+    if not standalone:sync_plan_quantities(db,pid,quote,update_signatures=True)
     payload=quote.model_dump(mode='json',exclude={'revision'})
     if stored is None:
         if standalone: raise HTTPException(409,'Самостоятельное КП было удалено')
@@ -439,7 +439,7 @@ def import_lines(db,pid,quote):
     return quote
 
 
-def sync_plan_quantities(db,pid,quote):
+def sync_plan_quantities(db,pid,quote,*,update_signatures=False):
     """Derive linked quantities from the plan without changing saved commercial terms.
 
     Existing rows keep their identity even when report groups split or merge. This
@@ -488,7 +488,7 @@ def sync_plan_quantities(db,pid,quote):
         line=original.model_copy(deep=True)
         line.source_ids=sorted(sources[line.id])
         if line.source_ids:line.source_key=source_key({'element_ids':line.source_ids})
-        if not line.source_signature and len(current_signatures[line.id])==1:line.source_signature=next(iter(current_signatures[line.id]))
+        if (update_signatures or not line.source_signature) and len(current_signatures[line.id])==1:line.source_signature=next(iter(current_signatures[line.id]))
         if line.calculated_quantity!=quantity:line.calculated_quantity=Decimal(str(float(quantity)))
         effective=line.quantity_override if line.quantity_override is not None else quantity
         if line.quantity!=effective:line.quantity=Decimal(str(float(effective)))
@@ -682,6 +682,8 @@ def backup_quote(db,pid):
 def restore_quote(db,pid,payload,type_map,product_map,element_map):
     quote=QuoteInput.model_validate({**payload,'revision':0})
     for line in quote.lines:
+        # Partial project imports remap type/product IDs used in the signature.
+        line.source_signature=''
         line.type_id=type_map[line.type_id].id if line.type_id is not None else None
         line.product_id=product_map[line.product_id].id if line.product_id is not None else None
         line.source_ids=[element_map[eid].id for eid in line.source_ids if eid in element_map]

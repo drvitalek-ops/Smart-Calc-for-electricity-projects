@@ -128,3 +128,46 @@ def test_piece_counts_and_frames_follow_plan_and_keep_bound_product_price(client
     assert Decimal(frames['quantity'])==1
     ok(client.post(f'/api/projects/{pid}/elements/undo'))
     assert Decimal(next(line for line in ok(client.get(path))['lines'] if line['source_key'].startswith('frame:'))['quantity'])==2
+
+
+def test_bound_group_survives_original_source_deletion_and_project_zip_remapping(client):
+    pid,body=setup(client);original=ok(client.post(f'/api/projects/{pid}/elements',json=body))
+    path=f'/api/projects/{pid}/quotation';quote=ok(client.get(path))
+    bound=ok(client.post(path+'/product',json={'revision':quote['revision'],'line_id':quote['lines'][0]['id'],'type_id':body['type_id'],'name':'Лента для проекта','manufacturer':'Завод','unit_price':'100'}))
+    product_id=bound['lines'][0]['product_id']
+    # Bind changes the plan group after its initial CP signature was recorded.
+    added=ok(client.post(f'/api/projects/{pid}/elements',json={**body,'product_id':product_id,'x':.8}))
+    assert client.delete('/api/elements/'+str(original['id'])).status_code==204
+    current=ok(client.get(path));assert len(current['lines'])==1
+    assert Decimal(current['lines'][0]['quantity'])==Decimal('3.5') and Decimal(current['lines'][0]['unit_price'])==100
+    # The manifest gets remapped catalogue IDs in another installation.
+    backup=client.get(f'/api/projects/{pid}/backup')
+    with zipfile.ZipFile(io.BytesIO(backup.content)) as archive:
+        manifest=json.loads(archive.read('manifest.json'))
+        files={name:archive.read(name) for name in archive.namelist()}
+    for item in manifest['types']:item['name']='Копия '+item['name'];item['seed_key']=None
+    for item in manifest['products']:item['sku']='COPY-'+item['sku'];item['name']='Копия '+item['name']
+    files['manifest.json']=json.dumps(manifest,ensure_ascii=False).encode()
+    out=io.BytesIO()
+    with zipfile.ZipFile(out,'w') as archive:
+        for name,content in files.items():archive.writestr(name,content)
+    restored=ok(client.post('/api/projects/import',files={'file':('project.zip',out.getvalue(),'application/zip')}))
+    copy=ok(client.get('/api/projects/'+str(restored['id'])));old=copy['elements'][0]
+    assert old['type_id']!=body['type_id'] and old['product_id']!=product_id
+    copy_body={**old,'x':.7}
+    new=ok(client.post('/api/projects/'+str(copy['id'])+'/elements',json=copy_body))
+    assert client.delete('/api/elements/'+str(old['id'])).status_code==204
+    cp=ok(client.get('/api/projects/'+str(copy['id'])+'/quotation'))
+    assert len(cp['lines'])==1 and cp['lines'][0]['source_ids']==[new['id']]
+    assert Decimal(cp['lines'][0]['quantity'])==Decimal('3.5') and Decimal(cp['lines'][0]['unit_price'])==100
+
+
+def test_manual_cp_row_removal_is_not_reversed_by_quantity_updates(client):
+    pid,body=setup(client)
+    ok(client.post(f'/api/projects/{pid}/elements',json=body))
+    room=ok(client.post(f'/api/projects/{pid}/rooms',json={'name':'Другая'}))
+    ok(client.post(f'/api/projects/{pid}/elements',json={**body,'room_id':room['id'],'x':.8}))
+    path=f'/api/projects/{pid}/quotation';quote=ok(client.get(path))
+    kept=quote['lines'][0];quote['lines']=[kept]
+    saved=ok(client.put(path,json=quote))
+    assert saved['lines']==ok(client.get(path))['lines'] and len(saved['lines'])==1

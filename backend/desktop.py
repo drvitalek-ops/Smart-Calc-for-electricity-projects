@@ -30,6 +30,15 @@ def configure_data_directory():
     os.environ['STORAGE_DIR'] = str(storage)
     os.environ['AUTO_CREATE_SCHEMA'] = '1'
     os.environ['SMART_HOME_CALC_DATA_DIR'] = str(root.resolve())
+    version=os.environ.get('SMART_HOME_CALC_APP_VERSION','')
+    if version:
+        from app.desktop_backup import preserve_before_upgrade
+        try:
+            if preserve_before_upgrade(root,version):(root/'rollback-warning.txt').unlink(missing_ok=True)
+        except Exception as exc:
+            logging.exception('Could not create the pre-upgrade data snapshot')
+            try:(root/'rollback-warning.txt').write_text(str(exc),encoding='utf-8')
+            except OSError:pass
     relocate_storage_paths(root)
     return root
 

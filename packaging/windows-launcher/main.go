@@ -7,14 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 	"unsafe"
 )
 
 const (
-	launcherVersion = "1.0.42"
+	launcherVersion = "1.0.43"
 	desktopHostName = "SmartHomeCalc.Desktop.exe"
 	backendName     = "SmartHomeCalc.Backend.exe"
 )
@@ -44,23 +43,6 @@ func installDirectory() (string, error) {
 	return filepath.Join(root, "SmartHomeCalc"), nil
 }
 
-func extractExecutable(target, name string, content []byte) error {
-	destination := filepath.Join(target, name)
-	temporary := destination + ".launcher-tmp"
-	if err := os.WriteFile(temporary, content, 0755); err != nil {
-		return err
-	}
-	if err := os.Remove(destination); err != nil && !errors.Is(err, os.ErrNotExist) {
-		os.Remove(temporary)
-		return err
-	}
-	if err := os.Rename(temporary, destination); err != nil {
-		os.Remove(temporary)
-		return err
-	}
-	return nil
-}
-
 func fail(message string, err error) {
 	text := message
 	if err != nil {
@@ -87,19 +69,20 @@ func main() {
 		fmt.Fprintf(logFile, "\n%s launcher %s\n", time.Now().Format(time.RFC3339), launcherVersion)
 	}
 
-	versionFile := filepath.Join(directory, ".launcher-version")
-	installedVersion, _ := os.ReadFile(versionFile)
-	update := strings.TrimSpace(string(installedVersion)) != launcherVersion
-	for name, content := range map[string][]byte{desktopHostName: desktopHost, backendName: backend} {
-		if _, err := os.Stat(filepath.Join(directory, name)); update || errors.Is(err, os.ErrNotExist) {
-			if err := extractExecutable(directory, name, content); err != nil {
-				fail("Не удалось обновить приложение. Закройте Smart Home Calc и повторите запуск.", err)
-			}
+	if needsInstall(directory, launcherVersion) {
+		mutexName, _ := syscall.UTF16PtrFromString(`Local\SmartHomeCalc.Desktop`)
+		kernel := syscall.NewLazyDLL("kernel32.dll")
+		handle, _, _ := kernel.NewProc("OpenMutexW").Call(0x00100000, 0, uintptr(unsafe.Pointer(mutexName)))
+		if handle != 0 {
+			kernel.NewProc("CloseHandle").Call(handle)
+			fail("Закройте Smart Home Calc перед обновлением и запустите EXE ещё раз.", nil)
 		}
-	}
-	if update {
-		if err := os.WriteFile(versionFile, []byte(launcherVersion+"\n"), 0644); err != nil {
-			fail("Не удалось сохранить версию приложения.", err)
+		previous, err := installVersion(directory, launcherVersion, map[string][]byte{desktopHostName: desktopHost, backendName: backend})
+		if err != nil {
+			fail("Не удалось обновить приложение. Проверьте свободное место и повторите запуск.", err)
+		}
+		if logFile != nil && previous != "" {
+			fmt.Fprintf(logFile, "Previous application preserved: %s\n", previous)
 		}
 	}
 

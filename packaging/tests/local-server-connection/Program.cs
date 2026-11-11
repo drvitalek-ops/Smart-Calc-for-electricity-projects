@@ -34,6 +34,16 @@ finally
     HttpClient.DefaultProxy = originalProxy;
 }
 
+Check(DesktopWorkbenchState.TryRead(backend.Address + "/editor", backend.Address,
+    "{\"type\":\"workbench-state\",\"dirty\":true,\"busy\":false}", out var dirtyState) && dirtyState.Dirty && !dirtyState.Busy,
+    "The native close guard must receive the editor's unsaved state.");
+Check(!DesktopWorkbenchState.TryRead(proxy.Address, backend.Address,
+    "{\"type\":\"workbench-state\",\"dirty\":false,\"busy\":false}", out _), "Other origins must not clear the close guard.");
+Check(!DesktopWorkbenchState.TryRead(backend.Address, backend.Address,
+    "{\"type\":\"workbench-state\",\"dirty\":\"false\",\"busy\":0}", out _), "Malformed state must be ignored.");
+Check(!DesktopWorkbenchState.TryRead(backend.Address, backend.Address,"not json",out _), "Invalid JSON must not crash the desktop.");
+Console.WriteLine("PASS: native dirty/busy state is accepted only from the application's origin.");
+
 static void Check(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);

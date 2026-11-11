@@ -121,12 +121,63 @@ try {
         if ($attached.project_id -ne $smokeProject.id -or -not $attached.archived_quotation_id -or $attached.quotation.partner.totals.RUB.total -ne "190.00") {
             throw "Packaged standalone quotation attachment failed"
         }
+        $backupResponse = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/settings/backups" -Method Post -ContentType "application/json" -Headers @{Origin="http://127.0.0.1:5173"} -Body (@{instance=$smokeToken} | ConvertTo-Json) -TimeoutSec 30
+        $fullBackup = Join-Path $workDirectory "full-backup.zip"
+        Invoke-WebRequest -Uri ("http://127.0.0.1:5173" + $backupResponse.url) -OutFile $fullBackup -TimeoutSec 30
+        $restoreSource = Join-Path $workDirectory "backup-extracted"
+        Expand-Archive -LiteralPath $fullBackup -DestinationPath $restoreSource
     }
     finally {
         if (-not $backendProcess.HasExited) {
-            Stop-Process -Id $backendProcess.Id -Force
+            $backendProcess.Kill($true)
+            $backendProcess.WaitForExit(10000) | Out-Null
         }
         $backendProcess.Dispose()
+    }
+
+    # Execute the restore script shipped in the actual ZIP in an isolated data
+    # directory. The pre-existing target must survive alongside the restored data.
+    $restoredAppData = Join-Path $workDirectory "restore-check"
+    $previousTarget = Join-Path $restoredAppData "SmartHomeCalc\data"
+    New-Item -ItemType Directory -Force -Path $previousTarget | Out-Null
+    [IO.File]::WriteAllText((Join-Path $previousTarget "keep.txt"), "old data remains recoverable")
+    $originalAppData = $env:LOCALAPPDATA
+    try {
+        $env:LOCALAPPDATA = $restoredAppData
+        function Read-Host { return "ВОССТАНОВИТЬ" }
+        & (Join-Path $restoreSource "restore-data.ps1")
+    }
+    finally {
+        Remove-Item Function:Read-Host -ErrorAction SilentlyContinue
+        $env:LOCALAPPDATA = $originalAppData
+    }
+    $kept = Get-ChildItem (Join-Path $restoredAppData "SmartHomeCalc") -Filter "data-before-restore-*"
+    if ($kept.Count -ne 1 -or -not (Test-Path (Join-Path $kept[0].FullName "keep.txt"))) {
+        throw "Restore did not preserve pre-existing data"
+    }
+    $smokeStart.Environment["LOCALAPPDATA"] = $restoredAppData
+    $restoredProcess = [Diagnostics.Process]::Start($smokeStart)
+    try {
+        $restoredReady = $false
+        for ($attempt = 0; $attempt -lt 60; $attempt++) {
+            if ($restoredProcess.HasExited) { throw "Restored packaged backend exited" }
+            try {
+                $restoredHealth = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/health" -TimeoutSec 2
+                if ($restoredHealth.instance -eq $smokeToken) { $restoredReady = $true; break }
+            } catch { Start-Sleep -Seconds 1 }
+        }
+        if (-not $restoredReady) { throw "Restored data did not open in packaged backend" }
+        $restoredProject = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)" -TimeoutSec 10
+        $restoredQuote = Invoke-RestMethod -Uri $quoteUrl -TimeoutSec 10
+        if ($restoredProject.elements.Count -ne 1 -or $restoredQuote.partner.totals.RUB.total -ne "190.00") {
+            throw "Full backup lost plan objects or quotation prices"
+        }
+        Invoke-WebRequest -Uri "http://127.0.0.1:5173/api/pages/$($planPages[0].id)/image" -OutFile (Join-Path $workDirectory "restored-plan.png") -TimeoutSec 20
+        Invoke-WebRequest -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/pages/$($planPages[0].id)/export.pdf" -OutFile (Join-Path $workDirectory "restored-plan.pdf") -TimeoutSec 20
+    }
+    finally {
+        if (-not $restoredProcess.HasExited) { $restoredProcess.Kill($true); $restoredProcess.WaitForExit(10000) | Out-Null }
+        $restoredProcess.Dispose()
     }
 
     & $DotnetBinary publish $desktopProject `
@@ -142,6 +193,8 @@ try {
     $env:CGO_ENABLED = "0"
     $env:GOOS = "windows"
     $env:GOARCH = "amd64"
+    & $GoBinary test upgrade.go upgrade_test.go
+    if ($LASTEXITCODE -ne 0) { throw "Launcher upgrade/rollback checks failed" }
     & $GoBinary build -trimpath -ldflags '-s -w -H=windowsgui' `
         -o (Join-Path $outputDirectory "SmartHomeCalc-Windows-x64.exe") .
     Pop-Location

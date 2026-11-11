@@ -25,7 +25,7 @@ internal static class Program
 
 internal sealed class MainWindow : Form
 {
-    private const string ApplicationVersion = "1.0.42";
+    private const string ApplicationVersion = "1.0.43";
     private static readonly string InstallDirectory = Path.GetDirectoryName(Environment.ProcessPath)
         ?? AppContext.BaseDirectory;
     private readonly int backendPort = FindAvailablePort();
@@ -42,6 +42,7 @@ internal sealed class MainWindow : Form
     };
     private Process? backendProcess;
     private string? lastHealthFailure;
+    private DesktopWorkbenchState workbenchState;
 
     private static void LogStartup(string message)
     {
@@ -87,10 +88,23 @@ internal sealed class MainWindow : Form
             webView.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = false;
             webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
             webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
+            webView.CoreWebView2.WebMessageReceived += (_, eventArgs) =>
+            {
+                if (DesktopWorkbenchState.TryRead(eventArgs.Source, ApplicationUrl, eventArgs.WebMessageAsJson, out var state))
+                    workbenchState = state;
+            };
             webView.CoreWebView2.NewWindowRequested += (_, eventArgs) =>
             {
                 eventArgs.Handled = true;
-                webView.CoreWebView2.Navigate(eventArgs.Uri);
+                if (!Uri.TryCreate(eventArgs.Uri, UriKind.Absolute, out var destination) ||
+                    (destination.Scheme != Uri.UriSchemeHttp && destination.Scheme != Uri.UriSchemeHttps)) return;
+                if (destination.Host == "127.0.0.1" && destination.Port == backendPort)
+                    webView.CoreWebView2.Navigate(destination.ToString());
+                else
+                {
+                    try { Process.Start(new ProcessStartInfo(destination.ToString()) { UseShellExecute = true }); }
+                    catch (Exception exception) { LogStartup("Could not open external link: " + exception.Message); }
+                }
             };
             webView.CoreWebView2.NavigationCompleted += (_, eventArgs) =>
             {
@@ -133,6 +147,23 @@ internal sealed class MainWindow : Form
         }
     }
 
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        if (e.CloseReason == CloseReason.UserClosing && (workbenchState.Dirty || workbenchState.Busy))
+        {
+            var message = workbenchState.Busy
+                ? "Операция ещё выполняется. Закрыть приложение до её завершения?"
+                : "Есть несохранённые изменения. Закрыть приложение без сохранения?";
+            if (MessageBox.Show(this, message, "Smart Home Calc", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+            {
+                e.Cancel = true;
+                return;
+            }
+        }
+        base.OnFormClosing(e);
+    }
+
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         if (backendProcess is { HasExited: false })
@@ -157,6 +188,7 @@ internal sealed class MainWindow : Form
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        startInfo.Environment["SMART_HOME_CALC_APP_VERSION"] = ApplicationVersion;
         startInfo.Environment["SMART_HOME_CALC_PORT"] = backendPort.ToString();
         startInfo.Environment["SMART_HOME_CALC_INSTANCE_TOKEN"] = instanceToken;
         backendProcess = Process.Start(startInfo)

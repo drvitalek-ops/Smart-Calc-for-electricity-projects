@@ -4,6 +4,7 @@ import math
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from functools import lru_cache
 import pymupdf
 from .quotations import totals
 
@@ -34,6 +35,7 @@ def export_quotation(quote,mode,font_path=None):
     margin=32
     usable=width-2*margin
     page=None
+    text_shape=None
     y=0
     bottom=height-35
     columns=([26,usable-26-75-35-26-86,75,35,26,86] if mode=='client'
@@ -41,20 +43,25 @@ def export_quotation(quote,mode,font_path=None):
     headings=(['№','НАИМЕНОВАНИЕ','ЦЕНА','КОЛ-ВО','ЕД.','СУММА'] if mode=='client'
         else ['№','НАИМЕНОВАНИЕ','ЦЕНА','КОЛ-ВО','ЕД.','СКИДКА','СУММА'])
 
+    @lru_cache(maxsize=4096)
+    def measure(value,size=8,face='Quote'):
+        return fonts[face].text_length(value,fontsize=size)
+
     def text(x,baseline,value,size=8,color=DARK,bold=False):
-        page.insert_text((x,baseline),str(value),fontname='QuoteBlack' if bold and size>=16 else 'QuoteBold' if bold else 'Quote',fontsize=size,color=color)
+        # A single text stream per page avoids rebuilding the page for every cell.
+        text_shape.insert_text((x,baseline),str(value),fontname='QuoteBlack' if bold and size>=16 else 'QuoteBold' if bold else 'Quote',fontsize=size,color=color)
 
     def wrap(value,max_width,size=8):
         output=[]
         for paragraph in str(value or '').split('\n'):
             line=''
             for word in paragraph.split():
-                if line and font.text_length(line+' '+word,fontsize=size)>max_width:
+                if line and measure(line+' '+word,size)>max_width:
                     output.append(line);line=''
                 # Long articles/URLs must not escape their column.
-                while font.text_length(word,fontsize=size)>max_width:
+                while measure(word,size)>max_width:
                     cut=1
-                    while cut<len(word) and font.text_length(word[:cut+1],fontsize=size)<=max_width: cut+=1
+                    while cut<len(word) and measure(word[:cut+1],size)<=max_width: cut+=1
                     if line: output.append(line);line=''
                     output.append(word[:cut]);word=word[cut:]
                 line=(line+' '+word).strip()
@@ -71,10 +78,12 @@ def export_quotation(quote,mode,font_path=None):
             return False
 
     def new_page():
-        nonlocal page,y
+        nonlocal page,y,text_shape
+        if text_shape is not None: text_shape.commit()
         page=doc.new_page(width=width,height=height)
         page.draw_rect(page.rect,color=None,fill=WHITE)
         for name,path in font_paths.items(): page.insert_font(fontname=name,fontfile=str(path))
+        text_shape=page.new_shape()
         y=28
 
     def line(ypos):
@@ -93,7 +102,7 @@ def export_quotation(quote,mode,font_path=None):
         x=margin
         for index,(heading,col_width) in enumerate(zip(headings,columns)):
             size=5.5
-            offset=6 if index<2 else max(2,col_width-font.text_length(heading,fontsize=size)-5)
+            offset=6 if index<2 else max(2,col_width-measure(heading,size)-5)
             text(x+offset,y+14,heading,size,GRAY)
             x+=col_width
         y+=28
@@ -144,12 +153,12 @@ def export_quotation(quote,mode,font_path=None):
     text(margin+22,y+bar_height/2+3,'ИТОГО ПО КП',8,(.7,.73,.75),True)
     for index,(code,values_for_currency) in enumerate(result['totals'].items()):
         amount=number(values_for_currency['total'])+' '+currency(code)
-        size=min(27,245/max(1,fonts['QuoteBlack'].text_length(amount,fontsize=1)))
-        text(width-margin-22-fonts['QuoteBlack'].text_length(amount,fontsize=size),y+28+index*24,amount,size,GREEN,True)
+        size=min(27,245/max(1,measure(amount,1,'QuoteBlack')))
+        text(width-margin-22-measure(amount,size,'QuoteBlack'),y+28+index*24,amount,size,GREEN,True)
     if quote.tax_note:
         size=6.5
         tax=wrap(quote.tax_note,250,size)[0]
-        text(width-margin-22-font.text_length(tax,fontsize=size),y+bar_height-9,tax,size,GRAY)
+        text(width-margin-22-measure(tax,size),y+bar_height-9,tax,size,GRAY)
     y+=bar_height+18
     if mode=='partner':
         for code,amounts in result['totals'].items():
@@ -213,7 +222,7 @@ def export_quotation(quote,mode,font_path=None):
                 for j,value in enumerate(values):
                     color=GREEN if col_index==len(columns)-1 else GRAY if col_index in (0,2,4) else DARK
                     right=col_index not in (0,1)
-                    xpos=x+col_width-5-fonts['QuoteBold' if col_index in (3,len(columns)-1) else 'Quote'].text_length(value,fontsize=7.5) if right else x+5+(photo_width if col_index==1 else 0)
+                    xpos=x+col_width-5-measure(value,7.5,'QuoteBold' if col_index in (3,len(columns)-1) else 'Quote') if right else x+5+(photo_width if col_index==1 else 0)
                     text(xpos,y+14+j*10,value,7.5,color,col_index in (3,len(columns)-1))
                 x+=col_width
             y+=row_height
@@ -227,12 +236,13 @@ def export_quotation(quote,mode,font_path=None):
     if y+100>bottom: new_page()
     line(y);y+=30
     for part in wrap(quote.seller,usable,11):
-        text((width-fonts['QuoteBold'].text_length(part,fontsize=11))/2,y,part,11,DARK,True);y+=16
+        text((width-measure(part,11,'QuoteBold'))/2,y,part,11,DARK,True);y+=16
     footer=[quote.address,'Тел.: '+quote.phone+'  |  e-mail: '+quote.email+'  |  '+quote.website]
     for value in footer:
         if not value: continue
         for part in wrap(value,usable,7.5):
-            text((width-font.text_length(part,fontsize=7.5))/2,y,part,7.5,GRAY);y+=11
+            text((width-measure(part,7.5))/2,y,part,7.5,GRAY);y+=11
+    text_shape.commit()
     for number_page,sheet in enumerate(doc,1):
         sheet.insert_text((width-margin-45,height-15),f'{number_page} / {len(doc)}',fontname='Quote',fontsize=7,color=GRAY)
     doc.set_metadata({'title':quote.title+' № '+quote.number,'author':quote.seller,'subject':'Коммерческое предложение'})

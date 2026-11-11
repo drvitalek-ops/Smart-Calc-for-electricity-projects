@@ -10,15 +10,17 @@ import re
 import sys
 import uuid
 import zipfile
+import zlib
 from threading import Lock
 from pathlib import Path
 from typing import Literal
 from contextlib import asynccontextmanager
-from collections import defaultdict, Counter
+from collections import defaultdict, Counter, OrderedDict
 import pymupdf
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, Query, Form, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import delete, inspect, select, text
 from sqlalchemy.orm import Session as DbSession
@@ -40,9 +42,12 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 PDF_IMAGE_LOCK = Lock()
 PDF_IMAGE_MAX_PIXELS = 16_000_000
 ELEMENT_HISTORY_LIMIT = 50
-ELEMENT_HISTORY: dict[int, list[dict]] = defaultdict(list)
-ELEMENT_REDO: dict[int, list[dict]] = defaultdict(list)
+ELEMENT_HISTORY: dict[int, list[bytes]] = defaultdict(list)
+ELEMENT_REDO: dict[int, list[bytes]] = defaultdict(list)
 ELEMENT_HISTORY_LOCK = Lock()
+ELEMENT_HISTORY_BYTES=32*1024*1024
+ELEMENT_HISTORY_TOTAL_BYTES=96*1024*1024
+HISTORY_ACCESS=OrderedDict()
 
 PDF_FONT_CANDIDATES = [
     os.getenv('PDF_FONT_PATH'),
@@ -66,6 +71,7 @@ async def lifespan(app):
     with ELEMENT_HISTORY_LOCK:
         ELEMENT_HISTORY.clear()
         ELEMENT_REDO.clear()
+        HISTORY_ACCESS.clear()
     if os.getenv('AUTO_CREATE_SCHEMA') == '1':
         Base.metadata.create_all(engine)
         if 'opacity' not in {column['name'] for column in inspect(engine).get_columns('layers')}:
@@ -98,14 +104,19 @@ async def lifespan(app):
                 connection.execute(text('ALTER TABLE rooms ADD COLUMN page_id INTEGER'))
             if 'polygon' not in room_columns:
                 connection.execute(text('ALTER TABLE rooms ADD COLUMN polygon JSON'))
+        for table in Base.metadata.sorted_tables:
+            for index in table.indexes: index.create(engine,checkfirst=True)
     with Session() as db:
         seed(db)
         migrate_power_links(db)
         recalculate_all_project_lines(db)
         db.commit()
-    yield
+    try:yield
+    finally:
+        from .backup_downloads import BACKUP_DOWNLOADS
+        BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.42'
+APP_VERSION = '1.0.43'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -124,11 +135,39 @@ def element_snapshot(db: DbSession, project_id: int):
     snapshot={}
     for key,model in [('elements',Element),('rooms',Room),('layers',Layer)]:
         snapshot[key]=[
-            copy.deepcopy({column.name:getattr(item,column.name) for column in model.__table__.columns})
+            {column.name:getattr(item,column.name) for column in model.__table__.columns}
             for item in db.scalars(select(model).where(model.project_id==project_id).order_by(model.id))
         ]
     snapshot['pages']={page.id:{key:copy.deepcopy(getattr(page,key)) for key in ('name','meters_per_point','overlay_visible','opacity','offset_x','offset_y','scale')} for page in db.scalars(select(Page).where(Page.project_id==project_id))}
+    return zlib.compress(json.dumps(snapshot,ensure_ascii=False,separators=(',',':')).encode('utf-8'),level=1)
+
+def unpack_snapshot(value):
+    snapshot=json.loads(zlib.decompress(value))
+    snapshot['pages']={int(key):values for key,values in snapshot['pages'].items()}
     return snapshot
+
+
+def trim_history(project_id):
+    # Called under ELEMENT_HISTORY_LOCK. Keep the newest action for the active
+    # project, and evict inactive histories before allowing unbounded growth.
+    HISTORY_ACCESS.pop(project_id,None);HISTORY_ACCESS[project_id]=None
+    def entries(pid):return ELEMENT_HISTORY.get(pid,[])+ELEMENT_REDO.get(pid,[])
+    for history in (ELEMENT_HISTORY.get(project_id,[]),ELEMENT_REDO.get(project_id,[])):
+        del history[:-ELEMENT_HISTORY_LIMIT]
+    while sum(map(len,entries(project_id)))>ELEMENT_HISTORY_BYTES:
+        candidates=[history for history in (ELEMENT_HISTORY.get(project_id,[]),ELEMENT_REDO.get(project_id,[])) if len(history)>1]
+        if not candidates:break
+        max(candidates,key=len).pop(0)
+    total=sum(sum(map(len,entries(pid))) for pid in HISTORY_ACCESS)
+    while total>ELEMENT_HISTORY_TOTAL_BYTES and len(HISTORY_ACCESS)>1:
+        old=next(iter(HISTORY_ACCESS));HISTORY_ACCESS.pop(old,None)
+        total-=sum(map(len,entries(old)));ELEMENT_HISTORY.pop(old,None);ELEMENT_REDO.pop(old,None)
+
+
+def history_state(project_id):
+    with ELEMENT_HISTORY_LOCK:
+        return {'undo':len(ELEMENT_HISTORY.get(project_id,[])),'redo':len(ELEMENT_REDO.get(project_id,[]))}
+
 
 def remember_elements(db: DbSession, project_id: int):
     snapshot=element_snapshot(db,project_id)
@@ -137,6 +176,7 @@ def remember_elements(db: DbSession, project_id: int):
         history.append(snapshot)
         del history[:-ELEMENT_HISTORY_LIMIT]
         ELEMENT_REDO.pop(project_id,None)
+        trim_history(project_id)
 
 class OpenDataFolderInput(BaseModel):
     model_config={'extra':'forbid'}
@@ -356,13 +396,18 @@ def room_at_point(db, project_id: int, page_id: int, x: float, y: float):
     return next((room for room in rooms if len(room.polygon or [])>=3 and point_in_polygon(x,y,room.polygon)),None)
 
 def reassign_page_rooms(db, project_id: int, page_id: int):
+    rooms=list(db.scalars(select(Room).where(Room.project_id==project_id).order_by(Room.id.desc())))
+    by_id={room.id:room for room in rooms}
+    zones=[]
+    for room in rooms:
+        if room.page_id!=page_id or len(room.polygon or [])<3:continue
+        xs=[point['x'] for point in room.polygon];ys=[point['y'] for point in room.polygon]
+        zones.append((room,min(xs),min(ys),max(xs),max(ys)))
     for element in db.scalars(select(Element).where(Element.project_id==project_id,Element.page_id==page_id)):
-        zone=room_at_point(db,project_id,page_id,element.x,element.y)
-        current=db.get(Room,element.room_id) if element.room_id else None
-        if zone:
-            element.room_id=zone.id
-        elif current and current.polygon:
-            element.room_id=None
+        zone=next((room for room,x1,y1,x2,y2 in zones if x1<=element.x<=x2 and y1<=element.y<=y2 and point_in_polygon(element.x,element.y,room.polygon)),None)
+        current=by_id.get(element.room_id)
+        if zone:element.room_id=zone.id
+        elif current and current.polygon:element.room_id=None
 
 def validate_room(db, project_id: int, body: RoomInput):
     values=body.model_dump()
@@ -397,7 +442,8 @@ def recalculate_page_lines(db, page):
         if length>1_000_000:
             raise HTTPException(422,'Длина линии после калибровки превышает 1 000 000 м')
         if 'manual_length' in item.parameters:
-            item.parameters={**item.parameters,'measured_length':length,'length':item.parameters['manual_length']}
+            if item.parameters.get('measured_length')!=length or item.parameters.get('length')!=item.parameters['manual_length']:
+                item.parameters={**item.parameters,'measured_length':length,'length':item.parameters['manual_length']}
             continue
         if item.parameters.get('length')!=length:
             item.parameters={**item.parameters,'length':length}
@@ -519,7 +565,8 @@ def health(db: DbSession = Depends(session)):
 
 @app.get('/api/settings')
 def settings():
-    return {'version':APP_VERSION,**desktop_settings()}
+    from .desktop_settings import rollback_settings
+    return {'version':APP_VERSION,**desktop_settings(),**rollback_settings(APP_VERSION)}
 
 @app.post('/api/settings/open-data-folder')
 def open_settings_data_folder(body: OpenDataFolderInput, request: Request):
@@ -527,6 +574,48 @@ def open_settings_data_folder(body: OpenDataFolderInput, request: Request):
     if origin and origin!=str(request.base_url).rstrip('/'):
         raise HTTPException(403,'Открывайте папку из настроек приложения')
     return open_data_folder(body.instance)
+
+def check_desktop_origin(request):
+    origin=request.headers.get('origin')
+    if origin and origin!=str(request.base_url).rstrip('/'):
+        raise HTTPException(403,'Используйте настройки приложения')
+
+
+@app.post('/api/settings/open-rollback-folder')
+def open_settings_rollback(body:OpenDataFolderInput,request:Request):
+    check_desktop_origin(request)
+    from .desktop_settings import open_rollback_folder
+    return open_rollback_folder(body.instance,APP_VERSION)
+
+
+@app.post('/api/settings/backups')
+def export_all_data(body:OpenDataFolderInput,request:Request):
+    check_desktop_origin(request)
+    from .desktop_settings import verify_instance,data_directory
+    from .desktop_backup import create_full_archive
+    from .backup_downloads import BACKUP_DOWNLOADS
+    verify_instance(body.instance)
+    if engine.dialect.name!='sqlite':raise HTTPException(409,'Полная копия доступна для автономной SQLite-версии')
+    if not BACKUP_DOWNLOADS.build_lock.acquire(blocking=False):raise HTTPException(409,'Резервная копия уже формируется')
+    try:
+        path=create_full_archive(data_directory(),APP_VERSION)
+        filename='SmartHomeCalc-data-v'+APP_VERSION+'.zip'
+        ticket=BACKUP_DOWNLOADS.add(path,filename)
+        return {'url':'/api/settings/backups/'+ticket+'.zip','filename':filename,'size':path.stat().st_size}
+    except (OSError,ValueError) as exc:
+        logging.exception('Full backup failed')
+        raise HTTPException(500,'Не удалось создать резервную копию. Проверьте свободное место и повторите попытку') from exc
+    finally:BACKUP_DOWNLOADS.build_lock.release()
+
+
+@app.get('/api/settings/backups/{ticket}.zip')
+def download_all_data(ticket:str):
+    from .backup_downloads import BACKUP_DOWNLOADS
+    record=BACKUP_DOWNLOADS.take(ticket)
+    if record is None:raise HTTPException(404,'Ссылка на копию устарела. Создайте копию заново в настройках')
+    path,filename=record
+    return FileResponse(path,media_type='application/zip',filename=filename,background=BackgroundTask(path.unlink,missing_ok=True))
+
 
 @app.get('/api/projects')
 def projects(db: DbSession = Depends(session)):
@@ -669,9 +758,12 @@ def delete_category(category_id:int,db:DbSession=Depends(session)):
 def catalog(db: DbSession = Depends(session)):
     manufacturers=[data(item) for item in db.scalars(select(Manufacturer).order_by(Manufacturer.name))]
     suppliers=[data(item) for item in db.scalars(select(Supplier).order_by(Supplier.name))]
+    maker_names={item['id']:item['name'] for item in manufacturers}
+    supplier_names={item['id']:item['name'] for item in suppliers}
     products=[]
     for product in db.scalars(select(Product).order_by(Product.name)):
-        products.append(catalog_product(db,product))
+        products.append({**data(product),'manufacturer':maker_names.get(product.manufacturer_id,''),
+            'supplier':supplier_names.get(product.supplier_id,'')})
     return {'manufacturers':manufacturers,'suppliers':suppliers,'products':products,'categories':category_rows(db)}
 
 @app.post('/api/manufacturers',status_code=201)
@@ -1055,6 +1147,7 @@ def project(pid: int, db: DbSession = Depends(session)):
     p = data(require(db,Project,pid))
     for key, model in [('pages',Page),('rooms',Room),('layers',Layer),('elements',Element)]:
         p[key] = [data(x) for x in db.scalars(select(model).where(model.project_id==pid).order_by(model.id))]
+    p['history']=history_state(pid)
     return p
 
 @app.delete('/api/projects/{pid}')
@@ -1082,6 +1175,7 @@ def remove_project(pid: int, db: DbSession = Depends(session)):
         db.commit()
         with ELEMENT_HISTORY_LOCK:
             ELEMENT_HISTORY.pop(pid,None)
+            HISTORY_ACCESS.pop(pid,None)
             ELEMENT_REDO.pop(pid,None)
         for path in paths:
             resolved=path.resolve()
@@ -1183,6 +1277,7 @@ def delete_project_pages(db: DbSession, project_id: int, page_ids: list[int]):
     db.commit()
     with ELEMENT_HISTORY_LOCK:
         ELEMENT_HISTORY.pop(project_id,None)
+        HISTORY_ACCESS.pop(project_id,None)
         ELEMENT_REDO.pop(project_id,None)
     for path in image_paths:
         path.unlink(missing_ok=True)
@@ -1410,11 +1505,14 @@ def restore_edit_history(pid,db,redo=False):
     require(db,Project,pid)
     source=ELEMENT_REDO if redo else ELEMENT_HISTORY
     destination=ELEMENT_HISTORY if redo else ELEMENT_REDO
+    with ELEMENT_HISTORY_LOCK:
+        if not source.get(pid):return {'undone':False}
     current=element_snapshot(db,pid)
     with ELEMENT_HISTORY_LOCK:
-        if not source.get(pid): return {'undone':False}
-        snapshot=source[pid].pop()
+        if not source.get(pid):return {'undone':False}
+        stored=source[pid].pop()
     try:
+        snapshot=unpack_snapshot(stored)
         for item in db.scalars(select(Element).where(Element.project_id==pid)): db.delete(item)
         db.flush()
         rooms={item.id:item for item in db.scalars(select(Room).where(Room.project_id==pid))}
@@ -1443,11 +1541,11 @@ def restore_edit_history(pid,db,redo=False):
         db.commit()
     except Exception:
         db.rollback()
-        with ELEMENT_HISTORY_LOCK: source[pid].append(snapshot)
+        with ELEMENT_HISTORY_LOCK: source[pid].append(stored)
         raise
     with ELEMENT_HISTORY_LOCK:
         destination[pid].append(current)
-        del destination[pid][:-ELEMENT_HISTORY_LIMIT]
+        trim_history(pid)
     return {'undone':True,'elements':len(snapshot['elements'])}
 
 @app.post('/api/projects/{pid}/elements/undo')
@@ -1467,20 +1565,32 @@ def report_rows(db,pid):
     frame_groups=defaultdict(float)
     frame_members=defaultdict(list)
     warnings=[]
-    for e,t,l in db.execute(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id).join(Layer,Element.layer_id==Layer.id).where(Element.project_id==pid)):
+    # Keep referenced rows alive for the whole report. SQLAlchemy's identity map
+    # is weak: repeated db.get() calls inside the loop otherwise requery the DB.
+    rows_for_report=list(db.execute(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id).join(Layer,Element.layer_id==Layer.id).where(Element.project_id==pid)))
+    element_map={element.id:element for element,_,_ in rows_for_report}
+    room_map={room.id:room for room in db.scalars(select(Room).where(Room.project_id==pid))}
+    page_map={page.id:page for page in db.scalars(select(Page).where(Page.project_id==pid))}
+    product_ids=select(Element.product_id).where(Element.project_id==pid,Element.product_id.is_not(None))
+    product_map={product.id:product for product in db.scalars(select(Product).where(Product.id.in_(product_ids)))}
+    maker_ids=select(Product.manufacturer_id).where(Product.id.in_(product_ids))
+    maker_map={maker.id:maker for maker in db.scalars(select(Manufacturer).where(Manufacturer.id.in_(maker_ids)))}
+    supplier_ids=select(Product.supplier_id).where(Product.id.in_(product_ids),Product.supplier_id.is_not(None))
+    supplier_map={supplier.id:supplier for supplier in db.scalars(select(Supplier).where(Supplier.id.in_(supplier_ids)))}
+    for e,t,l in rows_for_report:
         if not l.export: continue
-        room=db.get(Room,e.room_id) if e.room_id else None
-        product=db.get(Product,e.product_id) if e.product_id else None
-        manufacturer=db.get(Manufacturer,product.manufacturer_id) if product else None
-        supplier=db.get(Supplier,product.supplier_id) if product and product.supplier_id else None
+        room=room_map.get(e.room_id)
+        product=product_map.get(e.product_id)
+        manufacturer=maker_map.get(product.manufacturer_id) if product else None
+        supplier=supplier_map.get(product.supplier_id) if product else None
         group_parameters={k:v for k,v in e.parameters.items() if k not in APPEARANCE_KEYS | {'length','quantity','frame_posts','frame_group','manual_length','measured_length'}}
         if is_power_supply(t):
             descriptions=[]
             for strip_id in sorted(linked_strip_ids(e.parameters)):
-                strip=db.get(Element,strip_id)
-                strip_room=db.get(Room,strip.room_id) if strip and strip.room_id else None
-                strip_page=db.get(Page,strip.page_id) if strip else None
-                descriptions.append(f"LED-линия №{strip.id} · {strip_room.name if strip_room else 'Без помещения'} · лист {strip_page.number}" if strip else f'Лента №{strip_id} не найдена')
+                strip=element_map.get(strip_id)
+                strip_room=room_map.get(strip.room_id) if strip else None
+                strip_page=page_map.get(strip.page_id) if strip else None
+                descriptions.append(f"LED-линия №{strip.id} · {strip_room.name if strip_room else 'Без помещения'} · лист {strip_page.number}" if strip and strip_page else f'Лента №{strip_id} не найдена')
             group_parameters.pop('led_strip_id',None)
             group_parameters.pop('led_strip_ids',None)
             group_parameters['led_strip']='; '.join(descriptions)
@@ -1569,12 +1679,15 @@ def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
                 draw_marker(sheet,anchor,element.parameters,color)
         else:
             anchor=pymupdf.Point(element.x*page.width,element.y*page.height)
-            draw_marker(sheet,anchor,element.parameters,color,is_power_supply(typ))
+            draw_marker(sheet,anchor,element.parameters,color,is_power_supply(typ),typ)
         if element.parameters.get('plan_label_visible',True):
             name=element.parameters.get('display_name','').strip() or typ.name
             label=name+f" #{element.id}"+(f" · {element.parameters['power_watts']:g} Вт" if element.parameters.get('power_watts') else '')
             if points: label+=f" · {element.parameters.get('length',0):g} м"
-            sheet.insert_text((anchor.x+7,anchor.y-4),label,fontsize=element.parameters.get('plan_label_size',7),fontname='CalcPlan',color=rgb(element.parameters.get('plan_label_color','#0f172a')))
+            unit=page.width/1000
+            label_x=(18 if points else 27 if is_power_supply(typ) else 17)*unit*element.parameters.get('plan_size',1)
+            label_y=(-10 if points else 5)*unit
+            sheet.insert_text((anchor.x+label_x,anchor.y+label_y),label,fontsize=2*unit*element.parameters.get('plan_label_size',7),fontname='CalcPlan',color=rgb(element.parameters.get('plan_label_color','#0f172a')))
     content=document.tobytes(deflate=True); document.close()
     return StreamingResponse(
         io.BytesIO(content),media_type='application/pdf',

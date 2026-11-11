@@ -1,25 +1,19 @@
-import {useEffect,useState} from 'react';
+import {PlanSymbol} from "./PlanSymbol";
+export {PlanSymbol,GlyphDefinitions} from "./PlanSymbol";
+import type {PlanKind} from "./planDomain";
+import {memo,useEffect,useState} from 'react';
 import SearchSelect from './SearchSelect';
 import {ToolButton} from './ToolRail';
 export type Parameters=Record<string,unknown>;
 export const appearanceKeys=['display_name','plan_icon','plan_color','plan_shape','plan_size','plan_rotation','plan_label_color','plan_label_size','plan_label_visible','line_width','line_dash'];
 export const shapeChoices=[['circle','Круг'],['square','Квадрат'],['rectangle','Прямоугольник'],['diamond','Ромб'],['triangle','Треугольник'],['hexagon','Шестиугольник'],['cross','Крест'],['socket','Розетка'],['switch','Выключатель'],['lamp','Светильник'],['sensor','Датчик']];
-export function PlanSymbol({parameters={},color='#38bdf8',radius=12,power=false,selected=false,preview=false}:{parameters?:Parameters;color?:string;radius?:number;power?:boolean;selected?:boolean;preview?:boolean}) {
-  const r=radius*Number(parameters.plan_size??1),shape=String(parameters.plan_shape??(power?'rectangle':'circle')),icon=String(parameters.plan_icon??''),rotation=Number(parameters.plan_rotation??0);
-  const points:Record<string,number[][]>={square:[[-1,-1],[1,-1],[1,1],[-1,1]],rectangle:[[-1.6,-.65],[1.6,-.65],[1.6,.65],[-1.6,.65]],diamond:[[0,-1.3],[1.3,0],[0,1.3],[-1.3,0]],triangle:[[0,-1.3],[1.2,1],[-1.2,1]],hexagon:Array.from({length:6},(_,i)=>[Math.cos(i*Math.PI/3),Math.sin(i*Math.PI/3)]),cross:[[-.35,-1],[.35,-1],[.35,-.35],[1,-.35],[1,.35],[.35,.35],[.35,1],[-.35,1],[-.35,.35],[-1,.35],[-1,-.35],[-.35,-.35]]};
-  const segments:Record<string,number[][][]>={socket:[[[-.35,-.1],[-.35,.15]],[[.35,-.1],[.35,.15]]],switch:[[[-.45,.45],[.45,-.45]]],lamp:[[[-.45,-.45],[.45,.45]],[[-.45,.45],[.45,-.45]]],sensor:[[[-.5,.25],[0,-.4]],[[0,-.4],[.5,.25]]]};
-  return <g className="editable-plan-symbol"><g transform={`rotate(${rotation})`} fill={color} stroke={selected?'#0f172a':'white'} strokeWidth={selected?4:2}>
-    {points[shape] ? shape==='rectangle' ? <rect fill={color} className={power&&!preview?'power-supply-symbol':undefined} x={-1.6*r} y={-.65*r} width={3.2*r} height={1.3*r} rx={r*.1}/> : <polygon fill={color} points={points[shape].map(([x,y])=>`${x*r},${y*r}`).join(' ')}/> : <circle fill={color} r={r}/>}
-    {segments[shape]?.map(([a,b],index)=><line key={index} x1={a[0]*r} y1={a[1]*r} x2={b[0]*r} y2={b[1]*r} stroke="white" strokeWidth={Math.max(1,r*.13)}/>)}
-  </g>{icon&&<text className="custom-icon" textAnchor="middle" dominantBaseline="central" fill="white" fontSize={Math.min(r*1.6,r*3/Math.max(1,icon.length))}>{icon}</text>}</g>;
-}
-export function AppearanceEditor({value,onChange,color,power=false,line=false,electrical=false,allowName=true,partial=false}:{value:Parameters;onChange:(value:Parameters)=>void;color:string;power?:boolean;line?:boolean;electrical?:boolean;allowName?:boolean;partial?:boolean}) {
+export function AppearanceEditor({value,onChange,color,power=false,line=false,electrical=false,allowName=true,partial=false,kind}:{value:Parameters;onChange:(value:Parameters)=>void;color:string;power?:boolean;line?:boolean;electrical?:boolean;allowName?:boolean;partial?:boolean;kind?:PlanKind}) {
   const [hex,setHex]=useState(String(value.plan_color??color)),[hexError,setHexError]=useState('');
   useEffect(()=>{setHex(String(value.plan_color??color));},[value.plan_color,color]);
   const set=(key:string,next:unknown)=>{const result={...value};if(next===''&&['plan_icon','display_name'].includes(key))result[key]='';else if(next===''||next===undefined){if(partial)result[key]=null;else delete result[key];}else result[key]=next;onChange(result);};
   const number=(key:string,label:string,defaultValue:number,min:number,max:number,step=1)=><label>{label}<input aria-label={label} type="number" min={min} max={max} step={step} value={String(value[key]??defaultValue)} onChange={event=>set(key,event.target.value===''?undefined:Number(event.target.value))}/></label>;
   return <div className="appearance-editor">
-    <div className="appearance-preview"><svg viewBox="-36 -36 72 72"><PlanSymbol preview parameters={value} radius={10} power={power} color={String(value.plan_color??color)}/></svg></div>
+    <div className="appearance-preview"><svg viewBox="-36 -36 72 72"><PlanSymbol preview kind={kind} parameters={value} radius={10} power={power} color={String(value.plan_color??color)}/></svg></div>
     {allowName&&<label>Своё название позиции<input aria-label="Своё название объекта" maxLength={200} placeholder="Название из номенклатуры" value={String(value.display_name??'')} onChange={event=>set('display_name',event.target.value)}/></label>}
     <label>Символ / надпись<input aria-label={electrical?'Иконка электроустановки':'Иконка объекта'} maxLength={12} placeholder="R, TV, LED, БП…" value={String(value.plan_icon??'')} onChange={event=>set('plan_icon',event.target.value)}/></label>
     <label>Форма значка<SearchSelect aria-label="Форма обозначения" value={String(value.plan_shape??'')} onChange={event=>set('plan_shape',event.target.value)}><option value="">По умолчанию</option>{shapeChoices.map(([key,label])=><option key={key} value={key}>{label}</option>)}</SearchSelect></label>
@@ -52,4 +46,11 @@ export function CoordinateEditor({item,page,onChange}:{item:{x:number;y:number;g
     {Boolean(item.geometry?.points?.length)&&<ToolButton icon="plus" type="button" disabled={points.length>=1000} onClick={()=>{const before=points[points.length-2],last=points[points.length-1],middle={x:String((Number(before.x)+Number(last.x))/2),y:String((Number(before.y)+Number(last.y))/2)};setPoints([...points.slice(0,-1),middle,last]);}}>Добавить узел</ToolButton>}
     <ToolButton icon="edit" type="button" onClick={()=>{const parsed=points.map(point=>({x:Number(point.x)/mx,y:Number(point.y)/my}));if(points.some(p=>p.x===''||p.y==='')||parsed.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y)||p.x<0||p.x>1||p.y<0||p.y>1)){setError('Координаты должны находиться в пределах листа');return;}setError('');onChange({...parsed[0],...(item.geometry?.points?.length?{geometry:{...item.geometry,points:parsed}}:{})});}}>Применить координаты</ToolButton>{error&&<p role="alert" className="manual-error">{error}</p>}
   </details>;
+}
+
+export function PointMarker({scale,color,selected,icon,powerSupply=false,parameters={},kind,shared=false,details=true}:{scale:number;color:string;selected:boolean;icon:string;powerSupply?:boolean;parameters?:Record<string,unknown>;kind?:PlanKind;shared?:boolean;details?:boolean}) {
+  return <g className={"point-symbol "+(selected?"selected-object":"")}>
+    {selected&&<><circle className="selection-halo" r={24*scale*Number(parameters.plan_size??1)} fill="#38bdf8" fillOpacity=".2" stroke="#0284c7" strokeWidth="5" vectorEffect="non-scaling-stroke"/><circle className="selection-ring" r={17*scale*Number(parameters.plan_size??1)} fill="none" stroke="white" strokeWidth="3" vectorEffect="non-scaling-stroke"/></>}
+    <PlanSymbol details={details} shared={shared} kind={kind} parameters={{...parameters,plan_icon:icon}} color={color} selected={selected} power={powerSupply} radius={12*scale}/>
+  </g>;
 }

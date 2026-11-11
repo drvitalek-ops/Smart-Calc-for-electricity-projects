@@ -1,7 +1,10 @@
-import {useState} from 'react';
+import {useEffect,useState} from 'react';
 export type Category={id:number|null;name:string;description:string;system:boolean;positions:number};
-export default function CategoryEditor({categories,onChanged}:{categories:Category[];onChanged:()=>Promise<void>}){
+export default function CategoryEditor({categories,onChanged,onDirtyChange,onBusyChange}:{categories:Category[];onChanged:()=>Promise<void>;onDirtyChange?:(dirty:boolean)=>void;onBusyChange?:(busy:boolean)=>void}){
   const [form,setForm]=useState({id:0,name:'',description:''}),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+  const original=categories.find(item=>item.id===form.id),dirty=form.name!==(original?.name??'')||form.description!==(original?.description??'');
+  useEffect(()=>{onDirtyChange?.(dirty);return()=>onDirtyChange?.(false);},[dirty,onDirtyChange]);
+  useEffect(()=>{onBusyChange?.(busy);return()=>onBusyChange?.(false);},[busy,onBusyChange]);
   async function save(method:string,id?:number){setBusy(true);setError('');try{
     const response=await fetch('/api/categories'+(id?'/'+id:''),{method,headers:{'Content-Type':'application/json'},body:method==='DELETE'?undefined:JSON.stringify({name:form.name,description:form.description})});
     if(!response.ok){const result=await response.json();throw Error(typeof result.detail==='string'?result.detail:'Проверьте название категории');}

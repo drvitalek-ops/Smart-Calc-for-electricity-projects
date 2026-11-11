@@ -45,6 +45,13 @@ jobs:
           PYTHONPATH: .
         run: pytest -q -s
 
+      - name: Verify v1.0.42 rollback and quotation pixels
+        shell: bash
+        run: |
+          git fetch --depth=1 origin tag v1.0.42
+          git worktree add --detach ../smart-calc-rollback-baseline v1.0.42
+          python scripts/check-rollback-compatibility.py --previous ../smart-calc-rollback-baseline
+
       - name: Validate database migrations
         working-directory: backend
         env:
@@ -100,6 +107,8 @@ jobs:
           node frontend/tests/frames.cjs
           node frontend/tests/power-supplies.cjs
           node frontend/tests/rooms.cjs
+          node frontend/tests/workbench.cjs
+          node frontend/tests/large-quotation.cjs
           node frontend/tests/photos-categories.cjs
           node frontend/tests/catalog.cjs
 

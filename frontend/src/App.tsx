@@ -1,14 +1,26 @@
+import {useDesktopState} from "./desktopBridge";
+import usePlanWindow from "./usePlanWindow";
+import usePlanCamera from "./usePlanCamera";
+import PlanStatusBar,{type PlanStatusHandle} from "./PlanStatusBar";
+import useRafState from "./useRafState";
+import usePreference from "./usePreference";
+import {VertexIndex,orthogonal,selectionHits,measuredLength} from "./planGeometry";
+import PlanLegend,{type LegendEntry} from "./PlanLegend";
+import {shareProject} from "./projectState";
+import PlanScene from "./PlanScene";
+import useStableCallback from "./useStableCallback";
+import {isElectrical,isPowerSupply,isLedStrip,isTrack} from "./planDomain";
 import CategoryEditor,{type Category} from "./CategoryEditor";
 import ImageField,{imagePaste,prepareImage,imageDrop,imageDragOver} from "./ImageField";
 import SearchInput from "./SearchInput";
 import ToolRail, {ToolButton,ActionIcon} from "./ToolRail";
-import {AppearanceEditor,CustomFieldsEditor,CoordinateEditor,PlanSymbol,appearanceKeys} from "./PlanAppearance";
+import {AppearanceEditor,CustomFieldsEditor,CoordinateEditor,PlanSymbol,PointMarker,appearanceKeys} from "./PlanAppearance";
 import SearchSelect, {matchesSearch,SearchHighlight} from "./SearchSelect";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import QuotationEditor from "./QuotationEditor";
 import QuotationHub from "./QuotationHub";
-type Point = { x: number; y: number };
-type Page = {
+export type Point = { x: number; y: number };
+export type Page = {
   id: number;
   number: number;
   name: string | null;
@@ -66,7 +78,7 @@ type Room = {
   page_id: number | null;
   polygon: Point[] | null;
 };
-type Layer = {
+export type Layer = {
   id: number;
   name: string;
   visible: boolean;
@@ -74,7 +86,7 @@ type Layer = {
   export: boolean;
   opacity: number;
 };
-type Kind = {
+export type Kind = {
   active: boolean;
   seed_key: string | null;
   wet_min_ip: number | null;
@@ -95,10 +107,10 @@ function groupKinds(types:Kind[]) {
   }
   return [...groups].map(([label,items])=>({label,items}));
 }
-function KindOptions({types,showUnits=false}:{types:Kind[];showUnits?:boolean}) {
-  return <>{groupKinds(types).map(group=><optgroup key={group.label} label={group.label}>{group.items.map(type=><option key={type.id} value={type.id}>{type.name}{showUnits ? ` (${type.unit})` : ""}</option>)}</optgroup>)}</>;
-}
-type Item = {
+const KindOptions=memo(function KindOptions({types,showUnits=false}:{types:Kind[];showUnits?:boolean}) {
+  return <>{groupKinds(types).map(group=><optgroup key={group.label} label={group.label}>{group.items.map(type=><option key={type.id} value={type.id} data-symbol-name={type.name} data-symbol-category={type.category} data-symbol-unit={type.unit} data-symbol-seed={type.seed_key??''} data-symbol-color={type.color}>{type.name}{showUnits ? ` (${type.unit})` : ""}</option>)}</optgroup>)}</>;
+});
+export type Item = {
   id: number;
   page_id: number;
   layer_id: number;
@@ -111,7 +123,8 @@ type Item = {
   geometry: { points?: Point[] } | null;
   comment: string;
 };
-type Project = {
+export type Project = {
+  history?:{undo:number;redo:number};
   id: number;
   name: string;
   pages: Page[];
@@ -258,20 +271,8 @@ function rememberSymbolScale(projectId: number, value: number) {
 function sameItem(first: Item, second: Item) {
   return JSON.stringify(first) === JSON.stringify(second);
 }
-function isElectrical(kind?: Kind) {
-  return kind?.category === "Электроустановки";
-}
-function isPowerSupply(kind?: Kind) {
-  return kind?.seed_key === "LED-подсветка:Блок питания LED-ленты" || Boolean(kind?.seed_key?.startsWith("power-supply:")) || kind?.category === "LED-подсветка" && kind.name.toLocaleLowerCase().includes("блок питания");
-}
 function powerStripIds(parameters:Record<string,unknown>):number[] {
   return Array.isArray(parameters.led_strip_ids) ? parameters.led_strip_ids.map(Number) : parameters.led_strip_id ? [Number(parameters.led_strip_id)] : [];
-}
-function isLedStrip(kind?: Kind) {
-  return kind?.category === "LED-подсветка" && kind.unit === "м";
-}
-function isTrack(kind?: Kind) {
-  return kind?.name.toLocaleLowerCase().includes("трек") ?? false;
 }
 function pointAngle(points: Point[], index: number) {
   if (points.length < 2) return 0;
@@ -374,54 +375,46 @@ function polygonSelfIntersects(points: Point[]) {
   }
   return false;
 }
-function PointMarker({scale,color,selected,icon,powerSupply=false,parameters={}}:{scale:number;color:string;selected:boolean;icon:string;powerSupply?:boolean;parameters?:Record<string,unknown>}) {
-  return <g className={"point-symbol "+(selected?"selected-object":"")}>
-    {selected&&<><circle className="selection-halo" r={24*scale*Number(parameters.plan_size??1)} fill="#38bdf8" fillOpacity=".2" stroke="#0284c7" strokeWidth="5" vectorEffect="non-scaling-stroke"/><circle className="selection-ring" r={17*scale*Number(parameters.plan_size??1)} fill="none" stroke="white" strokeWidth="3" vectorEffect="non-scaling-stroke"/></>}
-    <PlanSymbol parameters={{...parameters,plan_icon:icon}} color={color} selected={selected} power={powerSupply} radius={12*scale}/>
-  </g>;
-}
-type LegendEntry = { key: string; name: string; color: string; symbol: string };
 function makeLegend(
   project: Project,
   pageIds: Set<number>,
   types: Kind[],
 ): LegendEntry[] {
   const entries = new Map<string, LegendEntry>();
+  const frameCounts=new Map<number,Set<string>>();
+  const kinds=new Map(types.map(type=>[type.id,type])),layers=new Map(project.layers.map(layer=>[layer.id,layer])),ranks=new Map(types.map((type,index)=>[type.name,index]));
   for (const item of project.elements) {
     if (
       !pageIds.has(item.page_id) ||
-      !project.layers.find((layer) => layer.id === item.layer_id)?.visible
+      !layers.get(item.layer_id)?.visible
     )
       continue;
-    const kind = types.find((type) => type.id === item.type_id);
+    const kind = kinds.get(item.type_id);
     if (!kind) continue;
     const icon = String(item.parameters.plan_icon ?? "").trim(),
       symbol = isPowerSupply(kind) ? "▭" : icon || (isTrack(kind) ? "➜" : kind.unit === "м" ? "━" : "●"),
       color = String(item.parameters.plan_color ?? kind.color),
-      key = `${kind.id}:${symbol}:${color}`;
-    entries.set(key, { key, name: kind.name, color, symbol });
+      key = `${kind.id}:${symbol}:${color}:${item.parameters.plan_shape??''}:${item.parameters.display_name??''}`;
+    const previous=entries.get(key);
+    entries.set(key, { key, name: String(item.parameters.display_name||kind.name), color, symbol,kind,parameters:item.parameters,count:(previous?.count??0)+1 });
     if (item.parameters.frame_group) {
       const posts = Number(item.parameters.frame_posts),
         ending = posts === 1 ? "пост" : posts < 5 ? "поста" : "постов";
+      const frames=frameCounts.get(posts)??new Set<string>();frames.add(String(item.parameters.frame_group));frameCounts.set(posts,frames);
       entries.set(`frame:${posts}`, {
         key: `frame:${posts}`,
         name: `Рамка на ${posts} ${ending}`,
         color: "#fb923c",
-        symbol: "▭",
+        symbol: "▭",posts,count:frames.size,
       });
     }
   }
   return [...entries.values()].sort((a,b) => {
-    const rank=(name:string) => { const index=types.findIndex(type => type.name === name); return index < 0 ? types.length : index; };
+    const rank=(name:string) => ranks.get(name)??types.length;
     return rank(a.name)-rank(b.name) || a.name.localeCompare(b.name,"ru",{numeric:true});
   });
 }
-function ToolIcon({name}:{name:"settings"|"pdf"|"folder"|"trash"}) {
-  if(name==="trash")return <svg className="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>;
-  return <svg className="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    {name==="settings" ? <><path d="m9 3-1 3-3 1-2 3 2 2v3l3 2 1 4h6l1-4 3-2v-3l2-2-2-3-3-1-1-3Z"/><circle cx="12" cy="12" r="3"/></> : name==="folder" ? <><path d="M3 7V5h7l2 2h9v13H3Z"/><path d="M3 10h18"/></> : <><path d="M14 3H5v18h14V8Z"/><path d="M14 3v5h5M8 13h8M8 17h5"/></>}
-  </svg>;
-}
+function ToolIcon({name}:{name:"settings"|"pdf"|"folder"|"trash"}) {return <ActionIcon name={name} className="tool-icon"/>;}
 function AppModal({title,onClose,busy=false,children,className=""}:{title:string;onClose:()=>void;busy?:boolean;children:React.ReactNode;className?:string}) {
   const modal=useRef<HTMLDivElement>(null);
   useEffect(()=> {
@@ -454,9 +447,11 @@ function AppModal({title,onClose,busy=false,children,className=""}:{title:string
     </section>
   </div>;
 }
-type AppSettings={version:string;can_open_data_folder:boolean;data_directory:string|null;instance:string};
-function SettingsDialog({onClose}:{onClose:()=>void}) {
+type AppSettings={version:string;can_open_data_folder:boolean;data_directory:string|null;instance:string;can_backup_all?:boolean;rollback_version?:string|null;rollback_directory?:string|null;rollback_has_data?:boolean;rollback_warning?:string};
+function SettingsDialog({onClose,onBusyChange,backupBlocked=false}:{onClose:()=>void;onBusyChange:(busy:boolean)=>void;backupBlocked?:boolean}) {
+  const [adaptiveLabels,setAdaptiveLabels]=usePreference<boolean>('adaptive-labels',true),[showGrid,setShowGrid]=usePreference<boolean>('canvas-grid',true);
   const [info,setInfo]=useState<AppSettings|null>(null),[error,setError]=useState(""),[message,setMessage]=useState(""),[opening,setOpening]=useState(false);
+  useEffect(()=>{onBusyChange(opening);return()=>onBusyChange(false);},[opening,onBusyChange]);
   useEffect(()=> {let active=true;api<AppSettings>("/settings").then(info=> {if(active)setInfo(info);}).catch(error=> {if(active)setError(error instanceof Error ? error.message : "Не удалось загрузить настройки");});return()=>{active=false;};},[]);
   return <AppModal title="Настройки" onClose={onClose} busy={opening} className="settings-modal">
     <div className="settings-heading"><ToolIcon name="folder"/><div><h3>Данные и перенос на другой компьютер</h3><p>Здесь хранятся все проекты, общий каталог, PDF-планы и изображения.</p></div></div>
@@ -471,6 +466,23 @@ function SettingsDialog({onClose}:{onClose:()=>void}) {
     {info && !info.can_open_data_folder && <p className="hint">Открытие папки доступно в автономном приложении Smart Home Calc для Windows.</p>}
     {error && <p className="catalog-error" role="alert">{error}</p>}
     {message && <p className="catalog-success" role="status">{message}</p>}
+    <section className="settings-backup"><h3>Рабочая область</h3><label className="check"><input type="checkbox" checked={adaptiveLabels} onChange={event=>setAdaptiveLabels(event.target.checked)}/>Автоматически упрощать большие планы</label><p className="hint">При более чем 500 видимых объектах общий вид показывает формы и цвета; подробные значки и подписи остаются у выбранных элементов. При увеличении детали возвращаются.</p><label className="check"><input type="checkbox" checked={showGrid} onChange={event=>setShowGrid(event.target.checked)}/>Фоновая сетка рабочей области</label></section>
+    <section className="settings-backup"><div className="settings-heading"><ActionIcon name="save"/><div><h3>Полная резервная копия</h3><p>Все проекты, каталог, товары с фотографиями, коммерческие предложения и планы — в одном ZIP.</p></div></div>
+      <button type="button" className="tool-action" disabled={opening||!info?.can_backup_all||backupBlocked} onClick={()=>void(async()=>{
+        if(!info)return;setOpening(true);setError('');setMessage('Подготовка полной копии…');
+        try{const backup=await api<{url:string;filename:string;size:number}>('/settings/backups','POST',{instance:info.instance});const link=document.createElement('a');link.href=backup.url;link.download=backup.filename;link.click();setMessage('Копия готова: '+(backup.size/1024/1024).toLocaleString('ru-RU',{maximumFractionDigits:1})+' МБ. Дождитесь загрузки ZIP перед закрытием приложения.');}
+        catch(error){setMessage('');setError(error instanceof Error?error.message:'Не удалось подготовить копию');}
+        finally{setOpening(false);}
+      })()}><ActionIcon name="save"/><span>{opening?'Подготовка…':'Скачать полную копию ZIP'}</span></button>
+      {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
+      {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
+    </section>
+    <section className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Формат проектов и КП совместим с v1.0.42.</p></div></div>
+      {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(error instanceof Error?error.message:'Не удалось открыть папку');}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
+      <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.42" target="_blank" rel="noreferrer">Открыть релиз v1.0.42</a>
+      {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
+    </section>
     <div className="transfer-instructions"><h3>Как перенести всё</h3><ol>
       <li>Откройте папку данных кнопкой выше и закройте калькулятор.</li>
       <li>В Проводнике нажмите <strong>Alt + ↑</strong> и скопируйте папку <strong>data целиком</strong>: файл <strong>smart-home-calc.db</strong> и папку <strong>storage</strong> с планами. Каталог и все проекты находятся в базе.</li>
@@ -480,11 +492,15 @@ function SettingsDialog({onClose}:{onClose:()=>void}) {
     <small>Smart Home Calc {info?.version ?? ""}</small>
   </AppModal>;
 }
-function NomenclatureEditor({types,categories=[],onChanged}:{types:Kind[];categories?:Category[];onChanged:()=>Promise<void>}) {
+function NomenclatureEditor({types,categories=[],onChanged,onDirtyChange,onBusyChange}:{types:Kind[];categories?:Category[];onChanged:()=>Promise<void>;onDirtyChange?:(dirty:boolean)=>void;onBusyChange?:(busy:boolean)=>void}) {
   const empty=()=>({id:0,name:"",category:"Электроустановки",unit:"шт",color:"#f97316",wet_min_ip:"",defaults:{quantity:1} as Record<string,unknown>});
   const [form,setForm]=useState(empty), [search,setSearch]=useState(""), [showDeleted,setShowDeleted]=useState(false),
     [groupFilter,setGroupFilter]=useState(""),
     [message,setMessage]=useState(""), [error,setError]=useState(""), [saving,setSaving]=useState(false), [parameter,setParameter]=useState("ip");
+  const original=types.find(item=>item.id===form.id),baseline=original?{id:original.id,name:original.name,category:original.category,unit:original.unit,color:original.color,wet_min_ip:original.wet_min_ip==null?'':String(original.wet_min_ip),defaults:original.defaults}:empty();
+  const dirty=JSON.stringify(form)!==JSON.stringify(baseline);
+  useEffect(()=>{onDirtyChange?.(dirty);return()=>onDirtyChange?.(false);},[dirty,onDirtyChange]);
+  useEffect(()=>{onBusyChange?.(saving);return()=>onBusyChange?.(false);},[saving,onBusyChange]);
   async function work(action:()=>Promise<void>) {
     setSaving(true);setError("");setMessage("");
     try {await action();} catch(error) {setError(error instanceof Error ? error.message : "Ошибка");} finally {setSaving(false);}
@@ -508,7 +524,7 @@ function NomenclatureEditor({types,categories=[],onChanged}:{types:Kind[];catego
         <label>Единица измерения<SearchSelect aria-label="Единица номенклатуры" value={form.unit} onChange={event=>setForm({...form,unit:event.target.value,defaults:{...Object.fromEntries(Object.entries(form.defaults).filter(([key])=>!["length","quantity"].includes(key))),...(event.target.value === "м" ? {length:1} : {quantity:1})}})}><option value="шт">Штуки</option><option value="м">Метры</option></SearchSelect></label>
         <label>Цвет на плане<input aria-label="Цвет номенклатуры" type="color" value={form.color} onChange={event=>setForm({...form,color:event.target.value})} /></label>
         <label>Рекомендуемый IP во влажной зоне<input aria-label="Минимальный IP номенклатуры" type="number" min="0" max="69" placeholder="Не задан" value={form.wet_min_ip} onChange={event=>setForm({...form,wet_min_ip:event.target.value})} /></label>
-        <details className="manual-properties"><summary>Значок по умолчанию для новых объектов</summary><AppearanceEditor value={form.defaults} onChange={defaults=>setForm({...form,defaults})} color={form.color} allowName={false} line={form.unit==="м"}/></details><CustomFieldsEditor value={form.defaults} onChange={defaults=>setForm({...form,defaults})}/><h3>Параметры по умолчанию</h3>
+        <details className="manual-properties"><summary>Значок по умолчанию для новых объектов</summary><AppearanceEditor kind={{name:form.name,category:form.category,unit:form.unit}} value={form.defaults} onChange={defaults=>setForm({...form,defaults})} color={form.color} allowName={false} line={form.unit==="м"}/></details><CustomFieldsEditor value={form.defaults} onChange={defaults=>setForm({...form,defaults})}/><h3>Параметры по умолчанию</h3>
         {Object.entries(form.defaults).filter(([key])=>!appearanceKeys.includes(key)&&!key.startsWith("custom:")).map(([key,value])=><label key={key} className="nomenclature-param">{labels[key] ?? (key.startsWith("custom:")?key.slice(7):key)}<span><input aria-label={`По умолчанию: ${labels[key] ?? (key.startsWith("custom:")?key.slice(7):key)}`} type={typeof value === "number" ? "number" : "text"} step="any" value={String(value)} onChange={event=>setForm({...form,defaults:{...form.defaults,[key]:typeof value === "number" ? Number(event.target.value) : event.target.value}})} /><button type="button" aria-label={`Убрать параметр ${labels[key] ?? (key.startsWith("custom:")?key.slice(7):key)}`} onClick={()=> {const defaults={...form.defaults};delete defaults[key];setForm({...form,defaults});}}>×</button></span></label>)}
         <label>Добавить характеристику<SearchSelect aria-label="Новая характеристика" value={parameter} onChange={event=>setParameter(event.target.value)}>{Object.entries(labels).filter(([key])=>!["led_strip","frame_posts","contact_type"].includes(key)).map(([key,label])=><option key={key} value={key}>{label}</option>)}</SearchSelect></label>
         <button type="button" onClick={()=>setForm({...form,defaults:{...form.defaults,[parameter]:form.defaults[parameter] ?? (["quantity","length","ip","voltage","keys","power_watts","connectors","end_caps"].includes(parameter) ? 1 : "")}})}>Добавить характеристику</button>
@@ -538,15 +554,18 @@ function CatalogManager({
   catalog,
   types,
   onClose,
-  onChanged,
+  onChanged,onBusyChange,onDirtyChange,
 }: {
   catalog: Catalog;
+  onBusyChange:(busy:boolean)=>void;
+  onDirtyChange:(dirty:boolean)=>void;
   types: Kind[];
   onClose: () => void;
   onChanged: () => Promise<void>;
 }) {
   const [tab,setTab]=useState<"types"|"products"|"categories">("types");
-  const [databaseSearch,setDatabaseSearch]=useState("");
+  const [databaseSearch,setDatabaseSearch]=useState(""),[productLimit,setProductLimit]=useState(100);
+  const [typeDirty,setTypeDirty]=useState(false),[categoryDirty,setCategoryDirty]=useState(false),[typeBusy,setTypeBusy]=useState(false),[categoryBusy,setCategoryBusy]=useState(false);
   const blank = {
     id: 0,
     name: "",
@@ -568,6 +587,17 @@ function CatalogManager({
     [message, setMessage] = useState(""),
     [localError, setLocalError] = useState(""),
     [saving, setSaving] = useState(false);
+  const originalProduct=catalog.products.find(item=>item.id===form.id),originalMaker=catalog.manufacturers.find(item=>item.id===manufacturerId),originalSupplier=catalog.suppliers.find(item=>item.id===supplierId);
+  const productDirty=originalProduct?['name','sku','manufacturer_id','type_id','price','currency','active'].some(key=>form[key as keyof typeof form]!==originalProduct[key as keyof Product])||form.supplier_id!==(originalProduct.supplier_id??0)||JSON.stringify(form.parameters)!==JSON.stringify(originalProduct.parameters):Boolean(form.name||form.sku||form.price||Object.keys(form.parameters).length);
+  const dirty=typeDirty||categoryDirty||productDirty||manufacturer!==(originalMaker?.name??'')||supplier!==(originalSupplier?.name??'')||contact!==(originalSupplier?.contact??'');
+  const anyBusy=saving||typeBusy||categoryBusy;
+  useEffect(()=>{onBusyChange(anyBusy);return()=>onBusyChange(false);},[anyBusy,onBusyChange]);
+  useEffect(()=>{onDirtyChange(dirty);return()=>onDirtyChange(false);},[dirty,onDirtyChange]);
+  useEffect(()=>setProductLimit(100),[databaseSearch]);
+  const kindLookup=useMemo(()=>new Map(types.map(kind=>[kind.id,kind])),[types]);
+  const filteredProducts=useMemo(()=>catalog.products.filter(item=>{const kind=kindLookup.get(item.type_id);return matchesSearch([item.name,item.sku,item.manufacturer,item.supplier,kind?.name,kind?.category].join(' '),databaseSearch);}),[catalog.products,kindLookup,databaseSearch]);
+  function closeCatalog(){if(anyBusy)return;if(!dirty||confirm('В каталоге есть несохранённые изменения. Закрыть без сохранения?'))onClose();}
+
   async function work(action: () => Promise<void>) {
     setLocalError("");
     setMessage("");
@@ -639,7 +669,7 @@ function CatalogManager({
             <div className="eyebrow">СПРАВОЧНИКИ И ЦЕНЫ</div>
             <h2>Каталог оборудования</h2>
           </div>
-          <button aria-label="Закрыть каталог" onClick={onClose}>
+          <button aria-label="Закрыть каталог" disabled={anyBusy} onClick={closeCatalog}>
             ×
           </button>
         </div>
@@ -650,7 +680,9 @@ function CatalogManager({
           <button className={tab==="products" ? "active" : ""} onClick={()=>setTab("products")}>Товары и цены</button>
           <button className={tab==="categories"?"active":""} onClick={()=>setTab('categories')}>Категории</button>
         </nav>
-        {tab==="categories"?<CategoryEditor categories={catalog.categories??[]} onChanged={onChanged}/>:tab==="types" ? <NomenclatureEditor types={types} categories={catalog.categories} onChanged={onChanged} /> : <>
+        <div hidden={tab!=='categories'}><CategoryEditor categories={catalog.categories??[]} onChanged={onChanged} onDirtyChange={setCategoryDirty} onBusyChange={setCategoryBusy}/></div>
+        <div hidden={tab!=='types'}><NomenclatureEditor types={types} categories={catalog.categories} onChanged={onChanged} onDirtyChange={setTypeDirty} onBusyChange={setTypeBusy}/></div>
+        <div hidden={tab!=='products'}>
         <label>Поиск в базе<input type="search" aria-label="Поиск в базе товаров" placeholder="Название, артикул, производитель, категория…" value={databaseSearch} onChange={event=>setDatabaseSearch(event.target.value)}/></label>
         <div className="catalog-grid">
           <div>
@@ -920,7 +952,7 @@ function CatalogManager({
           </div>
           <div className="product-list">
             <h3>Товары · {catalog.products.length}</h3>
-            {catalog.products.filter(item=>matchesSearch([item.name,item.sku,item.manufacturer,item.supplier,types.find(type=>type.id===item.type_id)?.name,types.find(type=>type.id===item.type_id)?.category].join(" "),databaseSearch)).map((item) => (
+            {filteredProducts.slice(0,productLimit).map((item) => (
               <button
                 type="button"
                 key={item.id}
@@ -937,6 +969,8 @@ function CatalogManager({
                 </span>
               </button>
             ))}
+            {filteredProducts.length>productLimit&&<button type="button" onClick={()=>setProductLimit(value=>value+100)}>Показать ещё · {filteredProducts.length-productLimit}</button>}
+            {!filteredProducts.length&&catalog.products.length>0&&<p className="hint">По запросу ничего не найдено.</p>}
             {!catalog.products.length && (
               <p className="hint">
                 Создайте товар вручную или импортируйте CSV.
@@ -944,7 +978,7 @@ function CatalogManager({
             )}
           </div>
         </div>
-        </>}
+        </div>
       </section>
     </div>
   );
@@ -967,6 +1001,10 @@ export default function App() {
   const [batchStyle,setBatchStyle]=useState<Record<string,unknown>>({});
   function selectLeftTool(id:string){if(roomMode&&id!=="rooms"){setError("Сначала завершите или отмените контур помещения");return;}if(placing&&id!=="objects"&&linePoints.length){setError("Сначала завершите или отмените линию");return;}if(id!=="objects")setPlacing(false);setLeftTool(current=>current===id?null:id);if(window.innerWidth<1100)setRightTool(null);}
   function selectRightTool(id:string){setRightTool(current=>current===id?null:id);if(window.innerWidth<1100)setLeftTool(null);if(id==='layers')setElementLayersExpanded(true);}
+  const [adaptiveLabels]=usePreference<boolean>('adaptive-labels',true),[showGrid]=usePreference<boolean>('canvas-grid',true);
+  const [objectSnap,setObjectSnap]=usePreference<boolean>('object-snap',false),[ortho,setOrtho]=usePreference<boolean>('ortho',false);
+  const [snapTarget,setSnapTarget]=useRafState<Point|null>(null);
+  const planStatus=useRef<PlanStatusHandle>(null);
   const [libraryGroup,setLibraryGroup]=useState("");
   const [selected, setSelected] = useState<Item | null>(null),
     [selectedIds, setSelectedIds] = useState<number[]>([]),
@@ -984,8 +1022,9 @@ export default function App() {
     [pdfImport,setPdfImport]=useState<{file:File;name:string}|null>(null),[pdfImportError,setPdfImportError]=useState("");
   const [deletingProject,setDeletingProject]=useState<Project|null>(null),[deleteProjectError,setDeleteProjectError]=useState("");
   const dragDepth=useRef(0),pdfInput=useRef<HTMLInputElement>(null);
-  const [zoom, setZoom] = useState(1),
-    [symbolScale, setSymbolScale] = useState(1),
+  const viewportRef = useRef<HTMLDivElement | null>(null),sheetRef = useRef<HTMLDivElement | null>(null);
+  const {zoom,zoomAt,reset:setZoom,fit:fitPlan,current:cameraZoom}=usePlanCamera(viewportRef,sheetRef);
+  const [symbolScale, setSymbolScale] = useState(1),
     [labelsVisible, setLabelsVisible] = useState(true),
     [elementsVisible, setElementsVisible] = useState(true),
     [error, setError] = useState(""),
@@ -994,7 +1033,7 @@ export default function App() {
     [calibrating, setCalibrating] = useState(false),
     [catalogOpen, setCatalogOpen] = useState(false),
     [view, setView] = useState<"plan" | "report" | "quote" | "quotations">("plan");
-  const [quoteDirty,setQuoteDirty]=useState(false),[quoteBusy,setQuoteBusy]=useState(false);
+  const [quoteDirty,setQuoteDirty]=useState(false),[quoteBusy,setQuoteBusy]=useState(false),[settingsBusy,setSettingsBusy]=useState(false),[catalogBusy,setCatalogBusy]=useState(false),[catalogDirty,setCatalogDirty]=useState(false);
   const [alignPageId, setAlignPageId] = useState<number | null>(null);
   const [alignOriginal, setAlignOriginal] = useState<{
     overlay_visible: boolean;
@@ -1011,7 +1050,7 @@ export default function App() {
   const [lineRedo, setLineRedo] = useState<Point[]>([]);
   const pendingHistory = useRef<boolean[]>([]);
   const [linePoints, setLinePoints] = useState<Point[]>([]),
-    [lineCursor, setLineCursor] = useState<Point | null>(null),
+    [lineCursor, setLineCursor] = useRafState<Point | null>(null),
     [calibrationStart, setCalibrationStart] = useState<Point | null>(null);
   const [selectionBox, setSelectionBox] = useState<{
     start: Point;
@@ -1025,7 +1064,7 @@ export default function App() {
   const roomDragStart = useRef<Point[] | null>(null);
   const [roomMode, setRoomMode] = useState<"new" | "edit" | null>(null),
     [roomPoints, setRoomPoints] = useState<Point[]>([]),
-    [roomCursor, setRoomCursor] = useState<Point | null>(null),
+    [roomCursor, setRoomCursor] = useRafState<Point | null>(null),
     [editingRoomId, setEditingRoomId] = useState<number | null>(null),
     [roomMenu, setRoomMenu] = useState<{
       roomId: number;
@@ -1061,8 +1100,7 @@ export default function App() {
   } | null>(null);
   const roomNodeDrag = useRef<number | null>(null);
   const lastObjectClick = useRef<{ id: number; time: number } | null>(null);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
-  const sheetRef = useRef<HTMLDivElement | null>(null);
+  const planWindow=usePlanWindow(viewportRef,sheetRef,view==='plan'?pageId:null,zoom);
   useEffect(() => {
     function closeMenus(event: PointerEvent) {
       const target = event.target as HTMLElement | null;
@@ -1117,14 +1155,23 @@ export default function App() {
       alignDrag.current = null;
     };
   }, [alignPageId]);
-  const availableTypes=types.filter(item=>item.active);
-  const libraryTypes=availableTypes.filter(item=>!libraryGroup || (item.group ?? item.category)===libraryGroup);
+  const typeMap=useMemo(()=>new Map(types.map(item=>[item.id,item])),[types]);
+  const pageMap=useMemo(()=>new Map(project?.pages.map(item=>[item.id,item])??[]),[project?.pages]);
+  const layerMap=useMemo(()=>new Map(project?.layers.map(item=>[item.id,item])??[]),[project?.layers]);
+  const elementMap=useMemo(()=>new Map(project?.elements.map(item=>[item.id,item])??[]),[project?.elements]);
+  const selectionSet=useMemo(()=>new Set(selectedIds),[selectedIds]);
+  const linkedStripSet=useMemo(()=>new Set(supplyLinking?.stripIds??[]),[supplyLinking?.stripIds]);
+  const pendingDraft=Boolean(view==='plan'&&selected&&elementMap.get(selected.id)&&!sameItem(selected,elementMap.get(selected.id)!));
+  const unsavedWorkbench=quoteDirty||catalogDirty||pendingDraft||Boolean(roomMode&&roomPoints.length||placing&&linePoints.length||supplyLinking);
+  useDesktopState(unsavedWorkbench,busy||quoteBusy||settingsBusy||catalogBusy);
+  const availableTypes=useMemo(()=>types.filter(item=>item.active),[types]);
+  const libraryTypes=useMemo(()=>availableTypes.filter(item=>!libraryGroup || (item.group ?? item.category)===libraryGroup),[availableTypes,libraryGroup]);
   useEffect(()=> {
     if(libraryGroup && !types.some(item=>item.active && item.id===typeId && (item.group ?? item.category)===libraryGroup))setLibraryGroup("");
   },[types,typeId,libraryGroup]);
-  const page = project?.pages.find((p) => p.id === pageId),
-    kind = types.find((t) => t.id === typeId),
-    layer = project?.layers.find((l) => l.id === layerId);
+  const page = pageMap.get(pageId??0),
+    kind = typeMap.get(typeId??0),
+    layer = layerMap.get(layerId??0);
   async function run(work: () => Promise<void>) {
     setError("");
     pendingActions.current+=1;setBusy(true);
@@ -1139,6 +1186,7 @@ export default function App() {
   function openCatalog(){
     void run(async()=>{const [nextCatalog,nextTypes]=await Promise.all([api<Catalog>('/catalog'),api<Kind[]>('/types?include_inactive=true')]);setCatalog(nextCatalog);setTypes(nextTypes);setCatalogOpen(true);});
   }
+  function openSettings(){void run(async()=>{await saveDraftBeforeNavigation();setSettingsOpen(true);});}
   function canLeaveQuote() {
     return !["quote","quotations"].includes(view) || !quoteDirty || confirm("В КП есть несохранённые изменения. Выйти без сохранения?");
   }
@@ -1187,10 +1235,8 @@ export default function App() {
     setPdfImport(null);setPdfImportError("");setProjects(await api("/projects"));await open(created.id);setPlacing(false);setCalibrating(false);
   }
   async function refresh(id: number) {
-    const p = await api<Project>(`/projects/${id}`);
-    setProject(p);
-    setReport(await api(`/projects/${id}/report`));
-    return p;
+    const [next,nextReport]=await Promise.all([api<Project>(`/projects/${id}`),api<Report>(`/projects/${id}/report`)]);
+    setProject(previous=>shareProject(previous,next));setReport(nextReport);return next;
   }
   async function open(id: number) {
     const p = await refresh(id);
@@ -1332,8 +1378,7 @@ export default function App() {
     const stored =
       selected && project.elements.find((item) => item.id === selected.id);
     if (!redo && selected && stored && !sameItem(selected, stored)) {
-      setSelected(stored);
-      return;
+      await save(selected);
     }
     const result = await api<{ undone: boolean }>(
       `/projects/${project.id}/elements/${redo ? "redo" : "undo"}`,
@@ -1364,7 +1409,7 @@ export default function App() {
   }, [selected, selectedIds.length, project, busy, deletingProject, view]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
-      if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject) return;
+      if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject || catalogOpen || (event.target as HTMLElement|null)?.closest('[role="dialog"],[data-search-popup]')) return;
       if(supplyLinking) {
         if((event.target as HTMLElement|null)?.matches('input,textarea,[contenteditable="true"]'))return;
         const modifier=event.ctrlKey || event.metaKey,key=event.key.toLowerCase();
@@ -1386,6 +1431,19 @@ export default function App() {
         return;
       }
       const target = event.target as HTMLElement | null;
+      if(!target?.matches('input,textarea,select,[contenteditable="true"]')){
+        if((event.ctrlKey||event.metaKey)&&event.key==='0'){event.preventDefault();fitPlan();return;}
+        if(event.key==='F3'){event.preventDefault();if(roomMode)setRoomSnap(value=>!value);else setObjectSnap(value=>!value);return;}
+        if(event.key==='F8'){event.preventDefault();setOrtho(value=>!value);return;}
+        if(event.key==='Enter'&&placing&&kind?.unit==='м'&&linePoints.length>=2&&!busy){event.preventDefault();finishLine();return;}
+        if((event.ctrlKey||event.metaKey)&&['a','ф'].includes(event.key.toLowerCase())&&!roomMode&&!placing){event.preventDefault();const ids=visibleElements.map(item=>item.id);setSelectedIds(ids);setSelected(ids.length?elementMap.get(ids[0])??null:null);return;}
+        if(event.key==='Escape'&&!roomMode&&!busy){
+          event.preventDefault();setObjectMenu(null);setRoomMenu(null);setRoomPointMenu(null);setSnapTarget(null);
+          if(calibrating){setCalibrating(false);setCalibrationStart(null);setLineCursor(null);return;}
+          if(placing){setPlacing(false);setLinePoints([]);setLineRedo([]);setLineCursor(null);return;}
+          void run(async()=>{await saveDraftBeforeNavigation();setSelected(null);setSelectedIds([]);});return;
+        }
+      }
       if ((event.ctrlKey || event.metaKey) && ["z", "y", "я", "н"].includes(event.key.toLowerCase())) {
         if (target?.matches('input:not([type="checkbox"]):not([type="range"]),textarea,[contenteditable="true"]')) return;
         if (roomMode) return;
@@ -1419,7 +1477,7 @@ export default function App() {
     }
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport, deletingProject, view]);
+  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport, deletingProject, view,catalogOpen,elementMap,elementsVisible,zoom]);
   useEffect(() => {
     if (!busy && !["quote","quotations"].includes(view) && !deletingProject && pendingHistory.current.length) {
       const redo = pendingHistory.current.shift()!;
@@ -1434,18 +1492,7 @@ export default function App() {
         target = event.target;
       if (!viewport || !(target instanceof Node) || !viewport.contains(target))
         return;
-      const rect = viewport.getBoundingClientRect(),
-        localX = event.clientX - rect.left,
-        localY = event.clientY - rect.top,
-        next = event.deltaY < 0 ? zoom * 1.15 : Math.max(0.1, zoom / 1.15);
-      if (next === zoom) return;
-      const planX = (viewport.scrollLeft + localX) / zoom,
-        planY = (viewport.scrollTop + localY) / zoom;
-      setZoom(next);
-      requestAnimationFrame(() => {
-        viewport.scrollLeft = planX * next - localX;
-        viewport.scrollTop = planY * next - localY;
-      });
+      zoomAt(cameraZoom.current*(event.deltaY<0?1.15:1/1.15),event.clientX,event.clientY);
     }
     window.addEventListener("wheel", wheel, { passive: false, capture: true });
     return () => window.removeEventListener("wheel", wheel, { capture: true });
@@ -1453,7 +1500,9 @@ export default function App() {
   function finishLine() {
     if (!project || !page || !kind || !layer || linePoints.length < 2) return;
     void run(async () => {
-      const first = linePoints[0];
+      const points=linePoints.filter((point,index)=>index===0||point.x!==linePoints[index-1].x||point.y!==linePoints[index-1].y);
+      if(points.length<2)throw Error("Укажите две разные точки линии");
+      const first = points[0];
       const item = await api<Item>(`/projects/${project.id}/elements`, "POST", {
         page_id: page.id,
         layer_id: layer.id,
@@ -1463,7 +1512,7 @@ export default function App() {
         x: first.x,
         y: first.y,
         parameters: kind.defaults,
-        geometry: { points: linePoints },
+        geometry: { points },
       });
       setSelected(item);
       setLinePoints([]);
@@ -1713,7 +1762,7 @@ export default function App() {
     }
   }
   function pagePoint(point: Point, id: number) {
-    const source = project?.pages.find((item) => item.id === id),
+    const source = pageMap.get(id),
       scale = source?.scale ?? 1;
     return {
       x: 0.5 + (point.x - 0.5) * scale + (source?.offset_x ?? 0),
@@ -1721,7 +1770,7 @@ export default function App() {
     };
   }
   function sourcePoint(point: Point, id: number) {
-    const source = project?.pages.find((item) => item.id === id),
+    const source = pageMap.get(id),
       scale = source?.scale ?? 1;
     return {
       x: Math.max(
@@ -1733,6 +1782,19 @@ export default function App() {
         Math.min(1, (point.y - 0.5 - (source?.offset_y ?? 0)) / scale + 0.5),
       ),
     };
+  }
+  const endpointIndex=useMemo(()=>new VertexIndex([
+    ...(project?.elements.filter(item=>item.page_id===pageId&&layerMap.get(item.layer_id)?.visible).flatMap(item=>item.geometry?.points?.length?item.geometry.points:[{x:item.x,y:item.y}])??[]),
+    ...(project?.rooms.filter(room=>room.page_id===pageId).flatMap(room=>room.polygon??[])??[]),
+  ]),[project?.elements,project?.rooms,pageId,layerMap]);
+  function drawingCandidate(display:Point,shift=false,alt=false){
+    if(!page)return display;
+    const anchor=linePoints.at(-1),axis=shift||ortho;
+    let point=sourcePoint(display,page.id);
+    if(axis)point=orthogonal(point,anchor,page.width/page.height);
+    const rect=sheetRef.current?.getBoundingClientRect();
+    const snapped=objectSnap&&!alt&&rect?endpointIndex.nearest(point,8/(rect.width*(page.scale??1)),8/(rect.height*(page.scale??1)),target=>!axis||!anchor||target.x===anchor.x||target.y===anchor.y):null;
+    setSnapTarget(snapped);return snapped??point;
   }
   function roomCandidate(point: Point, orthogonal = false, moving: number | null = null) {
     let candidate = sourcePoint(point, page!.id);
@@ -1903,41 +1965,39 @@ export default function App() {
   async function removeFrame() {
     await changeFrame("/remove");
   }
+  const sceneContextMenu=useStableCallback((item:Item,event:React.MouseEvent<SVGGElement>)=>showObjectMenu(item,event));
+  const sceneDoubleClick=useStableCallback((item:Item)=>{if(!supplyLinking)selectSameType(item);});
+  const scenePointerDown=useStableCallback((item:Item,event:React.PointerEvent<SVGGElement>)=>{
+    if(supplyLinking){if(isLedStrip(typeMap.get(item.type_id)))toggleSupplyStrip(item.id);return;}
+    if(objectDoubleClick(item))return;
+    choose(item,event.ctrlKey||event.metaKey);
+    if(!item.geometry?.points?.length&&!event.ctrlKey&&!event.metaKey&&!layerMap.get(item.layer_id)?.locked&&!busy){
+      event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
+      drag.current={x:item.x,y:item.y};
+    }
+  });
+  const sceneNodeDrag=useStableCallback((item:Item,index:number,point:Point,event:React.PointerEvent<SVGElement>)=>{
+    if(busy)return;choose(item,false);event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);nodeDrag.current={index,point};
+  });
   const previewPoints =
-      lineCursor && linePoints.length
-        ? [...linePoints, lineCursor]
-        : linePoints,
+      (lineCursor && linePoints.length ? [...linePoints,lineCursor]:linePoints).map(point=>page?pagePoint(point,page.id):point),
     selectedKind = types.find((t) => t.id === selected?.type_id);
-  const displayedPages =
-      page && project
-        ? [
-            page,
-            ...project.pages.filter(
-              (item) => item.id !== page.id && item.overlay_visible,
-            ),
-          ]
-        : [],
-    displayedPageIds = new Set(displayedPages.map((item) => item.id)),
-    legend =
-      project && elementsVisible
-        ? makeLegend(project, displayedPageIds, types)
-        : [];
-  const visibleElements = elementsVisible
-    ? (project?.elements.filter(
-        (item) =>
-          displayedPageIds.has(item.page_id) && item.id!==supplyLinking?.editId &&
-          project.layers.find((l) => l.id === item.layer_id)?.visible,
-      ) ?? [])
-    : [];
-  const pageRooms =
-    project?.rooms.filter(
-      (room) =>
-        room.page_id === pageId && room.polygon && room.polygon.length >= 3,
-    ) ?? [];
-  const protectedPageIds = new Set(
+  const displayedPages=useMemo(()=>page&&project?[page,...project.pages.filter(item=>item.id!==page.id&&item.overlay_visible)]:[],[page,project?.pages]);
+  const displayedPageIds=useMemo(()=>new Set(displayedPages.map(item=>item.id)),[displayedPages]);
+  const legend=useMemo(()=>project&&elementsVisible?makeLegend(project,displayedPageIds,types):[],[project,displayedPageIds,types,elementsVisible]);
+  const visibleElements=useMemo(()=>elementsVisible?(project?.elements.filter(item=>displayedPageIds.has(item.page_id)&&item.id!==supplyLinking?.editId&&layerMap.get(item.layer_id)?.visible)??[]):[],[project?.elements,elementsVisible,displayedPageIds,layerMap,supplyLinking?.editId]);
+  const renderedElements=useMemo(()=>visibleElements.length<=500||!planWindow?visibleElements:visibleElements.filter(item=>{
+    if(selectionSet.has(item.id))return true;
+    const points=(item.geometry?.points?.length?item.geometry.points:[item]).map(point=>pagePoint(point,item.page_id));
+    const x1=Math.min(...points.map(point=>point.x)),x2=Math.max(...points.map(point=>point.x)),y1=Math.min(...points.map(point=>point.y)),y2=Math.max(...points.map(point=>point.y));
+    return x2>=planWindow.x1&&x1<=planWindow.x2&&y2>=planWindow.y1&&y1<=planWindow.y2;
+  }),[visibleElements,planWindow,pageMap,selectionSet]);
+  const denseLabels=adaptiveLabels&&renderedElements.length>500;
+  const pageRooms=useMemo(()=>project?.rooms.filter(room=>room.page_id===pageId&&room.polygon&&room.polygon.length>=3)??[],[project?.rooms,pageId]);
+  const protectedPageIds = useMemo(()=>new Set(
     project?.elements
       .filter((item) => {
-        const itemType = types.find((type) => type.id === item.type_id);
+        const itemType = typeMap.get(item.type_id);
         return (
           itemType &&
           ["Электроустановки", "Освещение", "LED-подсветка"].includes(
@@ -1946,7 +2006,7 @@ export default function App() {
         );
       })
       .map((item) => item.page_id) ?? [],
-  );
+  ),[project?.elements,typeMap]);
   const deletablePageIds =
     project?.pages
       .filter((item) => !protectedPageIds.has(item.id))
@@ -1962,44 +2022,19 @@ export default function App() {
         isElectrical(types.find((type) => type.id === item.type_id)),
       ),
     contextHasFrame = contextItems.some((item) => item.parameters.frame_group);
-  const frameVisuals = [
-    ...new Set(
-      visibleElements
-        .map((item) => String(item.parameters.frame_group ?? ""))
-        .filter(Boolean),
-    ),
-  ]
-    .map((group) => {
-      const members = visibleElements.filter(
-          (item) => item.parameters.frame_group === group,
-        ),
-        posts = Number(members[0]?.parameters.frame_posts ?? 0);
-      if (members.length !== posts) return null;
-      const points = members.map((item) => pagePoint(item, item.page_id)),
-        padding = 20 * symbolScale,
-        x1 = Math.min(...points.map((item) => item.x * 1000)) - padding,
-        x2 = Math.max(...points.map((item) => item.x * 1000)) + padding,
-        y1 = Math.min(...points.map((item) => item.y * 1000)) - padding,
-        y2 = Math.max(...points.map((item) => item.y * 1000)) + padding;
-      return {
-        group,
-        members,
-        x: x1,
-        y: y1,
-        width: Math.max(40 * symbolScale, x2 - x1),
-        height: Math.max(40 * symbolScale, y2 - y1),
-        opacity: Math.min(
-          ...members.map(
-            (item) =>
-              project!.pages.find((source) => source.id === item.page_id)
-                ?.opacity ?? 1,
-          ),
-        ),
-      };
-    })
-    .filter((value) => value !== null);
+  const frameVisuals=useMemo(()=>{
+    const groups=new Map<string,Item[]>();
+    for(const item of visibleElements){const group=String(item.parameters.frame_group??'');if(group){const list=groups.get(group)??[];list.push(item);groups.set(group,list);}}
+    return [...groups].flatMap(([group,members])=>{
+      const posts=Number(members[0]?.parameters.frame_posts??0);if(members.length!==posts)return [];
+      const points=members.map(item=>pagePoint(item,item.page_id)),padding=20*symbolScale;
+      const x1=Math.min(...points.map(item=>item.x*1000))-padding,x2=Math.max(...points.map(item=>item.x*1000))+padding;
+      const y1=Math.min(...points.map(item=>item.y*1000))-padding,y2=Math.max(...points.map(item=>item.y*1000))+padding;
+      return [{group,members,x:x1,y:y1,width:Math.max(40*symbolScale,x2-x1),height:Math.max(40*symbolScale,y2-y1),opacity:Math.min(...members.map(item=>pageMap.get(item.page_id)?.opacity??1))}];
+    });
+  },[visibleElements,pageMap,symbolScale]);
   return (
-    <div className="app-shell" onDragEnterCapture={event=> {
+    <div className="app-shell" data-grid={showGrid} onDragEnterCapture={event=> {
       if(Array.from(event.dataTransfer.items).some(item=>item.type.startsWith('image/')))return;
       if((event.target as HTMLElement).closest("[data-image-dropzone],[data-image-target]")||!event.dataTransfer.types.includes("Files"))return;
       event.preventDefault();dragDepth.current++;setDraggingPdf(true);
@@ -2017,7 +2052,7 @@ export default function App() {
     }}>
       {draggingPdf && <div className="pdf-drop-overlay" role="status"><div><ToolIcon name="pdf"/><h2>Отпустите PDF здесь</h2><p>Создадим новый проект и предложим задать имя</p></div></div>}
       <input ref={pdfInput} hidden type="file" aria-label="PDF для нового проекта" accept=".pdf,application/pdf" disabled={busy} onChange={event=> {requestPdfImport([...event.target.files ?? []]);event.target.value="";}} />
-      <header>
+      <header className="app-header">
         <div className="logo">SH</div>
         <div className="brand">
           <h1>Smart Home Calc</h1>
@@ -2041,9 +2076,10 @@ export default function App() {
           <button className={view==="quote" ? "active" : ""} disabled={busy || quoteBusy} onClick={()=>changeView(project ? "quote" : "quotations")}>КП</button>
           <button className={view==="quotations" ? "active" : ""} disabled={busy || quoteBusy} onClick={()=>changeView("quotations")}>Все КП</button>
         </nav>
+        <div className="header-actions">
         <button className="icon-button" disabled={busy || quoteBusy} onClick={()=>pdfInput.current?.click()} title="Создать новый проект из PDF"><ToolIcon name="pdf"/>Новый из PDF</button>
         <button disabled={busy || quoteBusy} onClick={() => openCatalog()}>Каталог и цены</button>
-        <button className="icon-button settings-button" aria-label="Настройки" title="Настройки и папка данных" disabled={busy || quoteBusy} onClick={()=>setSettingsOpen(true)}><ToolIcon name="settings"/>Настройки</button>
+        <button className="icon-button settings-button" aria-label="Настройки" title="Настройки и папка данных" disabled={busy || quoteBusy} onClick={openSettings}><ToolIcon name="settings"/>Настройки</button>
         <label className="restore-project">
           Восстановить ZIP
           <input
@@ -2069,6 +2105,7 @@ export default function App() {
             }}
           />
         </label>
+        </div>
         <div className="project-controls">
         <SearchSelect
           aria-label="Проект"
@@ -2123,7 +2160,7 @@ export default function App() {
         {deleteProjectError && <p className="catalog-error" role="alert">{deleteProjectError}</p>}
         <div className="modal-actions"><button type="button" data-dialog-autofocus disabled={busy} onClick={()=>setDeletingProject(null)}>Отмена</button><button className="confirm-delete" disabled={busy} onClick={()=>{setDeleteProjectError("");void run(deleteCurrentProject);}}>{busy ? "Удаление…" : "Удалить навсегда"}</button></div>
       </AppModal>}
-      {settingsOpen && <SettingsDialog onClose={()=>setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsDialog onClose={()=>setSettingsOpen(false)} onBusyChange={setSettingsBusy} backupBlocked={unsavedWorkbench}/>}
       {pdfImport && <AppModal title="Новый проект из PDF" onClose={()=>setPdfImport(null)} busy={busy} className="pdf-import-modal">
         <div className="pdf-import-file"><ToolIcon name="pdf"/><div><strong>{pdfImport.file.name}</strong><small>{(pdfImport.file.size/(pdfImport.file.size<1024*1024 ? 1024 : 1024*1024)).toLocaleString("ru-RU",{maximumFractionDigits:1})} {pdfImport.file.size<1024*1024 ? "КБ" : "МБ"} · все страницы PDF</small></div></div>
         <form onSubmit={event=> {event.preventDefault();setPdfImportError("");void run(importPdfProject);}}>
@@ -2136,6 +2173,8 @@ export default function App() {
       {catalogOpen && (
         <CatalogManager
           catalog={catalog}
+          onBusyChange={setCatalogBusy}
+          onDirtyChange={setCatalogDirty}
           types={types}
           onClose={() => setCatalogOpen(false)}
           onChanged={async () => {
@@ -2609,7 +2648,7 @@ export default function App() {
                     </p>
                   )}
                 </section><section data-tool-section="style"><h3>Оформление на плане</h3>
-                  {selected&&selectedIds.length===1 ? <fieldset disabled={busy||project.layers.find(layer=>layer.id===selected.layer_id)?.locked} style={{border:0,padding:0}}><AppearanceEditor value={selected.parameters} onChange={parameters=>setSelected({...selected,parameters})} color={selectedKind?.color??'#38bdf8'} power={isPowerSupply(selectedKind)} line={selectedKind?.unit==='м'} electrical={isElectrical(selectedKind)} allowName={false}/><p className="autosave-note">Изменения сохраняются автоматически</p></fieldset> : selectedIds.length>1 ? <>
+                  {selected&&selectedIds.length===1 ? <fieldset disabled={busy||project.layers.find(layer=>layer.id===selected.layer_id)?.locked} style={{border:0,padding:0}}><AppearanceEditor kind={selectedKind} value={selected.parameters} onChange={parameters=>setSelected({...selected,parameters})} color={selectedKind?.color??'#38bdf8'} power={isPowerSupply(selectedKind)} line={selectedKind?.unit==='м'} electrical={isElectrical(selectedKind)} allowName={false}/><p className="autosave-note">Изменения сохраняются автоматически</p></fieldset> : selectedIds.length>1 ? <>
                     <p>Выбрано объектов: {selectedIds.length}. Применятся только изменённые настройки.</p><AppearanceEditor partial value={batchStyle} onChange={setBatchStyle} color="#38bdf8" line allowName={false}/>
                     <div className="appearance-actions"><ToolButton icon="save" disabled={busy||!Object.keys(batchStyle).length} onClick={()=>void run(async()=>{await api(`/projects/${project.id}/elements/appearance`,"PATCH",{element_ids:selectedIds,changes:batchStyle});setBatchStyle({});const updated=await refresh(project.id);setSelected(current=>current?updated.elements.find(item=>item.id===current.id)??null:null);})}>Применить к выбранным</ToolButton>
                     <ToolButton icon="refresh" disabled={busy} onClick={()=>void run(async()=>{await api(`/projects/${project.id}/elements/appearance`,"PATCH",{element_ids:selectedIds,changes:Object.fromEntries(appearanceKeys.filter(key=>key!=='display_name').map(key=>[key,null]))});setBatchStyle({});const updated=await refresh(project.id);setSelected(current=>current?updated.elements.find(item=>item.id===current.id)??null:null);})}>Сбросить оформление выбранных</ToolButton></div></> : <p className="hint">Выберите объект на плане или несколько объектов с Ctrl.</p>}
@@ -2675,12 +2714,15 @@ export default function App() {
                         ? "Скрыть элементы · F7"
                         : "Показать элементы · F7"}
                     </button>
-                    <button onClick={() => setZoom(Math.max(0.1, zoom / 1.25))}>
+                    <ToolButton icon="undo" aria-label="Отменить действие на плане" title="Отменить · Ctrl+Z" disabled={busy||!project.history?.undo&&!(selected&&elementMap.get(selected.id)&&!sameItem(selected,elementMap.get(selected.id)!))} onClick={()=>void run(()=>undoLast())}/>
+                    <ToolButton icon="redo" aria-label="Повторить действие на плане" title="Повторить · Ctrl+Shift+Z" disabled={busy||!project.history?.redo} onClick={()=>void run(()=>undoLast(true))}/>
+                    <button aria-label="Уменьшить план" title="Уменьшить · Ctrl+колесо" disabled={zoom<=.1} onClick={() => zoomAt(zoom / 1.25)}>
                       −
                     </button>
-                    <span> {Math.round(zoom * 100)}% </span>
-                    <button onClick={() => setZoom(zoom * 1.25)}>＋</button>
-                    <button onClick={() => setZoom(1)}>Сброс</button>
+                    <span className="zoom-percentage" aria-label="Масштаб плана">{Math.round(zoom * 100)}%</span>
+                    <button aria-label="Увеличить план" title="Увеличить · Ctrl+колесо" disabled={zoom>=16} onClick={() => zoomAt(zoom * 1.25)}>＋</button>
+                    <button title="Масштаб 100%" onClick={() => zoomAt(1)}>Сброс</button>
+                    <ToolButton icon="fit" aria-label="Вписать план" title="Вписать лист · Ctrl+0" onClick={fitPlan}/>
                     <label className="symbol-scale">
                       Точки{" "}
                       <input
@@ -2741,21 +2783,9 @@ export default function App() {
                   aria-pressed={labelsVisible}
                   onClick={() => setLabelsVisible((value) => !value)}
                 >
-                  {labelsVisible ? "Скрыть надписи" : "Показать надписи"}
+                  {labelsVisible ? denseLabels?"Подписи: авто":"Скрыть надписи" : "Показать надписи"}
                 </button>
-                {legend.length > 0 && (
-                  <div className="plan-legend">
-                    <strong>Обозначения</strong>
-                    {legend.map((entry) => (
-                      <div key={entry.key}>
-                        <span style={{ color: entry.color }}>
-                          {entry.symbol}
-                        </span>
-                        {entry.name}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                {legend.length>0&&<PlanLegend entries={legend}/>}
                 {roomMenu &&
                   (() => {
                     const room = project.rooms.find(
@@ -3022,7 +3052,7 @@ export default function App() {
                           setRoomPointMenu(null);
                           setObjectMenu(null);
                           if (roomMode && !busy) {
-                            const candidate = roomCandidate(pos, e.shiftKey),
+                            const candidate = roomCandidate(pos, e.shiftKey||ortho),
                               first =
                                 roomPoints[0] &&
                                 pagePoint(roomPoints[0], page.id);
@@ -3045,7 +3075,7 @@ export default function App() {
                           }
                           if (calibrating && !busy) {
                             if (!calibrationStart) {
-                              setCalibrationStart(pos);
+                              setCalibrationStart(sourcePoint(pos,page.id));
                               return;
                             }
                             const raw = prompt(
@@ -3067,8 +3097,8 @@ export default function App() {
                               await api(`/pages/${page.id}/calibrate`, "POST", {
                                 x1: calibrationStart.x,
                                 y1: calibrationStart.y,
-                                x2: pos.x,
-                                y2: pos.y,
+                                x2: sourcePoint(pos,page.id).x,
+                                y2: sourcePoint(pos,page.id).y,
                                 real_length_mm: real,
                               });
                               setCalibrating(false);
@@ -3090,13 +3120,15 @@ export default function App() {
                             !busy
                           ) {
                             if (kind.unit === "м") {
-                              setLinePoints([...linePoints, pos]);
+                              const candidate=drawingCandidate(pos,e.shiftKey,e.altKey);
+                              setLinePoints([...linePoints,candidate]);
                               setLineRedo([]);
-                              setLineCursor(pos);
+                              setLineCursor(candidate);
                               return;
                             }
+                            const candidate=drawingCandidate(pos,false,e.altKey);
                             if (isPowerSupply(kind)) {
-                              startSupplyLinking({page_id:page.id,layer_id:layer.id,type_id:kind.id,product_id:null,room_id:roomId,x:pos.x,y:pos.y,geometry:{},parameters:kind.defaults,comment:""});
+                              startSupplyLinking({page_id:page.id,layer_id:layer.id,type_id:kind.id,product_id:null,room_id:roomId,x:candidate.x,y:candidate.y,geometry:{},parameters:kind.defaults,comment:""});
                               return;
                             }
                             void run(async () => {
@@ -3109,8 +3141,8 @@ export default function App() {
                                   type_id: kind.id,
                                   product_id: null,
                                   room_id: roomId,
-                                  x: pos.x,
-                                  y: pos.y,
+                                  x: candidate.x,
+                                  y: candidate.y,
                                   parameters: kind.defaults,
                                   geometry: {},
                                 },
@@ -3124,9 +3156,9 @@ export default function App() {
                           setSelectionBox({
                             start: pos,
                             current: pos,
-                            additive: e.ctrlKey,
+                            additive: e.ctrlKey||e.metaKey,
                           });
-                          if (!e.ctrlKey) {
+                          if (!e.ctrlKey&&!e.metaKey) {
                             setSelected(null);
                             setSelectedIds([]);
                           }
@@ -3134,14 +3166,16 @@ export default function App() {
                         }}
                         onPointerMove={(e) => {
                           const pos = position(e);
+                          planStatus.current?.update(sourcePoint(pos,page!.id));
+                          if(calibrating&&calibrationStart)setLineCursor(sourcePoint(pos,page!.id));
                           if (roomMode)
-                            setRoomCursor(roomCandidate(pos, e.shiftKey));
+                            setRoomCursor(roomCandidate(pos, e.shiftKey||ortho));
                           if (roomNodeDrag.current !== null) {
                             const index = roomNodeDrag.current;
                             setRoomPoints((points) =>
                               points.map((point, itemIndex) =>
                                 itemIndex === index
-                                  ? roomCandidate(pos, e.shiftKey, index)
+                                  ? roomCandidate(pos, e.shiftKey||ortho, index)
                                   : point,
                               ),
                             );
@@ -3156,7 +3190,7 @@ export default function App() {
                             kind?.unit === "м" &&
                             linePoints.length
                           )
-                            setLineCursor(pos);
+                            setLineCursor(drawingCandidate(pos,e.shiftKey,e.altKey));
                           if (nodeDrag.current && selected?.geometry?.points) {
                             const points = selected.geometry.points.map(
                               (point, index) =>
@@ -3184,7 +3218,7 @@ export default function App() {
                         }}
                         onPointerLeave={() => {
                           setLineCursor(null);
-                          setRoomCursor(null);
+                          setRoomCursor(null);setSnapTarget(null);planStatus.current?.update(null);
                         }}
                         onPointerUp={() => {
                           if (roomNodeDrag.current !== null) {
@@ -3214,28 +3248,7 @@ export default function App() {
                                 selectionBox.start.y,
                                 selectionBox.current.y,
                               ),
-                              inside = visibleElements
-                                .filter(
-                                  (item) =>
-                                    isElectrical(
-                                      types.find(
-                                        (type) => type.id === item.type_id,
-                                      ),
-                                    ) &&
-                                    !item.geometry?.points?.length &&
-                                    (() => {
-                                      const point = pagePoint(
-                                        item,
-                                        item.page_id,
-                                      );
-                                      return (
-                                        point.x >= x1 &&
-                                        point.x <= x2 &&
-                                        point.y >= y1 &&
-                                        point.y <= y2
-                                      );
-                                    })(),
-                                )
+                              inside = visibleElements.filter(item=>selectionHits((item.geometry?.points?.length?item.geometry.points:[item]).map(point=>pagePoint(point,item.page_id)),{x1,y1,x2,y2},selectionBox.current.x<selectionBox.start.x))
                                 .map((item) => item.id),
                               ids = selectionBox.additive
                                 ? [...new Set([...selectedIds, ...inside])]
@@ -3273,7 +3286,7 @@ export default function App() {
                           roomDragStart.current = null;
                           setSelectionBox(null);
                           setLineCursor(null);
-                          setRoomCursor(null);
+                          setRoomCursor(null);setSnapTarget(null);planStatus.current?.update(null);
                         }}
                       >
                         {(showRoomContours || roomMode) && pageRooms.filter(room => room.id !== editingRoomId).map(room => (
@@ -3411,215 +3424,16 @@ export default function App() {
                           const point=pagePoint({x:Number(supplyLinking.body.x),y:Number(supplyLinking.body.y)},Number(supplyLinking.body.page_id));
                           return <g className="power-supply-preview" transform={`translate(${point.x*1000},${point.y*1000})`} pointerEvents="none"><PointMarker scale={symbolScale} color="#dc2626" selected={true} icon="" powerSupply={true}/><text x={29*symbolScale} y="5" fontSize="14" fill="#b91c1c" stroke="white" strokeWidth="3" paintOrder="stroke">Блок питания · выберите ленты</text></g>;
                         })()}
-                        <g className="plan-elements" style={{ pointerEvents: roomMode ? "none" : undefined }}>
-                        {visibleElements.map((original) => {
-                          const item =
-                              selected?.id === original.id
-                                ? selected
-                                : original,
-                            t = types.find((type) => type.id === item.type_id),
-                            points = item.geometry?.points ?? [],
-                            transformed = points.map((point) =>
-                              pagePoint(point, item.page_id),
-                            ),
-                            opacity =
-                              project.pages.find(
-                                (source) => source.id === item.page_id,
-                              )?.opacity ?? 1,
-                            isSelected = selectedIds.includes(item.id);
-                          if (points.length > 1) {
-                            const coords = transformed
-                                .map((p) => `${p.x * 1000},${p.y * 1000}`)
-                                .join(" "),
-                              anchor = transformed[0],
-                              editable =
-                                isSelected && !supplyLinking &&
-                                !project.layers.find(
-                                  (l) => l.id === item.layer_id,
-                                )?.locked,
-                              track = isTrack(t);
-                            return (
-                              <g
-                                key={item.id}
-                                className={(isSelected ? "selected-line-object " : "")+(supplyLinking && isLedStrip(t) ? "supply-strip-target "+(supplyLinking.stripIds.includes(item.id) ? "supply-strip-picked" : "") : "")}
-                                data-element-id={item.id}
-                                opacity={isSelected ? 1 : opacity}
-                                onContextMenu={(e) => showObjectMenu(item, e)}
-                                onDoubleClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  if(!supplyLinking)selectSameType(item);
-                                }}
-                                onPointerDown={(e) => {
-                                  if (e.button !== 0) return;
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  if(supplyLinking) {if(isLedStrip(t))toggleSupplyStrip(item.id);return;}
-                                  if (objectDoubleClick(item)) return;
-                                  choose(item, e.ctrlKey);
-                                }}
-                              >
-                                {supplyLinking && isLedStrip(t) && <polyline className="supply-strip-hit" points={coords} fill="none" stroke="transparent" strokeWidth="24" vectorEffect="non-scaling-stroke" />}
-                                {isSelected && !supplyLinking && (
-                                  <polyline
-                                    className="selection-line-halo"
-                                    points={coords}
-                                    fill="none"
-                                    stroke="#0284c7"
-                                    strokeWidth="18"
-                                    strokeOpacity=".45"
-                                    vectorEffect="non-scaling-stroke"
-                                  />
-                                )}
-                                <polyline
-                                  points={coords}
-                                  fill="none"
-                                  stroke={supplyLinking?.stripIds.includes(item.id) ? "#2563eb" : String(item.parameters.plan_color??t?.color??"#64748b")}
-                                  strokeWidth={supplyLinking?.stripIds.includes(item.id) ? 10 : Number(item.parameters.line_width??2)*3+(isSelected?3:0)} strokeDasharray={item.parameters.line_dash==="dashed"?"12 8":item.parameters.line_dash==="dotted"?"2 7":undefined}
-                                  vectorEffect="non-scaling-stroke"
-                                />
-                                {track
-                                  ? transformed.map((point, index) => (
-                                      <path
-                                        className={
-                                          editable ? "line-node" : "track-arrow"
-                                        }
-                                        key={index}
-                                        d={`M ${-13 * symbolScale} ${-9 * symbolScale} L ${13 * symbolScale} 0 L ${-13 * symbolScale} ${9 * symbolScale} Z`}
-                                        transform={`translate(${point.x * 1000} ${point.y * 1000}) rotate(${pointAngle(transformed, index)})`}
-                                        fill={String(item.parameters.plan_color??t?.color??"#64748b")}
-                                        stroke="white"
-                                        strokeWidth="3"
-                                        vectorEffect="non-scaling-stroke"
-                                        onPointerDown={(e) => {
-                                          if (
-                                            !editable ||
-                                            e.button !== 0 ||
-                                            busy
-                                          )
-                                            return;
-                                          e.stopPropagation();
-                                          choose(item, false);
-                                          e.currentTarget.ownerSVGElement?.setPointerCapture(
-                                            e.pointerId,
-                                          );
-                                          nodeDrag.current = { index, point };
-                                        }}
-                                      />
-                                    ))
-                                  : editable &&
-                                    transformed.map((point, index) => (
-                                      <circle
-                                        className="line-node"
-                                        key={index}
-                                        cx={point.x * 1000}
-                                        cy={point.y * 1000}
-                                        r={13 * symbolScale}
-                                        fill="white"
-                                        stroke={String(item.parameters.plan_color??t?.color??"#64748b")}
-                                        strokeWidth="5"
-                                        vectorEffect="non-scaling-stroke"
-                                        onPointerDown={(e) => {
-                                          if (e.button !== 0 || busy) return;
-                                          e.stopPropagation();
-                                          choose(item, false);
-                                          e.currentTarget.ownerSVGElement?.setPointerCapture(
-                                            e.pointerId,
-                                          );
-                                          nodeDrag.current = { index, point };
-                                        }}
-                                      />
-                                    ))}
-                                {Boolean(item.parameters.plan_icon||item.parameters.plan_shape)&&<g transform={`translate(${anchor.x*1000},${anchor.y*1000})`}><PlanSymbol parameters={item.parameters} color={String(item.parameters.plan_color??t?.color??"#64748b")} radius={12*symbolScale}/></g>}
-                                {labelsVisible && item.parameters.plan_label_visible!==false && (
-                                  <text
-                                    className="object-label"
-                                    x={anchor.x * 1000 + 18 * symbolScale}
-                                    y={anchor.y * 1000 - 10 * symbolScale}
-                                    fontSize={Number(item.parameters.plan_label_size??7)*2}
-                                    fill={String(item.parameters.plan_label_color??"#0f172a")}
-                                    stroke="white"
-                                    strokeWidth="3"
-                                    paintOrder="stroke"
-                                  >
-                                    {String(item.parameters.display_name || t?.name || "")} #{item.id}{(isPowerSupply(t) || isLedStrip(t)) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""} ·{" "}
-                                    {String(item.parameters.length)} м
-                                  </text>
-                                )}
-                              </g>
-                            );
-                          }
-                          const marker = pagePoint(item, item.page_id),
-                            planIcon = String(
-                              item.parameters.plan_icon ?? "",
-                            ).trim();
-                          return (
-                            <g
-                              key={item.id}
-                              className={(isSelected ? "selected-point-object " : "")+(supplyLinking && isLedStrip(t) ? "supply-strip-target "+(supplyLinking.stripIds.includes(item.id) ? "supply-strip-picked" : "") : "")}
-                              data-element-id={item.id}
-                              opacity={isSelected ? 1 : opacity}
-                              transform={`translate(${marker.x * 1000},${marker.y * 1000})`}
-                              onContextMenu={(e) => showObjectMenu(item, e)}
-                              onDoubleClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                if(!supplyLinking)selectSameType(item);
-                              }}
-                              onPointerDown={(e) => {
-                                if (e.button !== 0) return;
-                                e.preventDefault();
-                                e.stopPropagation();
-                                if(supplyLinking){if(isLedStrip(t))toggleSupplyStrip(item.id);return;}
-                                if (objectDoubleClick(item)) return;
-                                choose(item, e.ctrlKey);
-                                if (
-                                  !e.ctrlKey &&
-                                  !project.layers.find(
-                                    (l) => l.id === item.layer_id,
-                                  )?.locked &&
-                                  !busy
-                                ) {
-                                  e.currentTarget.ownerSVGElement?.setPointerCapture(
-                                    e.pointerId,
-                                  );
-                                  drag.current = { x: item.x, y: item.y };
-                                }
-                              }}
-                            >
-                              <PointMarker
-                                parameters={item.parameters}
-                                scale={symbolScale}
-                                powerSupply={isPowerSupply(t)}
-                                color={supplyLinking?.stripIds.includes(item.id) ? "#2563eb" : String(
-                                  item.parameters.plan_color ??
-                                    t?.color ??
-                                    "#64748b",
-                                )}
-                                selected={supplyLinking ? supplyLinking.stripIds.includes(item.id) : isSelected}
-                                icon={planIcon}
-                              />
-                              {labelsVisible && item.parameters.plan_label_visible!==false && (
-                                <text
-                                  className="object-label"
-                                  x={(isPowerSupply(t) ? 27 : 17) * symbolScale * Number(item.parameters.plan_size??1)}
-                                  y="5"
-                                  fontSize={Number(item.parameters.plan_label_size??7)*2}
-                                  fill={String(item.parameters.plan_label_color??"#0f172a")}
-                                  stroke="white"
-                                  strokeWidth="3"
-                                  paintOrder="stroke"
-                                >
-                                  {String(item.parameters.display_name || t?.name || "")} #{item.id}{(isPowerSupply(t) || isLedStrip(t)) && item.parameters.power_watts ? ` · ${item.parameters.power_watts} Вт` : ""}
-                                </text>
-                              )}
-                            </g>
-                          );
-                        })}
+                        <g className="plan-elements" style={{ pointerEvents: roomMode||calibrating||placing&&kind?.unit==='м'&&!supplyLinking ? "none" : undefined }}>
+                        <PlanScene elements={renderedElements} types={typeMap} pages={pageMap} layers={layerMap}
+                          selection={selectionSet} draft={selected} scale={symbolScale} labels={labelsVisible} dense={denseLabels} grip={8*1000/(850*zoom)}
+                          linking={Boolean(supplyLinking)} picked={linkedStripSet} busy={busy} aspect={page.width/page.height}
+                          onContextMenu={sceneContextMenu} onDoubleClick={sceneDoubleClick} onPointerDown={scenePointerDown} onNodeDrag={sceneNodeDrag}/>
+
                         </g>
                         {selectionBox && (
                           <rect
-                            className="selection-box"
+                            className={"selection-box"+(selectionBox.current.x<selectionBox.start.x?" selection-box-crossing":"")}
                             x={
                               Math.min(
                                 selectionBox.start.x,
@@ -3674,7 +3488,7 @@ export default function App() {
                               vectorEffect="non-scaling-stroke"
                             />
                             {isTrack(kind)
-                              ? linePoints.map((point, index) => (
+                              ? linePoints.map(point=>pagePoint(point,page.id)).map((point, index) => (
                                   <path
                                     key={index}
                                     d={`M ${-12 * symbolScale} ${-8 * symbolScale} L ${12 * symbolScale} 0 L ${-12 * symbolScale} ${8 * symbolScale} Z`}
@@ -3682,7 +3496,7 @@ export default function App() {
                                     fill="#16a085"
                                   />
                                 ))
-                              : linePoints.map((point, index) => (
+                              : linePoints.map(point=>pagePoint(point,page.id)).map((point, index) => (
                                   <circle
                                     key={index}
                                     cx={point.x * 1000}
@@ -3693,10 +3507,12 @@ export default function App() {
                                 ))}
                           </g>
                         )}
+                        {snapTarget&&<rect className="snap-indicator" x={pagePoint(snapTarget,page.id).x*1000-6*1000/(850*zoom)} y={pagePoint(snapTarget,page.id).y*1000-6*1000/(850*zoom)*page.width/page.height} width={12*1000/(850*zoom)} height={12*1000/(850*zoom)*page.width/page.height}/>}
+                        {calibrating&&calibrationStart&&lineCursor&&<line className="calibration-guide" x1={pagePoint(calibrationStart,page.id).x*1000} y1={pagePoint(calibrationStart,page.id).y*1000} x2={pagePoint(lineCursor,page.id).x*1000} y2={pagePoint(lineCursor,page.id).y*1000}/>}
                         {calibrationStart && (
                           <circle
-                            cx={calibrationStart.x * 1000}
-                            cy={calibrationStart.y * 1000}
+                            cx={pagePoint(calibrationStart,page.id).x*1000}
+                            cy={pagePoint(calibrationStart,page.id).y*1000}
                             r={12 * symbolScale}
                             fill="#dc2626"
                           />
@@ -3715,6 +3531,10 @@ export default function App() {
                     </div>
                   )}
                 </div>
+                <PlanStatusBar ref={planStatus} page={page} mode={roomMode?'Помещение':calibrating?'Масштаб':supplyLinking?'Привязка лент':placing?(kind?.unit==='м'?'Линия':'Размещение'):'Выбор'}
+                  hint={roomMode?'Щелчок — вершина · Shift — по оси · Enter — завершить':calibrating?'Укажите две точки известного расстояния':supplyLinking?'Укажите ленты, затем подтвердите привязку':placing?(kind?.unit==='м'?'Щелчок — узел · Enter — завершить · Ctrl+Z — назад · Esc — отмена':'Щелчок — разместить · Esc — выбор'):'Средняя кнопка — панорама · Ctrl+колесо — масштаб · Ctrl — добавить к выделению'}
+                  count={visibleElements.length} selected={selectedIds.length} snap={roomMode?roomSnap:objectSnap} ortho={ortho} onSnap={()=>roomMode?setRoomSnap(value=>!value):setObjectSnap(value=>!value)} onOrtho={()=>setOrtho(value=>!value)}
+                  length={page&&linePoints.length?measuredLength(lineCursor?[...linePoints,lineCursor]:linePoints,page):null}/>
               </section>
               {rightPanelVisible && (
                 <aside className={"right layers-panel tool-panel "+(!rightTool?'tool-closed':'')} aria-label="Слои и страницы" data-active-tool={rightTool??''}><div className="tool-panel-content"><section data-tool-section="layers"><h3 className="element-layers-heading">
@@ -4060,7 +3880,7 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                </section></div><ToolRail label="Инструменты слоёв и страниц" side="right" active={rightTool} onSelect={selectRightTool} items={[{id:'layers',label:'Слои',icon:'layers'},{id:'pages',label:'Страницы PDF',icon:'pages'},{id:'settings',label:'Настройки',icon:'settings',command:()=>setSettingsOpen(true)}]}/></aside>
+                </section></div><ToolRail label="Инструменты слоёв и страниц" side="right" active={rightTool} onSelect={selectRightTool} items={[{id:'layers',label:'Слои',icon:'layers'},{id:'pages',label:'Страницы PDF',icon:'pages'},{id:'settings',label:'Настройки',icon:'settings',command:openSettings}]}/></aside>
               )}
             </main>
           ) : (
@@ -4178,7 +3998,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.42</span>
+        <span>SMART HOME CALC / 1.0.43</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

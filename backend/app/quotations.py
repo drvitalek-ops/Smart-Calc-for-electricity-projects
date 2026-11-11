@@ -7,7 +7,7 @@ import uuid
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request, Query
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
@@ -21,6 +21,24 @@ CENT=Decimal('0.01')
 
 def money(value):
     return Decimal(str(value)).quantize(CENT,rounding=ROUND_HALF_UP)
+
+
+class PriceLine(BaseModel):
+    id:str=Field(min_length=1,max_length=80)
+    quantity:Decimal=Field(default=1,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
+    unit_price:Decimal=Field(default=0,ge=0,le=1000000000,max_digits=12,decimal_places=2,allow_inf_nan=False)
+    currency:str=Field(default='RUB',pattern='^[A-Z]{3}$')
+    discount:Decimal|None=Field(default=None,ge=0,le=100,max_digits=5,decimal_places=2,allow_inf_nan=False)
+
+
+class PriceInput(BaseModel):
+    global_discount:Decimal=Field(default=0,ge=0,le=100,max_digits=5,decimal_places=2,allow_inf_nan=False)
+    lines:list[PriceLine]=Field(default_factory=list,max_length=5000)
+
+    @model_validator(mode='after')
+    def unique_ids(self):
+        if len({line.id for line in self.lines})!=len(self.lines):raise ValueError('Повторяющийся идентификатор строки КП')
+        return self
 
 
 class QuoteLine(BaseModel):
@@ -58,7 +76,7 @@ class Benefit(BaseModel):
     text: str = Field(default='',max_length=160)
 
 
-def validate_image(value):
+def _validate_image(value):
     if not value: return
     import pymupdf
     try:
@@ -92,6 +110,19 @@ def validate_image(value):
         if pixmap.width!=width or pixmap.height!=height: raise ValueError('Размер изображения не совпадает с заголовком')
     except Exception as exc:
         raise ValueError('Некорректное изображение PNG/JPEG') from exc
+
+
+from .quotation_cache import RenderCache,RENDER_LOCK
+_VALID_IMAGES=RenderCache(max_bytes=1024*1024,max_items=4096,ttl=600)
+
+
+def validate_image(value):
+    if not value:return
+    digest=hashlib.sha256(value.encode('utf-8')).digest()
+    def check():
+        with RENDER_LOCK:_validate_image(value)
+        return b'ok'
+    _VALID_IMAGES.get_or_create(digest,check)
 
 
 class QuoteInput(BaseModel):
@@ -444,6 +475,14 @@ def save_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends
     return present(body)
 
 
+@router.post('/api/quotations/{qid}/calculate')
+@router.post('/api/projects/{pid}/quotation/calculate')
+def calculate_quote(body:PriceInput,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
+    if db.get(StandaloneQuotation if standalone else Project,pid) is None:raise HTTPException(404,'КП или проект не найден')
+    return {'client':totals(body,'client'),'partner':totals(body,'partner')}
+
+
 @router.post('/api/quotations/{qid}/preview')
 @router.post('/api/projects/{pid}/quotation/preview')
 def preview_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
@@ -524,33 +563,30 @@ def preview_document(body:QuoteInput,mode:Literal['client','partner']='client',d
     # Resolve access without creating or changing the saved quotation.
     if db.get(StandaloneQuotation if standalone else Project,pid) is None: raise HTTPException(404,"КП или проект не найден")
     if standalone: validate_standalone(body)
-    from .quotation_pdf import export_quotation
-    return StreamingResponse(io.BytesIO(export_quotation(body,mode)),media_type='application/pdf',
+    from .quotation_cache import quotation_pdf
+    return StreamingResponse(io.BytesIO(quotation_pdf(body,mode,scope)),media_type='application/pdf',
         headers={'Cache-Control':'no-store'})
 
 
 @router.post('/api/quotations/{qid}/preview.png')
 @router.post('/api/projects/{pid}/quotation/preview.png')
-def preview_page(body:QuoteInput,mode:Literal['client','partner']='client',page:int=1,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+def preview_page(body:QuoteInput,mode:Literal['client','partner']='client',page:int=Query(default=1,ge=1),db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
     pid,standalone=scope
     if db.get(StandaloneQuotation if standalone else Project,pid) is None: raise HTTPException(404,'КП или проект не найден')
     if standalone: validate_standalone(body)
-    import pymupdf
-    from .quotation_pdf import export_quotation
-    with pymupdf.open(stream=export_quotation(body,mode),filetype='pdf') as pdf:
-        if page<1 or page>len(pdf): raise HTTPException(422,'Страница вне диапазона')
-        image=pdf[page-1].get_pixmap(matrix=pymupdf.Matrix(2,2),alpha=False).tobytes('png')
-        return Response(image,media_type='image/png',headers={'X-Preview-Pages':str(len(pdf)),'Cache-Control':'no-store'})
+    from .quotation_cache import quotation_page
+    pages,image=quotation_page(body,mode,page,scope)
+    return Response(image,media_type='image/png',headers={'X-Preview-Pages':str(pages),'Cache-Control':'no-store'})
 
 
 @router.get('/api/quotations/{qid}/export.pdf')
 @router.get('/api/projects/{pid}/quotation/export.pdf')
 def export_quote(mode:Literal['client','partner']='client',db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
     pid,standalone=scope
-    from .quotation_pdf import export_quotation
+    from .quotation_cache import quotation_pdf
     quote=get_quote(db,pid,standalone)
     if not quote.lines: raise HTTPException(422,'Добавьте позиции в КП')
-    document=export_quotation(quote,mode)
+    document=quotation_pdf(quote,mode,scope)
     return StreamingResponse(io.BytesIO(document),media_type='application/pdf',
         headers={'Content-Disposition':f'attachment; filename="quotation-{pid}-{mode}.pdf"'})
 

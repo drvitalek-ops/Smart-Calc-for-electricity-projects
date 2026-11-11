@@ -78,7 +78,7 @@ const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
   await page.getByRole('button',{name:'↷ Вернуть',exact:true}).click();
   assert.equal(await page.locator('.room-vertex').count(),5);
   const before=(await page.locator('.room-vertex').first().boundingBox()).width;
-  await page.getByRole('button',{name:'＋',exact:true}).click();
+  await page.getByRole('button',{name:'Увеличить план',exact:true}).click();
   const after=(await page.locator('.room-vertex').first().boundingBox()).width;
   assert.ok(Math.abs(before-after)<1,'Vertex handles must retain screen size while zooming');
   if(process.env.ROOM_SCREENSHOT)await page.screenshot({path:process.env.ROOM_SCREENSHOT,fullPage:true});

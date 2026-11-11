@@ -1,27 +1,31 @@
+import {PlanSymbol} from './PlanSymbol';
+import type {PlanKind} from './planDomain';
 import {useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
-import {createPortal} from 'react-dom';
+import {createPortal,flushSync} from 'react-dom';
 import './SearchSelect.css';
 
-type Props=React.SelectHTMLAttributes<HTMLSelectElement>;
-type Option={value:string;label:string;group:string;disabled:boolean};
+export type SearchOption={value:string;label:string;group?:string;disabled?:boolean;color?:string;iconKind?:PlanKind};
+type Props=React.SelectHTMLAttributes<HTMLSelectElement>&{dataOptions?:readonly SearchOption[]};
+type Option={value:string;label:string;group:string;disabled:boolean;search:string;color?:string;iconKind?:PlanKind};
 const fold=(value:string)=>value.toLocaleLowerCase('ru').replaceAll('ё','е');
 
 export const matchesSearch=(text:string,query:string)=>fold(text).includes(fold(query.trim()));
 export function SearchHighlight({text,query}:{text:string;query:string}) {
   const needle=fold(query.trim());if(!needle)return <>{text}</>;
-  const parts:React.ReactNode[]=[];let offset=0,index=fold(text).indexOf(needle);
-  while(index>=0){parts.push(text.slice(offset,index),<mark key={index}>{text.slice(index,index+needle.length)}</mark>);offset=index+needle.length;index=fold(text).indexOf(needle,offset);}
+  const parts:React.ReactNode[]=[],folded=fold(text);let offset=0,index=folded.indexOf(needle);
+  while(index>=0){parts.push(text.slice(offset,index),<mark key={index}>{text.slice(index,index+needle.length)}</mark>);offset=index+needle.length;index=folded.indexOf(needle,offset);}
   parts.push(text.slice(offset));return <>{parts}</>;
 }
 
 /** Native select remains the form control; the searchable picker also supports
  * dynamically rendered optgroups, required fields and existing change handlers. */
-export default function SearchSelect(props:Props) {
+export default function SearchSelect({dataOptions,...props}:Props) {
   const select=useRef<HTMLSelectElement>(null),popup=useRef<HTMLDivElement>(null),input=useRef<HTMLInputElement>(null);
+  const [pending,setPending]=useState<SearchOption|null>(null),[limit,setLimit]=useState(200);
   const [open,setOpen]=useState(false),[query,setQuery]=useState(''),[options,setOptions]=useState<Option[]>([]),[active,setActive]=useState(0);
   const [position,setPosition]=useState({left:0,top:0,width:260,height:280,above:false});
   const id=useId();
-  const filtered=options.filter(option=>fold(option.label+' '+option.group).includes(fold(query.trim())));
+  const needle=fold(query.trim()),filtered=open?options.filter(option=>option.search.includes(needle)):[];
   const [derivedLabel,setDerivedLabel]=useState('');
   const label=props['aria-label'] || derivedLabel || 'Выбор значения';
   useLayoutEffect(()=>{
@@ -32,14 +36,19 @@ export default function SearchSelect(props:Props) {
   },[props['aria-label']]);
   function show(initial='') {
     if(props.disabled || !select.current)return;
-    const items=Array.from(select.current.options).map(option=>({value:option.value,label:option.label,
+    const items=dataOptions?dataOptions.map(option=>({...option,group:option.group??'',disabled:Boolean(option.disabled)})):Array.from(select.current.options).map(option=>({value:option.value,label:option.label,
       group:option.parentElement instanceof HTMLOptGroupElement ? option.parentElement.label : '',
+      color:option.dataset.symbolColor,
+      iconKind:option.dataset.symbolName?{name:option.dataset.symbolName,category:option.dataset.symbolCategory??'',unit:option.dataset.symbolUnit,seed_key:option.dataset.symbolSeed}:undefined,
       disabled:option.disabled || (option.parentElement instanceof HTMLOptGroupElement && option.parentElement.disabled)}));
-    setOptions(items);setQuery(initial);setActive(initial ? 0 : Math.max(0,items.findIndex(item=>item.value===select.current?.value)));setOpen(true);
+    const selectedIndex=items.findIndex(item=>item.value===select.current?.value);
+    setOptions(items.map(option=>({...option,search:fold(option.label+' '+option.group)})));setLimit(200);setQuery(initial);setActive(initial||selectedIndex>=200?0:Math.max(0,selectedIndex));setOpen(true);
   }
+  useEffect(()=>{if(pending?.value===String(props.value??''))setPending(null);},[props.value,dataOptions]);
   function close(focus=false) {setOpen(false);if(focus)select.current?.focus({preventScroll:true});}
   function choose(option:Option) {
     if(option.disabled || !select.current)return;
+    if(dataOptions&&!Array.from(select.current.options).some(item=>item.value===option.value))flushSync(()=>setPending(option));
     select.current.value=option.value;
     select.current.dispatchEvent(new Event('change',{bubbles:true}));close(true);
   }
@@ -78,7 +87,7 @@ export default function SearchSelect(props:Props) {
       onKeyDown={event=>{props.onKeyDown?.(event);if(event.defaultPrevented)return;
         if(['ArrowDown','ArrowUp','Enter',' '].includes(event.key)){event.preventDefault();show();}
         else if(event.key.length===1&&!event.ctrlKey&&!event.metaKey&&!event.altKey){event.preventDefault();show(event.key);}
-      }}/>
+      }}>{dataOptions?<>{[...new Map([dataOptions.find(option=>option.value===String(props.value??'')),pending].filter((option):option is SearchOption=>Boolean(option)).map(option=>[option.value,option])).values()].map(option=><option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}</>:props.children}</select>
     {open && createPortal(<div ref={popup} data-search-popup="true" className={'search-select-popup'+(position.above ? ' search-select-above' : '')}
       style={{left:position.left,top:position.top,width:position.width}} onKeyDown={event=>{
         if(event.key==='Escape'){event.preventDefault();event.stopPropagation();close(true);}
@@ -86,16 +95,17 @@ export default function SearchSelect(props:Props) {
       }}>
       <div className="search-select-query"><input ref={input} aria-label={'Поиск в списке: '+label} role="combobox" aria-expanded="true" aria-controls={id}
         aria-activedescendant={filtered[active] ? id+'-'+active : undefined} autoComplete="off" placeholder="Начните вводить название…" value={query}
-        onChange={event=>{setQuery(event.target.value);setActive(0);}} onKeyDown={event=>{
+        onChange={event=>{setQuery(event.target.value);setActive(0);setLimit(200);}} onKeyDown={event=>{
           if(event.key==='ArrowDown'||event.key==='ArrowUp'){
-            event.preventDefault();event.stopPropagation();setActive(current=>{const step=event.key==='ArrowDown'?1:-1;let next=current+step;while(next>=0&&next<filtered.length&&filtered[next].disabled)next+=step;return next>=0&&next<filtered.length ? next : current;});
+            event.preventDefault();event.stopPropagation();setActive(current=>{const step=event.key==='ArrowDown'?1:-1;let next=current+step;while(next>=0&&next<filtered.length&&filtered[next].disabled)next+=step;if(next>=limit)setLimit(next+50);return next>=0&&next<filtered.length ? next : current;});
           } else if(event.key==='Enter'){event.preventDefault();event.stopPropagation();if(filtered[active])choose(filtered[active]);}
         }}/><button type="button" aria-label="Очистить поиск" onClick={()=>{setQuery('');setActive(0);input.current?.focus({preventScroll:true});}}>×</button></div>
       <div className="search-select-options" role="listbox" id={id} aria-label={label} style={{maxHeight:position.height}}>
-        {filtered.map((option,index)=><button key={option.value+'-'+index} type="button" role="option" id={id+'-'+index} aria-selected={option.value===String(props.value??'')}
+        {filtered.slice(0,limit).map((option,index)=><button key={option.value+'-'+index} type="button" role="option" id={id+'-'+index} aria-selected={option.value===String(props.value??'')}
           aria-disabled={option.disabled} data-active={index===active} disabled={option.disabled} onPointerDown={event=>event.preventDefault()} onClick={()=>choose(option)}>
-          <span>{highlight(option.label)}</span>{option.group && <small>{highlight(option.group)}</small>}
+          <span className="search-option-main">{option.iconKind&&<svg viewBox="-20 -20 40 40" aria-hidden="true"><PlanSymbol kind={option.iconKind} color={option.color??'#38bdf8'} radius={10}/></svg>}<span className="search-option-copy"><span>{highlight(option.label)}</span>{option.group&&<small>{highlight(option.group)}</small>}</span></span>
         </button>)}
+        {filtered.length>limit&&<button type="button" onPointerDown={event=>event.preventDefault()} onClick={()=>setLimit(value=>value+200)}>Показать ещё {Math.min(200,filtered.length-limit)}</button>}
         {!filtered.length && <p>Ничего не найдено</p>}
       </div><small className="search-select-count" aria-live="polite">Найдено: {filtered.length}</small>
     </div>,select.current?.closest('[role="dialog"]') || document.body)}

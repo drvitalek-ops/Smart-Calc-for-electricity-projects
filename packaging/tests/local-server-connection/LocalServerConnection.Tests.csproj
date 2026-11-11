@@ -7,5 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../windows-desktop/LocalServerConnection.cs" Link="LocalServerConnection.cs" />
+    <Compile Include="../../windows-desktop/DesktopWorkbenchState.cs" Link="DesktopWorkbenchState.cs" />
   </ItemGroup>
 </Project>

@@ -17,7 +17,7 @@ class Project(Base):
 class Page(Base):
     __tablename__ = 'pages'
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'))
+    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'), index=True)
     number: Mapped[int]
     name: Mapped[str | None] = mapped_column(String(200))
     width: Mapped[float] = mapped_column(Float)
@@ -35,17 +35,17 @@ class Page(Base):
 class Room(Base):
     __tablename__ = 'rooms'
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'))
+    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'), index=True)
     name: Mapped[str] = mapped_column(String(200))
     wet: Mapped[bool] = mapped_column(Boolean, default=False)
-    page_id: Mapped[int | None] = mapped_column(ForeignKey('pages.id'))
+    page_id: Mapped[int | None] = mapped_column(ForeignKey('pages.id'), index=True)
     polygon: Mapped[list | None] = mapped_column(JSON)
 
 class Layer(Base):
     __tablename__ = 'layers'
     seed_key: Mapped[str | None] = mapped_column(String(200), default=None)
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'))
+    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'), index=True)
     name: Mapped[str] = mapped_column(String(200))
     visible: Mapped[bool] = mapped_column(Boolean, default=True)
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -55,7 +55,7 @@ class Layer(Base):
 class ElementType(Base):
     __tablename__ = 'element_types'
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default='true')
-    seed_key: Mapped[str | None] = mapped_column(String(500))
+    seed_key: Mapped[str | None] = mapped_column(String(500), index=True)
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     category: Mapped[str]
@@ -67,12 +67,12 @@ class ElementType(Base):
 class Element(Base):
     __tablename__ = 'elements'
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'))
-    page_id: Mapped[int] = mapped_column(ForeignKey('pages.id'))
-    layer_id: Mapped[int] = mapped_column(ForeignKey('layers.id'))
-    type_id: Mapped[int] = mapped_column(ForeignKey('element_types.id'))
-    product_id: Mapped[int | None] = mapped_column(ForeignKey('products.id'))
-    room_id: Mapped[int | None] = mapped_column(ForeignKey('rooms.id'))
+    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'), index=True)
+    page_id: Mapped[int] = mapped_column(ForeignKey('pages.id'), index=True)
+    layer_id: Mapped[int] = mapped_column(ForeignKey('layers.id'), index=True)
+    type_id: Mapped[int] = mapped_column(ForeignKey('element_types.id'), index=True)
+    product_id: Mapped[int | None] = mapped_column(ForeignKey('products.id'), index=True)
+    room_id: Mapped[int | None] = mapped_column(ForeignKey('rooms.id'), index=True)
     x: Mapped[float] = mapped_column(Float)
     y: Mapped[float] = mapped_column(Float)
     parameters: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -93,9 +93,9 @@ class Supplier(Base):
 class Product(Base):
     __tablename__ = 'products'
     id: Mapped[int] = mapped_column(primary_key=True)
-    manufacturer_id: Mapped[int] = mapped_column(ForeignKey('manufacturers.id'))
-    supplier_id: Mapped[int | None] = mapped_column(ForeignKey('suppliers.id'))
-    type_id: Mapped[int] = mapped_column(ForeignKey('element_types.id'))
+    manufacturer_id: Mapped[int] = mapped_column(ForeignKey('manufacturers.id'), index=True)
+    supplier_id: Mapped[int | None] = mapped_column(ForeignKey('suppliers.id'), index=True)
+    type_id: Mapped[int] = mapped_column(ForeignKey('element_types.id'), index=True)
     name: Mapped[str]
     sku: Mapped[str] = mapped_column(default='')
     unit: Mapped[str] = mapped_column(default='шт')
@@ -107,7 +107,7 @@ class Product(Base):
 class Report(Base):
     __tablename__ = 'reports'
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'))
+    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id'), index=True)
     format: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

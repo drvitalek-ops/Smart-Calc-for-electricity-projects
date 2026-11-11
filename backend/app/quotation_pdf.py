@@ -47,9 +47,10 @@ def export_quotation(quote,mode,font_path=None):
     def measure(value,size=8,face='Quote'):
         return fonts[face].text_length(value,fontsize=size)
 
-    def text(x,baseline,value,size=8,color=DARK,bold=False):
+    def text(x,baseline,value,size=8,color=DARK,bold=False,face=None):
         # A single text stream per page avoids rebuilding the page for every cell.
-        text_shape.insert_text((x,baseline),str(value),fontname='QuoteBlack' if bold and size>=16 else 'QuoteBold' if bold else 'Quote',fontsize=size,color=color)
+        face=face or ('QuoteBlack' if bold and size>=16 else 'QuoteBold' if bold else 'Quote')
+        text_shape.insert_text((x,baseline),str(value),fontname=face,fontsize=size,color=color)
 
     def wrap(value,max_width,size=8):
         output=[]
@@ -148,13 +149,18 @@ def export_quotation(quote,mode,font_path=None):
     for part in wrap(quote.contact,usable,8):
         text(margin,y,part,8,GRAY);y+=11
     y=max(340,y+15)
-    bar_height=max(70,35+len(result['totals'])*24)
+    total_row_height=36
+    bar_height=70+max(0,len(result['totals'])-1)*total_row_height
     page.draw_rect(pymupdf.Rect(margin,y,width-margin,y+bar_height),fill=DARK,color=None,radius=.16)
     text(margin+22,y+bar_height/2+3,'ИТОГО ПО КП',8,(.7,.73,.75),True)
     for index,(code,values_for_currency) in enumerate(result['totals'].items()):
         amount=number(values_for_currency['total'])+' '+currency(code)
         size=min(27,245/max(1,measure(amount,1,'QuoteBlack')))
-        text(width-margin-22-measure(amount,size,'QuoteBlack'),y+28+index*24,amount,size,GREEN,True)
+        # Match the supplied corrected PDF: centre each amount in its own row,
+        # leaving a separate line for tax. Keep the measured face when shrinking.
+        row_center=y+27+index*total_row_height
+        baseline=row_center+(fonts['QuoteBlack'].ascender+fonts['QuoteBlack'].descender)*size/2
+        text(width-margin-22-measure(amount,size,'QuoteBlack'),baseline,amount,size,GREEN,face='QuoteBlack')
     if quote.tax_note:
         size=6.5
         tax=wrap(quote.tax_note,250,size)[0]

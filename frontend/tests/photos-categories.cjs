@@ -55,7 +55,7 @@ const backend=process.env.FRAME_TEST_BACKEND||'http://127.0.0.1:8014';
   await page.getByRole('button',{name:'КП',exact:true}).click();
   const editor=page.getByRole('region',{name:'Редактор коммерческого предложения',exact:true});
   await editor.getByRole('button',{name:'＋ Добавить строку КП',exact:true}).click();
-  const row=editor.locator('[data-quote-line]').first();await copyPhoto('#f08020');await row.getByLabel('Наименование строки 1',{exact:true}).focus();await page.keyboard.press('Control+V');await row.locator('.image-field img').waitFor();
+  const row=editor.locator('[data-quote-line]').first();await copyPhoto('#f08020');await row.getByLabel('Наименование строки 1',{exact:true}).focus();await page.keyboard.press('Control+V');await row.locator('.quotation-line-name img').waitFor();await row.locator('summary').click();await row.locator('.image-field img').waitFor();
   const rowPhoto=await row.locator('.image-field img').getAttribute('src');await dropPhoto(row.locator('.image-field'),'#7733ee');await page.waitForFunction(previous=>document.querySelector('[data-quote-line] .image-field img')?.getAttribute('src')!==previous,rowPhoto);
   await row.getByRole('button',{name:'＋ Товар в базу',exact:true}).click();
   const productModal=page.getByRole('dialog',{name:'Новый товар из КП',exact:true});

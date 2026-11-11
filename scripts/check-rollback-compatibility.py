@@ -15,6 +15,12 @@ import sys
 import tempfile
 
 
+def canonical(value):
+    if isinstance(value,list):return [canonical(item) for item in value]
+    if isinstance(value,dict):return {key:canonical(item) for key,item in value.items() if key!='comment' or item!=''}
+    return value
+
+
 def run_stage(stage, root):
     import pymupdf
     from fastapi.testclient import TestClient
@@ -69,6 +75,7 @@ def run_stage(stage, root):
         ids=json.loads((root/'ids.json').read_text());pid=ids['project']
         project=get(f'/projects/{pid}');project.pop('history',None)
         capture={'project':project,'report':get(f'/projects/{pid}/report'),'catalog':get('/catalog'),'types':get('/types'),'quote':get(f'/projects/{pid}/quotation'),'standalone':get('/quotations/'+str(ids['quote']))}
+        capture=canonical(capture)
         expected=root/'expected.json'
         if stage=='seed':expected.write_text(json.dumps(capture,ensure_ascii=False,sort_keys=True))
         else:
@@ -83,6 +90,7 @@ def run_stage(stage, root):
             checked(client.put(f'/api/projects/{pid}/quotation',json=quote))
             project=get(f'/projects/{pid}');project.pop('history',None)
             capture.update(project=project,quote=get(f'/projects/{pid}/quotation'))
+            capture=canonical(capture)
             expected.write_text(json.dumps(capture,ensure_ascii=False,sort_keys=True))
         # Every version must open plans, export all reports and retain discounts.
         for path in (f'/projects/{pid}/export/pdf',f'/projects/{pid}/export/xlsx',f"/projects/{pid}/pages/{project['pages'][0]['id']}/export.pdf",f"/pages/{project['pages'][0]['id']}/image",f'/projects/{pid}/quotation/export.pdf?mode=partner',f"/quotations/{ids['quote']}/export.pdf?mode=client"):

@@ -26,6 +26,7 @@ const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKM
   await editor.locator('[data-quote-line]').first().waitFor();
   assert.equal(await editor.locator('[data-quote-line]').count(),2);
   const first=editor.locator('[data-quote-line]').first();
+  await first.locator('summary').click();
   await first.getByRole('button',{name:'＋ Товар в базу',exact:true}).click();
   const product=page.getByRole('dialog',{name:'Новый товар из КП',exact:true});await product.waitFor();
   await product.getByLabel('Название нового товара КП',{exact:true}).fill('Розетка клиентская');

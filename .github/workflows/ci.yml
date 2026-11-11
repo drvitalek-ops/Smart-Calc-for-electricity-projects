@@ -110,6 +110,7 @@ jobs:
           node frontend/tests/pdf-import-settings.cjs
           node frontend/tests/workbench.cjs
           node frontend/tests/large-quotation.cjs
+          node frontend/tests/quotation-workbench.cjs
           node frontend/tests/photos-categories.cjs
           node frontend/tests/catalog.cjs
 

@@ -24,6 +24,7 @@ const backend=process.env.FRAME_TEST_BACKEND||'http://127.0.0.1:8014';
   await editor.getByLabel('Наименование строки 1',{exact:true}).fill('Подвесной светильник');
   await editor.getByLabel('Количество строки 1',{exact:true}).fill('2');
   await editor.getByLabel('Цена строки 1',{exact:true}).fill('1500');
+  await editor.locator('[data-quote-line]').first().locator('summary').click();
   await editor.getByRole('button',{name:'＋ Товар в базу',exact:true}).click();
   const product=page.getByRole('dialog',{name:'Новый товар из КП',exact:true});await product.waitFor();
   const types=await(await api.get(base+'/types')).json(),light=types.find(type=>type.name==='Встроенный светильник');

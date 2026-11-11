@@ -49,6 +49,7 @@ const backend=process.env.FRAME_TEST_BACKEND||'http://127.0.0.1:8014';
   const table=editor.locator('.quotation-table-wrap');await table.scrollIntoViewIfNeeded();
   assert.ok(await table.evaluate(node=>node.scrollHeight>node.clientHeight));
   const last=editor.getByLabel('Цена строки 40',{exact:true});await last.scrollIntoViewIfNeeded();await last.fill('125.50');
+  await editor.locator('[data-quote-line]').last().locator('summary').click();
   await editor.getByLabel('Товар строки 40',{exact:true}).click();
   search=page.getByRole('combobox',{name:'Поиск в списке: Товар строки 40',exact:true});await search.fill('пр');
   list=page.getByRole('listbox',{name:'Товар строки 40',exact:true});assert.ok(await list.getByRole('option').count()>=1);

@@ -53,6 +53,7 @@ class QuoteLine(BaseModel):
     manufacturer: str = Field(default='',max_length=500)
     room: str = Field(default='',max_length=500)
     description: str = Field(default='',max_length=2000)
+    comment: str = Field(default='',max_length=2000)
     quantity: Decimal = Field(default=1,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
     quantity_override: Decimal | None = Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
     calculated_quantity: Decimal | None = Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
@@ -369,6 +370,8 @@ def import_lines(db,pid,quote):
     from .main import report_rows
     from .report_export import parameters_text
     previous={line.source_key:line for line in quote.lines if line.source_key}
+    previous_order={line.id:index for index,line in enumerate(quote.lines)}
+    order_hints={}
     used_ids=set()
     lines=[]
     calculated=[row for row in report_rows(db,pid)['rows'] if row['quantity']>0]
@@ -387,20 +390,28 @@ def import_lines(db,pid,quote):
             elif len(matches)>1:
                 if any(candidate.quantity_override is not None for candidate in matches):
                     raise HTTPException(409,'Позиции с ручным количеством объединяются. Снимите галочки «Вручную» перед обновлением: '+row['name'][:100])
+                if len({candidate.discount for candidate in matches})>1:
+                    raise HTTPException(409,'Объединяются строки с разными скидками. Укажите одинаковые скидки перед обновлением КП.')
+                old=matches[0].model_copy(deep=True)
+                comments=list(dict.fromkeys(candidate.comment for candidate in matches if candidate.comment))
+                old.comment='\n'.join(comments)
+                if len(old.comment)>2000:
+                    raise HTTPException(409,'Комментарии объединяемых строк превышают 2000 символов. Сократите их перед обновлением КП.')
                 fields=set(field for candidate in matches for field in candidate.overrides)
                 if fields:
                     if any(any(getattr(candidate,field)!=getattr(matches[0],field) for candidate in matches[1:]) for field in fields):
                         raise HTTPException(409,'Объединяются строки с разными ручными правками. Укажите одинаковые значения в этих строках перед обновлением: '+row['name'][:100])
-                    old=matches[0].model_copy(deep=True)
-                    old.overrides=sorted(fields)
+                old.overrides=sorted(fields)
         line_id=old.id if old is not None and old.id not in used_ids else uuid.uuid4().hex
         used_ids.add(line_id)
+        order_hints[line_id]=previous_order[old.id] if old else len(quote.lines)+len(lines)
         line=QuoteLine(id=line_id,source_key=key,
             source_ids=row.get('element_ids',[]),type_id=row.get('type_id'),
             name=row['product'] or row['name'],room=row['room'],
             quantity=str(row['quantity']),calculated_quantity=str(row['quantity']),quantity_override=old.quantity_override if old else None,overrides=old.overrides if old else [],unit=row['unit'],unit_price=str(money(row['unit_price'])),
             product_id=row['product_id'],sku=row['sku'],manufacturer=row['manufacturer'],
             description=parameters_text(row['parameters'])[:2000],currency=row['currency'],
+            comment=old.comment if old else '',
             discount=old.discount if old else None)
         if row['product_id']:
             product_snapshot(db,line,db.get(Product,row['product_id']))
@@ -413,6 +424,7 @@ def import_lines(db,pid,quote):
             for field in old.overrides: setattr(line,field,getattr(old,field))
         lines.append(line)
     lines.extend(line for line in quote.lines if not line.source_key)
+    lines.sort(key=lambda line:order_hints.get(line.id,previous_order.get(line.id,len(quote.lines))))
     if len(lines)>5000: raise HTTPException(422,'В КП больше 5000 строк')
     quote.lines=lines
     return quote
@@ -436,7 +448,8 @@ def bind_product(db,pid,quote,line_id,product):
         from .main import remember_elements
         remember_elements(db,pid)
         for element in elements: element.product_id=product.id
-    line.overrides=[]
+    # Product metadata follows the catalogue; the editor's room grouping stays manual.
+    line.overrides=[field for field in line.overrides if field=='room']
     product_snapshot(db,line,product)
 
 

@@ -116,7 +116,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.44'
+APP_VERSION = '1.0.45'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):

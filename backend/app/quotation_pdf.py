@@ -108,6 +108,14 @@ def export_quotation(quote,mode,font_path=None):
             x+=col_width
         y+=28
 
+    def group_heading(name):
+        nonlocal y
+        parts=wrap(name,usable-16,8.5)
+        height=max(22,10+len(parts)*11)
+        page.draw_rect(pymupdf.Rect(margin,y,width-margin,y+height),fill=(.93,.97,.95),color=None)
+        for index,part in enumerate(parts):text(margin+8,y+14+index*11,part,8.5,DARK,True)
+        y+=height+3
+
     new_page()
     # Dark masthead with a green edge and the company's editable contact details.
     page.draw_rect(pymupdf.Rect(0,0,width,114),fill=DARK,color=None)
@@ -200,14 +208,21 @@ def export_quotation(quote,mode,font_path=None):
     if y+70>bottom: new_page()
     table_heading()
 
+    grouped=any(item.room.strip() not in ('','Без помещения') for item in quote.lines)
+    current_group=None
     for index,(line_item,row) in enumerate(zip(quote.lines,result['lines']),1):
+        room=line_item.room.strip() or 'Без помещения'
+        if grouped and room!=current_group:
+            heading_height=max(22,10+len(wrap(room,usable-16,8.5))*11)+3
+            if y+heading_height+40>bottom:new_page();table_heading()
+            group_heading(room);current_group=room
         # Product photo is aligned beside its name; article and manufacturer are secondary.
         photo_width=33 if line_item.image else 0
         details=line_item.name
         if line_item.sku: details+='\n'+line_item.sku
         if line_item.manufacturer: details+=' · '+line_item.manufacturer
-        if line_item.room: details+='\n'+line_item.room
         if line_item.description: details+='\n'+line_item.description
+        if line_item.comment: details+='\nКомментарий: '+line_item.comment
         quantity=number(line_item.quantity,3).rstrip('0').rstrip(',')
         cells=[str(index),details,number(line_item.unit_price)+' '+currency(line_item.currency),quantity,line_item.unit]
         if mode=='partner': cells.append(number(row['effective_discount'])+'%')
@@ -216,7 +231,9 @@ def export_quotation(quote,mode,font_path=None):
         lines_count=max(len(value) for value in wrapped)
         offset=0
         while offset<lines_count:
-            if y+36>bottom: new_page();table_heading()
+            if y+36>bottom:
+                new_page();table_heading()
+                if grouped:group_heading(room)
             fit=max(1,int((bottom-y-14)/10))
             count=min(lines_count-offset,fit)
             row_height=max(40,count*10+14)

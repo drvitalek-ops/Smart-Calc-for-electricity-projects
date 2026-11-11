@@ -1,3 +1,4 @@
+import {PLAN_RADIUS} from './planSymbols';
 import {memo} from 'react';
 import type {Item,Kind,Page,Layer,Point} from './App';
 import {PlanSymbol,PointMarker,GlyphDefinitions} from './PlanAppearance';
@@ -10,7 +11,7 @@ type Handlers={
   onNodeDrag:(item:Item,index:number,point:Point,event:React.PointerEvent<SVGElement>)=>void;
 };
 type Props=Handlers&{elements:Item[];types:ReadonlyMap<number,Kind>;pages:ReadonlyMap<number,Page>;layers:ReadonlyMap<number,Layer>;
-  selection:ReadonlySet<number>;draft:Item|null;scale:number;labels:boolean;linking:boolean;picked:ReadonlySet<number>;busy:boolean;aspect:number;dense:boolean;grip:number};
+  selection:ReadonlySet<number>;draft:Item|null;scale:number;labels:boolean;linking:boolean;picked:ReadonlySet<number>;busy:boolean;aspect:number;dense:boolean;adaptive:boolean;pixelScale:number;grip:number};
 type ObjectProps=Handlers&{item:Item;kind?:Kind;page?:Page;selected:boolean;locked:boolean;scale:number;labels:boolean;linking:boolean;picked:boolean;busy:boolean;aspect:number;grip:number;simplified:boolean};
 const transformPoint=(point:Point,page?:Page)=>({x:.5+(point.x-.5)*(page?.scale??1)+(page?.offset_x??0),y:.5+(point.y-.5)*(page?.scale??1)+(page?.offset_y??0)});
 function angle(points:Point[],index:number,aspect:number){const a=points[index===points.length-1?index-1:index],b=points[index===points.length-1?index:index+1];return Math.atan2((b.y-a.y)/aspect,b.x-a.x)*180/Math.PI;}
@@ -45,9 +46,9 @@ const PlanObject=memo(function PlanObject({item,kind,page,selected,locked,scale,
   return <g data-element-id={item.id} className={(selected?'selected-point-object ':'')+targetClass} opacity={opacity} transform={`translate(${marker.x*1000},${marker.y*1000}) scale(1,${aspect})`} {...handlers}>
     <title>{label}{locked?' · Слой заблокирован':''}</title>
     <PointMarker details={!simplified} shared kind={kind} parameters={item.parameters} scale={scale} powerSupply={isPowerSupply(kind)} color={color} selected={linking?picked:selected} icon={String(item.parameters.plan_icon??'').trim()}/>
-    {showLabel&&<text {...labelProps} x={(isPowerSupply(kind)?27:17)*scale*Number(item.parameters.plan_size??1)} y={5}>{label}</text>}
+    {showLabel&&<text {...labelProps} x={(isPowerSupply(kind)?19:12)*scale*Number(item.parameters.plan_size??1)} y={5}>{label}</text>}
   </g>;
 });
-export default memo(function PlanScene({elements,types,pages,layers,selection,draft,scale,labels,linking,picked,busy,aspect,dense,grip,...handlers}:Props){
-  return <><GlyphDefinitions/>{elements.map(original=>{const item=draft?.id===original.id?draft:original;return <PlanObject key={item.id} item={item} kind={types.get(item.type_id)} page={pages.get(item.page_id)} locked={Boolean(layers.get(item.layer_id)?.locked)} selected={selection.has(item.id)} scale={scale} labels={labels&&(!dense||selection.has(item.id))} grip={selection.has(item.id)?grip:0} simplified={dense&&!selection.has(item.id)} linking={linking} picked={picked.has(item.id)} busy={busy} aspect={aspect} {...handlers}/>;})}</>;
+export default memo(function PlanScene({elements,types,pages,layers,selection,draft,scale,labels,linking,picked,busy,aspect,dense,adaptive,pixelScale,grip,...handlers}:Props){
+  return <><GlyphDefinitions/>{elements.map(original=>{const item=draft?.id===original.id?draft:original;return <PlanObject key={item.id} item={item} kind={types.get(item.type_id)} page={pages.get(item.page_id)} locked={Boolean(layers.get(item.layer_id)?.locked)} selected={selection.has(item.id)} scale={scale} labels={labels&&(!dense||selection.has(item.id))} grip={selection.has(item.id)?grip:0} simplified={!selection.has(item.id)&&(dense||adaptive&&PLAN_RADIUS*scale*Number(item.parameters.plan_size??1)*pixelScale<5)} linking={linking} picked={picked.has(item.id)} busy={busy} aspect={aspect} {...handlers}/>;})}</>;
 });

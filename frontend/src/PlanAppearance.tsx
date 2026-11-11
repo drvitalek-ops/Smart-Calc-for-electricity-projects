@@ -1,3 +1,4 @@
+import {PLAN_RADIUS} from "./planSymbols";
 import {PlanSymbol} from "./PlanSymbol";
 export {PlanSymbol,GlyphDefinitions} from "./PlanSymbol";
 import type {PlanKind} from "./planDomain";
@@ -50,7 +51,7 @@ export function CoordinateEditor({item,page,onChange}:{item:{x:number;y:number;g
 
 export function PointMarker({scale,color,selected,icon,powerSupply=false,parameters={},kind,shared=false,details=true}:{scale:number;color:string;selected:boolean;icon:string;powerSupply?:boolean;parameters?:Record<string,unknown>;kind?:PlanKind;shared?:boolean;details?:boolean}) {
   return <g className={"point-symbol "+(selected?"selected-object":"")}>
-    {selected&&<><circle className="selection-halo" r={24*scale*Number(parameters.plan_size??1)} fill="#38bdf8" fillOpacity=".2" stroke="#0284c7" strokeWidth="5" vectorEffect="non-scaling-stroke"/><circle className="selection-ring" r={17*scale*Number(parameters.plan_size??1)} fill="none" stroke="white" strokeWidth="3" vectorEffect="non-scaling-stroke"/></>}
-    <PlanSymbol details={details} shared={shared} kind={kind} parameters={{...parameters,plan_icon:icon}} color={color} selected={selected} power={powerSupply} radius={12*scale}/>
+    {selected&&<><circle className="selection-halo" r={(powerSupply?18:PLAN_RADIUS+5)*scale*Number(parameters.plan_size??1)} fill="#38bdf8" fillOpacity=".2" stroke="#0284c7" strokeWidth="5" vectorEffect="non-scaling-stroke"/><circle className="selection-ring" r={(powerSupply?15:PLAN_RADIUS+2)*scale*Number(parameters.plan_size??1)} fill="none" stroke="white" strokeWidth="3" vectorEffect="non-scaling-stroke"/></>}
+    <PlanSymbol details={details} shared={shared} kind={kind} parameters={{...parameters,plan_icon:icon}} color={color} selected={selected} power={powerSupply} radius={PLAN_RADIUS*scale}/>
   </g>;
 }

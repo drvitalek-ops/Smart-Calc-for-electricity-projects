@@ -17,7 +17,14 @@ import tempfile
 
 def canonical(value):
     if isinstance(value,list):return [canonical(item) for item in value]
-    if isinstance(value,dict):return {key:canonical(item) for key,item in value.items() if key!='comment' or item!=''}
+    if isinstance(value,dict):
+        result={key:canonical(item) for key,item in value.items() if not (key=='comment' and item=='' or key=='hidden_groups' and item==[])}
+        # v46 intentionally replaces the old identical yellow fixture defaults.
+        seed=result.get('seed_key') or ''
+        if result.get('category')=='Освещение' and seed.startswith('Освещение:') and str(result.get('color','')).lower()=='#facc15':
+            palette=json.loads((Path(__file__).resolve().parents[1]/'backend/app/assets/plan-symbols.json').read_text())['lighting_colors']
+            result['color']=palette.get(seed.split(':',1)[1],result['color'])
+        return result
     return value
 
 

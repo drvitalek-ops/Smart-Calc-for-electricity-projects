@@ -3,6 +3,7 @@ import type {PlanKind} from './planDomain';
 export type Glyph={shape:string;strokes?:number[][][];circles?:number[][];squares?:number[][]};
 type Rule={category?:string;seed_contains?:string;contains?:string[];contains_all?:string[];glyph:string};
 const fold=(value:string)=>value.toLocaleLowerCase('ru').replaceAll('ё','е');
+export const PLAN_RADIUS=definitions.style.radius;
 export const glyphs:Record<string,Glyph>=definitions.glyphs;
 export function defaultGlyph(kind?:PlanKind):string{
   if(!kind)return '';

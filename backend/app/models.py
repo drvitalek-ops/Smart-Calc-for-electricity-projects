@@ -51,6 +51,7 @@ class Layer(Base):
     locked: Mapped[bool] = mapped_column(Boolean, default=False)
     export: Mapped[bool] = mapped_column(Boolean, default=True)
     opacity: Mapped[float] = mapped_column(Float, default=1)
+    hidden_groups: Mapped[list] = mapped_column(JSON, default=list, server_default='[]')
 
 class ElementType(Base):
     __tablename__ = 'element_types'

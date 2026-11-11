@@ -1,5 +1,8 @@
 from sqlalchemy import select
 from .models import ElementType, Element, Product, Layer, Project, CatalogCategory
+from .plan_appearance import SYMBOLS
+
+LIGHTING_COLORS = SYMBOLS['lighting_colors']
 
 LAYERS = ['Электроустановки', 'Освещение', 'LED-подсветка', 'Датчики', 'Электрокарнизы', 'Умные устройства', 'Профиль']
 
@@ -79,6 +82,8 @@ def builtin_type(db, **values):
             if 'frame_posts' in existing.defaults:
                 existing.defaults={key:value for key,value in existing.defaults.items() if key!='frame_posts'}
             if existing.color=='#fb923c': existing.color=ELECTRICAL_COLORS[values['name']]
+        if values['category']=='Освещение' and existing.color.lower()=='#facc15' and values['name'] in LIGHTING_COLORS:
+            existing.color=LIGHTING_COLORS[values['name']]
         existing.seed_key=key
         return existing
     item=ElementType(seed_key=key,**values)
@@ -119,11 +124,11 @@ def seed(db):
             defaults={'quantity':1,'ip':44 if name=='Влагозащищенная розетка' else 20}
             defaults.update(MOMENTARY_SWITCH_DEFAULTS.get(name,{}))
             builtin_type(db,name=name,category=category,
-                color=ELECTRICAL_COLORS.get(name,SMART_DEVICE_COLORS.get(name,color)),wet_min_ip=ip,defaults=defaults)
+                color=ELECTRICAL_COLORS.get(name,SMART_DEVICE_COLORS.get(name,LIGHTING_COLORS.get(name,color))),wet_min_ip=ip,defaults=defaults)
     extras = [
         dict(name='Алюминиевый профиль',category='Профиль',unit='м',color='#94a3b8',defaults={'length':1}),
         dict(name='Блок питания LED-ленты',category='LED-подсветка',unit='шт',color='#dc2626',defaults={'quantity':1}),
-        dict(name='Трек',category='Освещение',unit='м',color='#facc15',defaults={'length':1,'track_type':'магнитный','color':'черный','mount':'накладной','connectors':0,'end_caps':2}),
+        dict(name='Трек',category='Освещение',unit='м',color=LIGHTING_COLORS['Трек'],defaults={'length':1,'track_type':'магнитный','color':'черный','mount':'накладной','connectors':0,'end_caps':2}),
         dict(name='LED-линия',category='LED-подсветка',unit='м',color='#34d399',wet_min_ip=65,defaults={'length':1,'zone':'','strip_type':'','voltage':24,'ip':20,'profile':'','control':''}),
         dict(name='Электрокарниз',category='Электрокарнизы',color='#60a5fa',defaults={'quantity':1,'length':1,'control':'Zigbee'}),
     ]

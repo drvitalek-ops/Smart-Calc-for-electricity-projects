@@ -69,28 +69,31 @@ def symbol_ink(color):
 
 def draw_marker(sheet,anchor,parameters,color,power=False,kind=None):
     import pymupdf
-    size=sheet.rect.width*.012*parameters.get('plan_size',1)
+    size=sheet.rect.width*SYMBOLS['style']['radius']/1000*parameters.get('plan_size',1)
     shape,glyph=symbol_appearance(parameters,kind,power)
     angle=math.radians(parameters.get('plan_rotation',0))
     def point(x,y):
         return pymupdf.Point(anchor.x+size*(x*math.cos(angle)-y*math.sin(angle)),anchor.y+size*(x*math.sin(angle)+y*math.cos(angle)))
     white=(1,1,1)
-    outline=max(.45,size*1.6/12)
+    solid=bool(power or parameters.get('plan_shape') or parameters.get('plan_icon'))
+    fill=color if solid else white
+    border=white if solid else color
+    outline=.85
     if shape in ('circle','socket','switch','lamp','sensor'):
-        sheet.draw_circle(anchor,size,color=white,fill=color,width=outline)
+        sheet.draw_circle(anchor,size,color=border,fill=fill,width=outline)
     else:
         vertices={'square':[(-1,-1),(1,-1),(1,1),(-1,1)],'rectangle':[(-1.6,-.65),(1.6,-.65),(1.6,.65),(-1.6,.65)],'diamond':[(0,-1.3),(1.3,0),(0,1.3),(-1.3,0)],'triangle':[(0,-1.3),(1.2,1),(-1.2,1)],'hexagon':[(math.cos(i*math.pi/3),math.sin(i*math.pi/3)) for i in range(6)],'cross':[(-.35,-1),(.35,-1),(.35,-.35),(1,-.35),(1,.35),(.35,.35),(.35,1),(-.35,1),(-.35,.35),(-1,.35),(-1,-.35),(-.35,-.35)]}[shape]
         vertices=[point(*v) for v in vertices]
         if shape in ('rectangle','square') and not angle:
-            sheet.draw_rect(pymupdf.Rect(vertices[0],vertices[2]),color=white,fill=color,width=outline,**({'radius':.07} if shape=='square' else {}))
-        else:sheet.draw_polyline(vertices+[vertices[0]],color=white,fill=color,width=outline,closePath=True)
-    ink=symbol_ink(color)
+            sheet.draw_rect(pymupdf.Rect(vertices[0],vertices[2]),color=border,fill=fill,width=outline,**({'radius':.07} if shape=='square' else {}))
+        else:sheet.draw_polyline(vertices+[vertices[0]],color=border,fill=fill,width=outline,closePath=True)
+    ink=symbol_ink(color) if solid else color
     detail=SYMBOLS['glyphs'].get(glyph,{})
-    for segment in detail.get('strokes',[]):sheet.draw_polyline([point(*vertex) for vertex in segment],color=ink,width=max(.45,size*.12),lineCap=1,lineJoin=1)
-    for x,y,radius in detail.get('circles',[]):sheet.draw_circle(point(x,y),radius*size,color=ink,width=max(.45,size*.12))
+    for segment in detail.get('strokes',[]):sheet.draw_polyline([point(*vertex) for vertex in segment],color=ink,width=.75,lineCap=1,lineJoin=1)
+    for x,y,radius in detail.get('circles',[]):sheet.draw_circle(point(x,y),radius*size,color=ink,width=.75)
     for x,y,radius in detail.get('squares',[]):
         vertices=[point(x-radius,y-radius),point(x+radius,y-radius),point(x+radius,y+radius),point(x-radius,y+radius)]
-        sheet.draw_polyline(vertices+[vertices[0]],color=ink,width=max(.45,size*.12),closePath=True)
+        sheet.draw_polyline(vertices+[vertices[0]],color=ink,width=.75,closePath=True)
     icon=parameters.get('plan_icon','').strip()
     if icon:
         font_size=max(1,min(size*1.4,size*3/max(1,len(icon))))

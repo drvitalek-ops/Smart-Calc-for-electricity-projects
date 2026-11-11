@@ -101,6 +101,10 @@ try {
         if ($annotation.parameters.plan_shape -ne "diamond" -or $annotation.parameters.display_name -ne "Native manual annotation") {
             throw "Packaged manual plan appearance did not persist"
         }
+        $layerFilter = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/layers/$($planLayer.id)" -Method Patch -ContentType "application/json; charset=utf-8" -Body (@{hidden_groups=@("type:Движение")} | ConvertTo-Json) -TimeoutSec 10
+        if ($layerFilter.hidden_groups.Count -ne 1 -or $layerFilter.hidden_groups[0] -ne "type:Движение") {
+            throw "Packaged layer group visibility did not persist"
+        }
         $planPdf = Join-Path $workDirectory "manual-plan-smoke.pdf"
         Invoke-WebRequest -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/pages/$($planPages[0].id)/export.pdf" -OutFile $planPdf -TimeoutSec 20
         if ((Get-Item $planPdf).Length -lt 1000) { throw "Packaged manual plan PDF is invalid" }
@@ -168,6 +172,10 @@ try {
         }
         if (-not $restoredReady) { throw "Restored data did not open in packaged backend" }
         $restoredProject = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)" -TimeoutSec 10
+        $restoredLayer = $restoredProject.layers | Where-Object {$_.id -eq $planLayer.id} | Select-Object -First 1
+        if ($restoredLayer.hidden_groups.Count -ne 1 -or $restoredLayer.hidden_groups[0] -ne "type:Движение") {
+            throw "Full backup lost layer group visibility"
+        }
         $restoredQuote = Invoke-RestMethod -Uri $quoteUrl -TimeoutSec 10
         if ($restoredProject.elements.Count -ne 1 -or $restoredQuote.partner.totals.RUB.total -ne "190.00") {
             throw "Full backup lost plan objects or quotation prices"

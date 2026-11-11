@@ -13,7 +13,7 @@ import zipfile
 import zlib
 from threading import Lock
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from contextlib import asynccontextmanager
 from collections import defaultdict, Counter, OrderedDict
 import pymupdf
@@ -80,6 +80,9 @@ async def lifespan(app):
         if 'seed_key' not in {column['name'] for column in inspect(engine).get_columns('layers')}:
             with engine.begin() as connection:
                 connection.execute(text('ALTER TABLE layers ADD COLUMN seed_key VARCHAR(200)'))
+        if 'hidden_groups' not in {column['name'] for column in inspect(engine).get_columns('layers')}:
+            with engine.begin() as connection:
+                connection.execute(text("ALTER TABLE layers ADD COLUMN hidden_groups JSON NOT NULL DEFAULT '[]'"))
         page_columns={column['name'] for column in inspect(engine).get_columns('pages')}
         page_upgrades={
             'overlay_visible':'BOOLEAN NOT NULL DEFAULT 0',
@@ -116,7 +119,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.45'
+APP_VERSION = '1.0.46'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 
 def require(db, model, id):
@@ -194,12 +197,15 @@ class RoomInput(NameInput):
     page_id: int | None = None
     polygon: list[PolygonPoint] | None = Field(default=None,max_length=1000)
 
+LayerGroupKey = Annotated[str, Field(min_length=1,max_length=300)]
+
 class LayerInput(BaseModel):
     name: str | None = Field(default=None,min_length=1,max_length=200)
     visible: bool | None = None
     locked: bool | None = None
     export: bool | None = None
     opacity: float | None = Field(default=None, ge=0.05, le=1)
+    hidden_groups: list[LayerGroupKey] | None = Field(default=None,max_length=1000)
 
 class PageInput(BaseModel):
     name: str | None = Field(default=None, max_length=200)
@@ -271,6 +277,7 @@ class ProductInput(NameInput):
     parameters: dict = Field(default_factory=dict)
 
 class BackupLayer(BaseModel):
+    hidden_groups: list[LayerGroupKey] = Field(default_factory=list,max_length=1000)
     seed_key: str | None = Field(default=None,max_length=200)
     backup_id: int
     name: str = Field(min_length=1,max_length=200)
@@ -929,7 +936,7 @@ def backup_project(pid: int, db: DbSession = Depends(session)):
             pdf_files[str(path)]=f'pdf/{len(pdf_files)+1}.pdf'
     manifest=BackupManifest(
         version=1,project_name=project.name,quotation=quotation,
-        layers=[BackupLayer(backup_id=item.id,name=item.name,seed_key=item.seed_key,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity) for item in layers],
+        layers=[BackupLayer(backup_id=item.id,name=item.name,seed_key=item.seed_key,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity,hidden_groups=item.hidden_groups) for item in layers],
         rooms=[BackupRoom(
             backup_id=item.id,name=item.name,wet=item.wet,
             page_backup_id=item.page_id,polygon=item.polygon,
@@ -1048,7 +1055,7 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
         project=Project(name=manifest.project_name); db.add(project); db.flush()
         layer_map={}
         for item in manifest.layers:
-            obj=Layer(project_id=project.id,name=item.name,seed_key=item.seed_key,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity)
+            obj=Layer(project_id=project.id,name=item.name,seed_key=item.seed_key,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity,hidden_groups=item.hidden_groups)
             db.add(obj); db.flush(); layer_map[item.backup_id]=obj
         type_map={}
         for item in manifest.types:
@@ -1234,6 +1241,9 @@ def edit_layer(lid: int, body: LayerInput, db: DbSession = Depends(session)):
     layer=require(db,Layer,lid)
     if body.name is not None and not body.name.strip(): raise HTTPException(422,'Укажите название слоя')
     if body.name is not None: body.name=body.name.strip()
+    if body.hidden_groups is not None:
+        body.hidden_groups=sorted(set(key.strip() for key in body.hidden_groups))
+        if any(not key for key in body.hidden_groups):raise HTTPException(422,'Укажите группу слоя')
     remember_elements(db,layer.project_id)
     for key,value in body.model_dump(exclude_none=True).items():
         setattr(layer,key,value)
@@ -1685,7 +1695,7 @@ def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
             label=name+f" #{element.id}"+(f" · {element.parameters['power_watts']:g} Вт" if element.parameters.get('power_watts') else '')
             if points: label+=f" · {element.parameters.get('length',0):g} м"
             unit=page.width/1000
-            label_x=(18 if points else 27 if is_power_supply(typ) else 17)*unit*element.parameters.get('plan_size',1)
+            label_x=(18 if points else 19 if is_power_supply(typ) else 12)*unit*element.parameters.get('plan_size',1)
             label_y=(-10 if points else 5)*unit
             sheet.insert_text((anchor.x+label_x,anchor.y+label_y),label,fontsize=2*unit*element.parameters.get('plan_label_size',7),fontname='CalcPlan',color=rgb(element.parameters.get('plan_label_color','#0f172a')))
     content=document.tobytes(deflate=True); document.close()

@@ -1,3 +1,5 @@
+import LayerTree from "./LayerTree";
+import {planGroup,layerGroups,displayedElement} from "./planGroups";
 import {useDesktopState} from "./desktopBridge";
 import usePlanWindow from "./usePlanWindow";
 import usePlanCamera from "./usePlanCamera";
@@ -79,6 +81,8 @@ type Room = {
   polygon: Point[] | null;
 };
 export type Layer = {
+  seed_key?:string|null;
+  hidden_groups?:string[];
   id: number;
   name: string;
   visible: boolean;
@@ -466,7 +470,7 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
     {info && !info.can_open_data_folder && <p className="hint">Открытие папки доступно в автономном приложении Smart Home Calc для Windows.</p>}
     {error && <p className="catalog-error" role="alert">{error}</p>}
     {message && <p className="catalog-success" role="status">{message}</p>}
-    <section className="settings-backup"><h3>Рабочая область</h3><label className="check"><input type="checkbox" checked={adaptiveLabels} onChange={event=>setAdaptiveLabels(event.target.checked)}/>Автоматически упрощать большие планы</label><p className="hint">При более чем 500 видимых объектах общий вид показывает формы и цвета; подробные значки и подписи остаются у выбранных элементов. При увеличении детали возвращаются.</p><label className="check"><input type="checkbox" checked={showGrid} onChange={event=>setShowGrid(event.target.checked)}/>Фоновая сетка рабочей области</label></section>
+    <section className="settings-backup"><h3>Рабочая область</h3><label className="check"><input type="checkbox" checked={adaptiveLabels} onChange={event=>setAdaptiveLabels(event.target.checked)}/>Автоматически упрощать большие планы</label><p className="hint">При отдалении плана или более чем 500 видимых объектах остаются компактные цветные контуры; подробности и подписи видны у выбранных элементов. При увеличении детали возвращаются.</p><label className="check"><input type="checkbox" checked={showGrid} onChange={event=>setShowGrid(event.target.checked)}/>Фоновая сетка рабочей области</label></section>
     <section className="settings-backup"><div className="settings-heading"><ActionIcon name="save"/><div><h3>Полная резервная копия</h3><p>Все проекты, каталог, товары с фотографиями, коммерческие предложения и планы — в одном ZIP.</p></div></div>
       <button type="button" className="tool-action" disabled={opening||!info?.can_backup_all||backupBlocked} onClick={()=>void(async()=>{
         if(!info)return;setOpening(true);setError('');setMessage('Подготовка полной копии…');
@@ -477,10 +481,10 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
-    <section className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Формат проектов и КП совместим с v1.0.44.</p></div></div>
+    <section className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Формат проектов и КП совместим с v1.0.45.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(error instanceof Error?error.message:'Не удалось открыть папку');}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.44" target="_blank" rel="noreferrer">Открыть релиз v1.0.44</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.45" target="_blank" rel="noreferrer">Открыть релиз v1.0.45</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -1001,6 +1005,8 @@ export default function App() {
   const [batchStyle,setBatchStyle]=useState<Record<string,unknown>>({});
   function selectLeftTool(id:string){if(roomMode&&id!=="rooms"){setError("Сначала завершите или отмените контур помещения");return;}if(placing&&id!=="objects"&&linePoints.length){setError("Сначала завершите или отмените линию");return;}if(id!=="objects")setPlacing(false);setLeftTool(current=>current===id?null:id);if(window.innerWidth<1100)setRightTool(null);}
   function selectRightTool(id:string){setRightTool(current=>current===id?null:id);if(window.innerWidth<1100)setLeftTool(null);if(id==='layers')setElementLayersExpanded(true);}
+  const groupDrafts=useRef(new Map<number,string[]>()),groupPending=useRef(new Map<number,string[]>()),groupSaving=useRef(false);
+  const [savingGroups,setSavingGroups]=useState(false);
   const [adaptiveLabels]=usePreference<boolean>('adaptive-labels',true),[showGrid]=usePreference<boolean>('canvas-grid',true);
   const [objectSnap,setObjectSnap]=usePreference<boolean>('object-snap',false),[ortho,setOrtho]=usePreference<boolean>('ortho',false);
   const [snapTarget,setSnapTarget]=useRafState<Point|null>(null);
@@ -1159,7 +1165,15 @@ export default function App() {
   const typeMap=useMemo(()=>new Map(types.map(item=>[item.id,item])),[types]);
   const pageMap=useMemo(()=>new Map(project?.pages.map(item=>[item.id,item])??[]),[project?.pages]);
   const layerMap=useMemo(()=>new Map(project?.layers.map(item=>[item.id,item])??[]),[project?.layers]);
+  const typeGroups=useMemo(()=>new Map(types.map(type=>[type.id,planGroup(type)])),[types]);
+  const hiddenLayerGroups=useMemo(()=>new Map(project?.layers.map(layer=>[layer.id,new Set(layer.hidden_groups??[])])??[]),[project?.layers]);
+  const layerGroupEntries=useMemo(()=>layerGroups(project?.layers??[],project?.elements??[],types,typeGroups),[project?.layers,project?.elements,types,typeGroups]);
   const elementMap=useMemo(()=>new Map(project?.elements.map(item=>[item.id,item])??[]),[project?.elements]);
+  useEffect(()=>{
+    if(busy)return;
+    const shown=selectedIds.filter(id=>{const item=elementMap.get(id);return item&&displayedElement(item,layerMap,typeGroups,hiddenLayerGroups);});
+    if(shown.length!==selectedIds.length){setSelectedIds(shown);setSelected(current=>current&&shown.includes(current.id)?current:shown.length?elementMap.get(shown[0])??null:null);}
+  },[busy,selectedIds,elementMap,layerMap,typeGroups,hiddenLayerGroups]);
   const selectionSet=useMemo(()=>new Set(selectedIds),[selectedIds]);
   const linkedStripSet=useMemo(()=>new Set(supplyLinking?.stripIds??[]),[supplyLinking?.stripIds]);
   const pendingDraft=Boolean(view==='plan'&&selected&&elementMap.get(selected.id)&&!sameItem(selected,elementMap.get(selected.id)!));
@@ -1237,7 +1251,8 @@ export default function App() {
   }
   async function refresh(id: number) {
     const [next,nextReport]=await Promise.all([api<Project>(`/projects/${id}`),api<Report>(`/projects/${id}/report`)]);
-    setProject(previous=>shareProject(previous,next));setReport(nextReport);return next;
+    const value=groupDrafts.current.size?{...next,layers:next.layers.map(layer=>groupDrafts.current.has(layer.id)?{...layer,hidden_groups:groupDrafts.current.get(layer.id)!}:layer)}:next;
+    setProject(previous=>shareProject(previous,value));setReport(nextReport);return value;
   }
   async function open(id: number) {
     const p = await refresh(id);
@@ -1534,8 +1549,27 @@ export default function App() {
     };
   }
   async function patch(l: Layer, field: "visible" | "locked" | "export") {
+    await saveDraftBeforeNavigation();
     await api(`/layers/${l.id}`, "PATCH", { [field]: !l[field] });
     await refresh(project!.id);
+  }
+  function changeLayerGroups(layer:Layer,hidden:string[]){
+    if(!project)return;
+    const pid=project.id,value=[...new Set(hidden)];groupDrafts.current.set(layer.id,value);groupPending.current.set(layer.id,value);
+    setProject(current=>current?{...current,layers:current.layers.map(item=>item.id===layer.id?{...item,hidden_groups:value}:item)}:current);
+    if(groupSaving.current)return;
+    groupSaving.current=true;setSavingGroups(true);
+    void run(async()=>{
+      try{
+        await saveDraftBeforeNavigation();
+        while(true){
+          while(groupPending.current.size){const [id,groups]=groupPending.current.entries().next().value!;groupPending.current.delete(id);await api(`/layers/${id}`,'PATCH',{hidden_groups:groups});}
+          groupDrafts.current.clear();await refresh(pid);
+          if(!groupPending.current.size)break;
+        }
+      }catch(error){groupPending.current.clear();groupDrafts.current.clear();await refresh(pid).catch(()=>{});throw error;}
+      finally{groupSaving.current=false;setSavingGroups(false);}
+    });
   }
   function localPage(id: number, values: Partial<Page>) {
     setProject((value) =>
@@ -1785,9 +1819,9 @@ export default function App() {
     };
   }
   const endpointIndex=useMemo(()=>new VertexIndex([
-    ...(project?.elements.filter(item=>item.page_id===pageId&&layerMap.get(item.layer_id)?.visible).flatMap(item=>item.geometry?.points?.length?item.geometry.points:[{x:item.x,y:item.y}])??[]),
+    ...(project?.elements.filter(item=>item.page_id===pageId&&displayedElement(item,layerMap,typeGroups,hiddenLayerGroups)).flatMap(item=>item.geometry?.points?.length?item.geometry.points:[{x:item.x,y:item.y}])??[]),
     ...(project?.rooms.filter(room=>room.page_id===pageId).flatMap(room=>room.polygon??[])??[]),
-  ]),[project?.elements,project?.rooms,pageId,layerMap]);
+  ]),[project?.elements,project?.rooms,pageId,layerMap,typeGroups,hiddenLayerGroups]);
   function drawingCandidate(display:Point,shift=false,alt=false){
     if(!page)return display;
     const anchor=linePoints.at(-1),axis=shift||ortho;
@@ -1985,15 +2019,15 @@ export default function App() {
     selectedKind = types.find((t) => t.id === selected?.type_id);
   const displayedPages=useMemo(()=>page&&project?[page,...project.pages.filter(item=>item.id!==page.id&&item.overlay_visible)]:[],[page,project?.pages]);
   const displayedPageIds=useMemo(()=>new Set(displayedPages.map(item=>item.id)),[displayedPages]);
-  const legend=useMemo(()=>project&&elementsVisible?makeLegend(project,displayedPageIds,types):[],[project,displayedPageIds,types,elementsVisible]);
-  const visibleElements=useMemo(()=>elementsVisible?(project?.elements.filter(item=>displayedPageIds.has(item.page_id)&&item.id!==supplyLinking?.editId&&layerMap.get(item.layer_id)?.visible)??[]):[],[project?.elements,elementsVisible,displayedPageIds,layerMap,supplyLinking?.editId]);
+  const visibleElements=useMemo(()=>elementsVisible?(project?.elements.filter(item=>displayedPageIds.has(item.page_id)&&item.id!==supplyLinking?.editId&&displayedElement(item,layerMap,typeGroups,hiddenLayerGroups))??[]):[],[project?.elements,elementsVisible,displayedPageIds,layerMap,supplyLinking?.editId,typeGroups,hiddenLayerGroups]);
+  const legend=useMemo(()=>project&&elementsVisible?makeLegend({...project,elements:visibleElements},displayedPageIds,types):[],[project,visibleElements,displayedPageIds,types,elementsVisible]);
   const renderedElements=useMemo(()=>visibleElements.length<=500||!planWindow?visibleElements:visibleElements.filter(item=>{
     if(selectionSet.has(item.id))return true;
     const points=(item.geometry?.points?.length?item.geometry.points:[item]).map(point=>pagePoint(point,item.page_id));
     const x1=Math.min(...points.map(point=>point.x)),x2=Math.max(...points.map(point=>point.x)),y1=Math.min(...points.map(point=>point.y)),y2=Math.max(...points.map(point=>point.y));
     return x2>=planWindow.x1&&x1<=planWindow.x2&&y2>=planWindow.y1&&y1<=planWindow.y2;
   }),[visibleElements,planWindow,pageMap,selectionSet]);
-  const denseLabels=adaptiveLabels&&renderedElements.length>500;
+  const denseLabels=adaptiveLabels&&(zoom<.8||renderedElements.length>500);
   const pageRooms=useMemo(()=>project?.rooms.filter(room=>room.page_id===pageId&&room.polygon&&room.polygon.length>=3)??[],[project?.rooms,pageId]);
   const protectedPageIds = useMemo(()=>new Set(
     project?.elements
@@ -3428,7 +3462,7 @@ export default function App() {
                         })()}
                         <g className="plan-elements" style={{ pointerEvents: roomMode||calibrating||placing&&kind?.unit==='м'&&!supplyLinking ? "none" : undefined }}>
                         <PlanScene elements={renderedElements} types={typeMap} pages={pageMap} layers={layerMap}
-                          selection={selectionSet} draft={selected} scale={symbolScale} labels={labelsVisible} dense={denseLabels} grip={8*1000/(850*zoom)}
+                          selection={selectionSet} draft={selected} scale={symbolScale} labels={labelsVisible} dense={denseLabels} adaptive={adaptiveLabels} pixelScale={850*zoom/1000} grip={8*1000/(850*zoom)}
                           linking={Boolean(supplyLinking)} picked={linkedStripSet} busy={busy} aspect={page.width/page.height}
                           onContextMenu={sceneContextMenu} onDoubleClick={sceneDoubleClick} onPointerDown={scenePointerDown} onNodeDrag={sceneNodeDrag}/>
 
@@ -3546,32 +3580,9 @@ export default function App() {
                     </button>
                   </h3>
                   <div id="element-layers-list" hidden={!elementLayersExpanded}>
-                  {project.layers.map((l) => (
-                    <div
-                      className={"layer " + (l.id === layerId ? "active" : "")}
-                      key={l.id}
-                    >
-                      <button onClick={() => setLayerId(l.id)}>{l.name}</button><ToolButton icon="edit" aria-label={"Переименовать слой "+l.name} title="Переименовать слой" onClick={()=>{const name=prompt('Название слоя',l.name);if(name?.trim())void run(async()=>{await api(`/layers/${l.id}`,"PATCH",{name:name.trim()});await refresh(project.id);});}}/>
-                      <button
-                        title="Видимость"
-                        onClick={() => void run(() => patch(l, "visible"))}
-                      >
-                        <ActionIcon name={l.visible?"eye":"eyeOff"}/>
-                      </button>
-                      <button
-                        title="Блокировка"
-                        onClick={() => void run(() => patch(l, "locked"))}
-                      >
-                        <ActionIcon name={l.locked?"lock":"unlock"}/>
-                      </button>
-                      <input
-                        aria-label={`Экспорт ${l.name}`}
-                        type="checkbox"
-                        checked={l.export}
-                        onChange={() => void run(() => patch(l, "export"))}
-                      />
-                    </div>
-                  ))}
+                  <LayerTree layers={project.layers} groups={layerGroupEntries} active={layerId} busy={busy} savingGroups={savingGroups}
+                    onSelect={setLayerId} onGroups={changeLayerGroups} onGroupToggle={(layer,key,visible)=>{const next=new Set(groupDrafts.current.get(layer.id)??layer.hidden_groups??[]);if(visible)next.delete(key);else next.add(key);changeLayerGroups(layer,[...next]);}} onToggle={(layer,field)=>void run(()=>patch(layer,field))}
+                    onRename={layer=>{const name=prompt('Название слоя',layer.name);if(name?.trim())void run(async()=>{await api(`/layers/${layer.id}`,'PATCH',{name:name.trim()});await refresh(project.id);});}}/>
                   <p className="hint">
                     Видимость · блокировка · включение в ведомость
                   </p>
@@ -4000,7 +4011,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.45</span>
+        <span>SMART HOME CALC / 1.0.46</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

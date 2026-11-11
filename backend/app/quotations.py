@@ -3,6 +3,7 @@ import copy
 import base64
 import hashlib
 import io
+import json
 import uuid
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
@@ -45,6 +46,7 @@ class QuoteLine(BaseModel):
     model_config=ConfigDict(validate_default=True)
     id: str = Field(min_length=1,max_length=80)
     source_key: str = Field(default='',max_length=2000)
+    source_signature: str = Field(default='',max_length=64)
     source_ids: list[int] = Field(default_factory=list,max_length=100000)
     type_id: int | None = Field(default=None,gt=0)
     product_id: int | None = Field(default=None,gt=0)
@@ -207,7 +209,7 @@ def get_quote(db,pid,standalone=False):
     stored=db.get(Quotation,pid)
     if stored is None:
         return QuoteInput(number=str(pid),title='Коммерческое предложение',customer=project.name)
-    return QuoteInput.model_validate({**stored.content,'revision':stored.revision})
+    return sync_plan_quantities(db,pid,QuoteInput.model_validate({**stored.content,'revision':stored.revision}))
 
 
 def check_revision(db,pid,revision,standalone=False):
@@ -223,6 +225,7 @@ def persist_quote(db,pid,quote,standalone=False):
     model=StandaloneQuotation if standalone else Quotation
     primary_key=StandaloneQuotation.id if standalone else Quotation.project_id
     stored=db.get(model,pid)
+    if not standalone:sync_plan_quantities(db,pid,quote)
     payload=quote.model_dump(mode='json',exclude={'revision'})
     if stored is None:
         if standalone: raise HTTPException(409,'Самостоятельное КП было удалено')
@@ -361,6 +364,12 @@ def product_snapshot(db,line,product):
         line.description='\n'.join(dict.fromkeys(filter(None,[line.description,description.strip()])))[:2000]
 
 
+def source_signature(row):
+    # Quantities, IDs and catalogue prices may change independently of a plan group.
+    fields={key:row.get(key) for key in ('room','category','name','unit','parameters','product_id','type_id')}
+    return hashlib.sha256(json.dumps(fields,ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+
+
 def source_key(row):
     if row.get('element_ids'): return 'elements:'+hashlib.sha256(','.join(map(str,sorted(row['element_ids']))).encode()).hexdigest()
     return 'frame:'+row['room']+':'+row['name']
@@ -405,7 +414,7 @@ def import_lines(db,pid,quote):
         line_id=old.id if old is not None and old.id not in used_ids else uuid.uuid4().hex
         used_ids.add(line_id)
         order_hints[line_id]=previous_order[old.id] if old else len(quote.lines)+len(lines)
-        line=QuoteLine(id=line_id,source_key=key,
+        line=QuoteLine(id=line_id,source_key=key,source_signature=source_signature(row),
             source_ids=row.get('element_ids',[]),type_id=row.get('type_id'),
             name=row['product'] or row['name'],room=row['room'],
             quantity=str(row['quantity']),calculated_quantity=str(row['quantity']),quantity_override=old.quantity_override if old else None,overrides=old.overrides if old else [],unit=row['unit'],unit_price=str(money(row['unit_price'])),
@@ -427,6 +436,65 @@ def import_lines(db,pid,quote):
     lines.sort(key=lambda line:order_hints.get(line.id,previous_order.get(line.id,len(quote.lines))))
     if len(lines)>5000: raise HTTPException(422,'В КП больше 5000 строк')
     quote.lines=lines
+    return quote
+
+
+def sync_plan_quantities(db,pid,quote):
+    """Derive linked quantities from the plan without changing saved commercial terms.
+
+    Existing rows keep their identity even when report groups split or merge. This
+    avoids guessing which manual price/discount wins. A read does not rewrite the
+    saved quote, so deleting and undoing plan objects also restores their terms.
+    """
+    linked=[line for line in quote.lines if line.source_key]
+    if not linked:return quote
+    from .main import report_rows
+    rows=[row for row in report_rows(db,pid)['rows'] if row['quantity']>0]
+    elements={item.id:item for item in db.scalars(select(Element).where(Element.project_id==pid))}
+    owners={eid:line for line in linked for eid in line.source_ids}
+    frames={line.source_key:line for line in linked if not line.source_ids}
+    signatures={}
+    for line in linked:
+        if line.source_signature:signatures.setdefault(line.source_signature,[]).append(line)
+    quantities={};sources={};current_signatures={}
+    def add(line,value,ids,signature):
+        quantities[line.id]=quantities.get(line.id,Decimal(0))+value
+        sources.setdefault(line.id,[]).extend(ids)
+        current_signatures.setdefault(line.id,set()).add(signature)
+    for row in rows:
+        ids=row.get('element_ids',[]);signature=source_signature(row)
+        if not ids:
+            old=frames.get(source_key(row))
+            if old:add(old,Decimal(str(row['quantity'])),[],signature)
+            continue
+        matches={owners[eid].id:owners[eid] for eid in ids if eid in owners and owners[eid].unit==row['unit'] and owners[eid].type_id in (None,row['type_id'])}
+        if not matches and len(signatures.get(signature,[]))==1:
+            old=signatures[signature][0];matches[old.id]=old
+        partitions={}
+        for eid in ids:
+            owner=owners.get(eid)
+            if owner and owner.id not in matches:owner=None
+            if owner is None and len(matches)==1:owner=next(iter(matches.values()))
+            if owner is not None:partitions.setdefault(owner.id,[]).append(eid)
+        def amount(ids):
+            key='length' if row['unit']=='м' else 'quantity'
+            return sum((Decimal(str(elements[eid].parameters.get(key,0 if key=='length' else 1))) for eid in ids),Decimal(0)).quantize(Decimal('.001'),rounding=ROUND_HALF_UP)
+        for line_id,part in partitions.items():add(matches[line_id],amount(part),part,signature)
+    updated=[]
+    for original in quote.lines:
+        if not original.source_key:updated.append(original);continue
+        quantity=quantities.get(original.id,Decimal(0))
+        if quantity<=0:continue
+        line=original.model_copy(deep=True)
+        line.source_ids=sorted(sources[line.id])
+        if line.source_ids:line.source_key=source_key({'element_ids':line.source_ids})
+        if not line.source_signature and len(current_signatures[line.id])==1:line.source_signature=next(iter(current_signatures[line.id]))
+        if line.calculated_quantity!=quantity:line.calculated_quantity=Decimal(str(float(quantity)))
+        effective=line.quantity_override if line.quantity_override is not None else quantity
+        if line.quantity!=effective:line.quantity=Decimal(str(float(effective)))
+        updated.append(line)
+    if len(updated)>5000:raise HTTPException(422,'В КП больше 5000 строк')
+    quote.lines=updated
     return quote
 
 
@@ -576,6 +644,7 @@ def preview_document(body:QuoteInput,mode:Literal['client','partner']='client',d
     # Resolve access without creating or changing the saved quotation.
     if db.get(StandaloneQuotation if standalone else Project,pid) is None: raise HTTPException(404,"КП или проект не найден")
     if standalone: validate_standalone(body)
+    else:sync_plan_quantities(db,pid,body)
     from .quotation_cache import quotation_pdf
     return StreamingResponse(io.BytesIO(quotation_pdf(body,mode,scope)),media_type='application/pdf',
         headers={'Cache-Control':'no-store'})
@@ -587,6 +656,7 @@ def preview_page(body:QuoteInput,mode:Literal['client','partner']='client',page:
     pid,standalone=scope
     if db.get(StandaloneQuotation if standalone else Project,pid) is None: raise HTTPException(404,'КП или проект не найден')
     if standalone: validate_standalone(body)
+    else:sync_plan_quantities(db,pid,body)
     from .quotation_cache import quotation_page
     pages,image=quotation_page(body,mode,page,scope)
     return Response(image,media_type='image/png',headers={'X-Preview-Pages':str(pages),'Cache-Control':'no-store'})
@@ -606,7 +676,7 @@ def export_quote(mode:Literal['client','partner']='client',db:DbSession=Depends(
 
 def backup_quote(db,pid):
     stored=db.get(Quotation,pid)
-    return copy.deepcopy(stored.content) if stored else None
+    return get_quote(db,pid).model_dump(mode='json',exclude={'revision'}) if stored else None
 
 
 def restore_quote(db,pid,payload,type_map,product_map,element_map):

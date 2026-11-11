@@ -108,6 +108,22 @@ try {
         $planPdf = Join-Path $workDirectory "manual-plan-smoke.pdf"
         Invoke-WebRequest -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/pages/$($planPages[0].id)/export.pdf" -OutFile $planPdf -TimeoutSec 20
         if ((Get-Item $planPdf).Length -lt 1000) { throw "Packaged manual plan PDF is invalid" }
+        $autoProject = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects" -Method Post -ContentType "application/json" -Body '{"name":"Automatic CP quantities"}'
+        $autoPages = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($autoProject.id)/pdf" -Method Post -Form @{file=(Get-Item $quotePdf)} -TimeoutSec 30
+        $autoPlan = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($autoProject.id)" -TimeoutSec 10
+        $autoLayer = $autoPlan.layers | Where-Object {$_.name -eq $planKind.category} | Select-Object -First 1
+        $autoBody = @{page_id=$autoPages[0].id;layer_id=$autoLayer.id;type_id=$planKind.id;x=0.25;y=0.25;parameters=@{quantity=2}}
+        $autoElement = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($autoProject.id)/elements" -Method Post -ContentType "application/json" -Body ($autoBody | ConvertTo-Json -Depth 10) -TimeoutSec 10
+        $autoQuoteUrl = "http://127.0.0.1:5173/api/projects/$($autoProject.id)/quotation"
+        $autoQuote = Invoke-RestMethod -Uri $autoQuoteUrl -TimeoutSec 10
+        $autoQuote.lines[0].unit_price = "100"
+        $autoQuote = Invoke-RestMethod -Uri $autoQuoteUrl -Method Put -ContentType "application/json; charset=utf-8" -Body ($autoQuote | ConvertTo-Json -Depth 20) -TimeoutSec 10
+        $autoBody.parameters.quantity = 4
+        $null = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/elements/$($autoElement.id)" -Method Put -ContentType "application/json" -Body ($autoBody | ConvertTo-Json -Depth 10) -TimeoutSec 10
+        $autoUpdated = Invoke-RestMethod -Uri $autoQuoteUrl -TimeoutSec 10
+        if ([decimal]$autoUpdated.lines[0].quantity -ne 4 -or $autoUpdated.client.totals.RUB.total -ne "400.00") {
+            throw "Packaged CP did not follow plan quantity automatically"
+        }
         $wordPath = Join-Path $workDirectory "quotation-smoke.docx"
         & $PythonBinary -c 'import sys; from docx import Document; d=Document(); t=d.add_table(rows=1,cols=3); [setattr(c,"text",v) for c,v in zip(t.rows[0].cells,["Name","Price","Quantity"])]; [setattr(c,"text",v) for c,v in zip(t.add_row().cells,["Imported lamp","25.00","3"])]; d.save(sys.argv[1])' $wordPath
         $wordResult = Invoke-RestMethod -Uri "$quoteUrl/import-file" -Method Post -Form @{file=(Get-Item $wordPath)} -TimeoutSec 20

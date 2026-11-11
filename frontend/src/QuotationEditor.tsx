@@ -12,7 +12,7 @@ export type QuotationKind = { id:number; name:string; category:string; unit:stri
 type Product = { id:number; type_id:number; name:string; sku:string; unit:string; price:number; currency:string; active:boolean; manufacturer:string; parameters?:{image?:string;description?:string} };
 type Catalogue = { products:Product[]; manufacturers:{id:number;name:string}[] };
 type Line = {
-  id:string; source_key:string; source_ids:number[]; type_id:number|null; product_id:number|null;
+  id:string; source_key:string; source_signature?:string; source_ids:number[]; type_id:number|null; product_id:number|null;
   name:string; sku:string; manufacturer:string; room:string; description:string; comment?:string; quantity:string;
   quantity_override?:string|null; calculated_quantity?:string|null; overrides?:string[];
   unit:"шт"|"м"; unit_price:string; currency:string; discount:string|null; image:string;
@@ -276,6 +276,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     <input ref={importInput} hidden type="file" aria-label="Файл внешнего КП" accept=".pdf,.xlsx,.xls,.xlsm,.docx,.csv" disabled={busy} onChange={event=>{void importFile(event.target.files?.[0]);event.target.value='';}}/>
     {!newProduct && !imported && !attachOpen && error && <p className="catalog-error" role="alert">{error}</p>}
     {message && <p className="catalog-success" role="status">{message}</p>}
+    {!standalone&&doc.lines.some(line=>line.source_key)&&<p className="hint">Количество связанных позиций обновляется из плана при открытии, сохранении и экспорте КП. Галочка «Вручную» сохраняет заданное вами количество.</p>}
     <div className="quotation-status" role="status">{busy ? "Сохранение…" : dirty ? "Есть несохранённые изменения" : "КП сохранено"}{calculating ? " · Пересчёт итогов…" : ""}</div>
     <div className="quotation-totals">
       {(["client","partner"] as const).map(target=><article key={target}><small>{target==="client" ? "Для клиента · без скидок" : "Для партнёра · со скидками"}</small>

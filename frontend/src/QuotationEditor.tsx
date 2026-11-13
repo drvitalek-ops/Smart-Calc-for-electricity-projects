@@ -232,6 +232,18 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       setMessage(target==="client" ? "Клиентский PDF сформирован без скидок." : "Партнёрский PDF сформирован со скидками.");
     });
   }
+  async function downloadSku(){
+    await work(async()=>{
+      const current=docRef.current;if(!current?.lines.length)throw Error('Добавьте позиции для выгрузки в Word');
+      const issues=current.lines.flatMap((line,index)=>{const issue=decimalIssue(line.quantity,.001,1000000,3,true);return issue?['Строка КП № '+(index+1)+' — Количество: '+issue]:[];});
+      if(issues.length)throw Error(issues.slice(0,50).join('; '));
+      const payload={number:current.number,lines:current.lines.map(({id,name,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override})=>({id,name,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override}))};
+      const response=await apiFetch('/api'+base+'/sku.docx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');
+      link.href=url;link.download='SKU-КП-'+(current.number||'без-номера').replace(/[^a-zа-яё0-9_-]/gi,'-')+'.docx';
+      link.click();window.setTimeout(()=>URL.revokeObjectURL(url),30000);setMessage('SKU сформирован в Word: наименования и количество без цен.');
+    });
+  }
   async function importFile(file:File|undefined) {
     if(!file)return;
     await work(async()=>{
@@ -269,6 +281,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     {id:'load',label:'Загрузить сохранённое',icon:'refresh',actionLabel:'Загрузить сохранённое КП',disabled:busy,command:()=>void work(async()=>{if(dirty&&!confirm('Отменить несохранённые правки и загрузить сохранённое КП?'))return;await load();})},
     {id:'import',label:'Импорт из файла',icon:'import',actionLabel:'Импорт из PDF / Excel / Word',disabled:busy,command:()=>importInput.current?.click()},
     {id:'sync',label:'Обновить из расчёта',icon:'refresh',actionLabel:'Обновить из расчёта',disabled:busy||standalone,command:()=>void work(async()=>{if(doc.lines.length&&!confirm('Обновить позиции из расчёта? Ручные правки, количество и скидки сохранятся. Удалённые на плане позиции уйдут из КП.'))return;const saved=await saveCurrent();apply(await api<Quote>(base+'/import','POST',{revision:saved.revision}));setMessage('Позиции обновлены из расчёта');})},
+    {id:'sku',label:'Сделать SKU',icon:'sku',actionLabel:'Сделать SKU — Word без цен',disabled:busy||!doc.lines.length,command:()=>void downloadSku()},
     {id:'client',label:'PDF клиенту',icon:'pdf',actionLabel:'PDF для клиента — без скидок',disabled:busy||!doc.lines.length,command:()=>void download('client')},
     {id:'partner',label:'PDF партнёру',icon:'pdf',actionLabel:'PDF для партнёра — со скидками',disabled:busy||!doc.lines.length,command:()=>void download('partner')},
     ...(standalone?[{id:'attach',label:'Прикрепить к проекту',icon:'link',actionLabel:'Прикрепить к проекту',disabled:busy,command:()=>void work(async()=>{setAttachProjects(await api<AttachmentProject[]>("/quotations/project-options"));setAttachTarget("");setAttachOpen(true);})}]:[]),
@@ -368,6 +381,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       <span className="quotation-insert-hint">{insertionAnchor?'После позиции '+(insertionAnchor.index+1):'В конец списка'}</span>
       <ToolButton icon="undo" disabled={busy||!history.current.length} onClick={()=>undo()}>Отменить правку КП</ToolButton><ToolButton icon="redo" disabled={busy||!future.current.length} onClick={()=>undo(true)}>Вернуть правку КП</ToolButton>
       <ToolButton icon="save" disabled={busy||!dirty} onClick={()=>void work(async()=>{await saveCurrent();setMessage('КП сохранено');})}>Сохранить изменения КП</ToolButton>
+      <ToolButton icon="sku" title="Word: наименования и количество без цен" disabled={busy||!doc.lines.length} onClick={()=>void downloadSku()}>Сделать SKU</ToolButton>
     </div>
     {newProduct && <QuoteDialog title="Новый товар из КП" busy={busy} onClose={()=>{setNewProduct(null);setError("");}}>
       <h2>Новый товар в базу</h2><p>{standalone ? "Товар сохранится в общем каталоге и строке КП." : "Товар сохранится в общем каталоге и будет привязан к этой строке и её объектам на плане."}</p>

@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
 project_root = Path(SPECPATH).parent
 
@@ -9,7 +10,7 @@ analysis = Analysis(
     pathex=[str(project_root / 'backend')],
     binaries=[],
     datas=[(str(project_root / 'frontend' / 'dist'), 'frontend'),
-           (str(project_root / 'backend' / 'app' / 'assets'), 'app/assets')],
+           (str(project_root / 'backend' / 'app' / 'assets'), 'app/assets')]+collect_data_files('docx',includes=['templates/*']),
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

@@ -135,6 +135,10 @@ try {
         if ($localizedTotals.client.totals.RUB.total -ne "250.00" -or $localizedTotals.partner.totals.RUB.total -ne "225.00") {
             throw "Packaged Russian decimal calculation is incorrect"
         }
+        $skuPath = Join-Path $workDirectory "sku-smoke.docx"
+        Invoke-WebRequest -Uri "$autoQuoteUrl/sku.docx" -OutFile $skuPath -TimeoutSec 20
+        & $PythonBinary -c 'import sys; from docx import Document; d=Document(sys.argv[1]); rows=[[c.text for c in r.cells] for r in d.tables[0].rows]; assert len(rows)==2 and len(rows[0])==4; assert rows[1][2]=="4"; assert all(s not in " ".join(p.text for p in d.paragraphs)+" ".join(c for row in rows for c in row) for s in ["Цена","Скидка","Сумма","100,00"]), "SKU contains prices"' $skuPath
+        if ($LASTEXITCODE -ne 0) { throw "Packaged SKU Word export is invalid or contains financial data" }
         $wordPath = Join-Path $workDirectory "quotation-smoke.docx"
         & $PythonBinary -c 'import sys; from docx import Document; d=Document(); t=d.add_table(rows=1,cols=3); [setattr(c,"text",v) for c,v in zip(t.rows[0].cells,["Name","Price","Quantity"])]; [setattr(c,"text",v) for c,v in zip(t.add_row().cells,["Imported lamp","25.00","3"])]; d.save(sys.argv[1])' $wordPath
         $wordResult = Invoke-RestMethod -Uri "$quoteUrl/import-file" -Method Post -Form @{file=(Get-Item $wordPath)} -TimeoutSec 20

@@ -115,6 +115,7 @@ jobs:
           node frontend/tests/plan-symbols-layers.cjs
           node frontend/tests/quotation-plan-quantities.cjs
           node frontend/tests/russian-errors.cjs
+          node frontend/tests/sku-word.cjs
           node frontend/tests/catalog.cjs
 
       - name: Validate Docker Compose

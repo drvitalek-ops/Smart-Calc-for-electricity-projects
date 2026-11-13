@@ -9,6 +9,7 @@ const shapes:Record<string,React.ReactNode>={
     catalog:<><path d="M3 5h7l2 3 2-3h7v15h-7l-2 2-2-2H3Z"/><path d="M12 8v14M6 10h3m-3 4h3m6-4h3m-3 4h3"/></>,
     edit:<><path d="m16 3 5 5-12 12H4v-5Zm-2 2 5 5M3 22h18"/></>,save:<><path d="M4 3h13l4 4v14H3V3Zm3 0v7h10V3M7 21v-7h10v7"/></>,
     import:<><path d="M12 3v12m-4-4 4 4 4-4M4 15v6h16v-6"/></>,pdf:<><path d="M5 2h10l5 5v15H5Zm10 0v6h5"/><path d="M8 16h9m-9-4h4"/></>,eye:<><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></>,
+    sku:<><path d="M5 2h10l5 5v15H5Zm10 0v6h5"/><path d="M8 11h9v8H8Zm0 3h9m-4-3v8"/></>,
     eyeOff:<><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12ZM3 3l18 18"/></>,lock:<><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/></>,unlock:<><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0"/></>,
     undo:<><path d="m8 4-5 5 5 5M3 9h11a6 6 0 0 1 0 12"/></>,redo:<><path d="m16 4 5 5-5 5m5-5H10a6 6 0 0 0 0 12"/></>,
     plus:<path d="M12 4v16M4 12h16"/>,trash:<><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/></>,copy:<><rect x="7" y="7" width="14" height="14" rx="2"/><path d="M17 7V3H3v14h4"/></>,

@@ -10,7 +10,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request, Query
 from fastapi.responses import StreamingResponse, Response
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 from .db import session
@@ -663,6 +663,57 @@ def preview_page(body:QuoteInput,mode:Literal['client','partner']='client',page:
     from .quotation_cache import quotation_page
     pages,image=quotation_page(body,mode,page,scope)
     return Response(image,media_type='image/png',headers={'X-Preview-Pages':str(pages),'Cache-Control':'no-store'})
+
+
+class SkuLine(BaseModel):
+    id:str=Field(min_length=1,max_length=80)
+    name:str=Field(min_length=1,max_length=500)
+    quantity:RussianDecimal=Field(gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
+    unit:Literal['шт','м']='шт'
+    type_id:int|None=Field(default=None,gt=0)
+    source_key:str=Field(default='',max_length=2000)
+    source_signature:str=Field(default='',max_length=64)
+    source_ids:list[int]=Field(default_factory=list,max_length=100000)
+    quantity_override:RussianDecimal|None=Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
+
+
+    @field_validator('name')
+    @classmethod
+    def named_position(cls,value):
+        if not value.strip():raise ValueError('Укажите наименование позиции')
+        return value
+
+
+class SkuInput(BaseModel):
+    number:str=Field(default='',max_length=100)
+    lines:list[SkuLine]=Field(min_length=1,max_length=5000)
+
+
+def sku_file(quote):
+    from .sku_docx import export_sku
+    if not quote.lines:raise HTTPException(422,'Добавьте позиции для выгрузки в Word')
+    return StreamingResponse(io.BytesIO(export_sku(quote)),
+        media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        headers={'Content-Disposition':'attachment; filename="SKU.docx"','Cache-Control':'no-store'})
+
+
+@router.get('/api/quotations/{qid}/sku.docx')
+@router.get('/api/projects/{pid}/quotation/sku.docx')
+def saved_sku(db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
+    return sku_file(get_quote(db,pid,standalone))
+
+
+@router.post('/api/quotations/{qid}/sku.docx')
+@router.post('/api/projects/{pid}/quotation/sku.docx')
+def draft_sku(body:SkuInput,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+    pid,standalone=scope
+    if db.get(StandaloneQuotation if standalone else Project,pid) is None:raise HTTPException(404,'КП или проект не найден')
+    # Build a quantity-only document: commercial fields and images are never read.
+    quote=QuoteInput(number=body.number,lines=[QuoteLine.model_validate(line.model_dump()) for line in body.lines])
+    if standalone:validate_standalone(quote)
+    else:sync_plan_quantities(db,pid,quote)
+    return sku_file(quote)
 
 
 @router.get('/api/quotations/{qid}/export.pdf')

@@ -61,7 +61,7 @@ const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKM
   await page.getByRole('button',{name:'КП',exact:true}).click();const editor=page.getByRole('region',{name:'Редактор коммерческого предложения',exact:true});await editor.waitFor();
   const quote=(await(await api.get(base+'/projects/'+pid+'/quotation')).json()),index=quote.lines.findIndex(l=>l.source_ids.includes(marker.id))+1;
   const details=editor.locator('[data-quote-line]').nth(index-1).locator('details');await details.locator('summary').click();
-  await editor.getByLabel('Наименование строки '+index,{exact:true}).fill('Датчик вручную в КП');await editor.getByLabel('Артикул строки '+index,{exact:true}).fill('MANUAL-41');await editor.getByLabel('Производитель строки '+index,{exact:true}).fill('Свой производитель');
+  await editor.getByLabel('Наименование строки '+index,{exact:true}).fill('Датчик вручную в КП');await editor.getByLabel('Артикул строки '+index,{exact:true}).fill('MANUAL-41');await editor.getByLabel('Бренд строки '+index,{exact:true}).fill('Свой производитель');
   await editor.getByLabel('Ручное количество строки '+index,{exact:true}).check();await editor.getByLabel('Количество строки '+index,{exact:true}).fill('2.5');await editor.getByLabel('Цена строки '+index,{exact:true}).fill('1200.50');
   let response=page.waitForResponse(r=>r.url().endsWith('/quotation')&&r.request().method()==='PUT');await editor.getByRole('button',{name:'Сохранить КП',exact:true}).click();assert.equal((await response).status(),200);
   response=page.waitForResponse(r=>r.url().endsWith('/quotation/import')&&r.request().method()==='POST');await editor.getByRole('button',{name:'Обновить из расчёта',exact:true}).click();const refreshed=await(await response).json();

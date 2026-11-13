@@ -111,6 +111,7 @@ jobs:
           node frontend/tests/workbench.cjs
           node frontend/tests/large-quotation.cjs
           node frontend/tests/quotation-workbench.cjs
+          node frontend/tests/quotation-fields.cjs
           node frontend/tests/photos-categories.cjs
           node frontend/tests/plan-symbols-layers.cjs
           node frontend/tests/quotation-plan-quantities.cjs

@@ -15,3 +15,5 @@
 /* Reserve space for the dock: it never covers the last table row or inputs. */
 .quote-workspace .quotation-content{margin-bottom:66px;padding-bottom:24px}
 @media(max-width:800px){.quote-workspace .quotation-content{margin-bottom:100px;padding-bottom:20px}}
+
+.quote-workspace .quotation-row-context{display:grid;gap:7px;margin:7px 0}.quote-workspace .quotation-row-context>label{display:grid;gap:4px;font-size:10px;margin:0}.quote-workspace .quotation-row-context .quotation-row-comment{height:56px;min-height:56px}

@@ -14,6 +14,7 @@ ASSETS=Path(__file__).resolve().parent / "assets"
 GRAY=(.48,.53,.59)
 LINE=(.84,.87,.90)
 WHITE=(1,1,1)
+TABLE_TEXT_SCALE=1.05
 
 
 def number(value,digits=2):
@@ -40,6 +41,10 @@ def export_quotation(quote,mode,font_path=None):
     bottom=height-35
     columns=([26,usable-26-75-35-26-86,75,35,26,86] if mode=='client'
         else [26,usable-26-65-35-26-42-86,65,35,26,42,86])
+    cell_font=7.5*TABLE_TEXT_SCALE
+    cell_leading=10*TABLE_TEXT_SCALE
+    group_font=8.5*TABLE_TEXT_SCALE
+    group_leading=11*TABLE_TEXT_SCALE
     headings=(['№','НАИМЕНОВАНИЕ','ЦЕНА','КОЛ-ВО','ЕД.','СУММА'] if mode=='client'
         else ['№','НАИМЕНОВАНИЕ','ЦЕНА','КОЛ-ВО','ЕД.','СКИДКА','СУММА'])
 
@@ -102,7 +107,7 @@ def export_quotation(quote,mode,font_path=None):
         page.draw_rect(pymupdf.Rect(margin,y,width-margin,y+24),color=None,fill=(.95,.96,.97))
         x=margin
         for index,(heading,col_width) in enumerate(zip(headings,columns)):
-            size=5.5
+            size=5.5*TABLE_TEXT_SCALE
             offset=6 if index<2 else max(2,col_width-measure(heading,size)-5)
             text(x+offset,y+14,heading,size,GRAY)
             x+=col_width
@@ -110,10 +115,10 @@ def export_quotation(quote,mode,font_path=None):
 
     def group_heading(name):
         nonlocal y
-        parts=wrap(name,usable-16,8.5)
-        height=max(22,10+len(parts)*11)
+        parts=wrap(name,usable-16,group_font)
+        height=max(22,10+len(parts)*group_leading)
         page.draw_rect(pymupdf.Rect(margin,y,width-margin,y+height),fill=(.93,.97,.95),color=None)
-        for index,part in enumerate(parts):text(margin+8,y+14+index*11,part,8.5,DARK,True)
+        for index,part in enumerate(parts):text(margin+8,y+14+index*group_leading,part,group_font,DARK,True)
         y+=height+3
 
     new_page()
@@ -213,7 +218,7 @@ def export_quotation(quote,mode,font_path=None):
     for index,(line_item,row) in enumerate(zip(quote.lines,result['lines']),1):
         room=line_item.room.strip() or 'Без помещения'
         if grouped and room!=current_group:
-            heading_height=max(22,10+len(wrap(room,usable-16,8.5))*11)+3
+            heading_height=max(22,10+len(wrap(room,usable-16,group_font))*group_leading)+3
             if y+heading_height+40>bottom:new_page();table_heading()
             group_heading(room);current_group=room
         # Product photo is aligned beside its name; article and manufacturer are secondary.
@@ -227,16 +232,16 @@ def export_quotation(quote,mode,font_path=None):
         cells=[str(index),details,number(line_item.unit_price)+' '+currency(line_item.currency),quantity,line_item.unit]
         if mode=='partner': cells.append(number(row['effective_discount'])+'%')
         cells.append(number(row['total'])+' '+currency(line_item.currency))
-        wrapped=[wrap(value,columns[i]-10-(photo_width if i==1 else 0),7.5) for i,value in enumerate(cells)]
+        wrapped=[wrap(value,columns[i]-10-(photo_width if i==1 else 0),cell_font) for i,value in enumerate(cells)]
         lines_count=max(len(value) for value in wrapped)
         offset=0
         while offset<lines_count:
             if y+36>bottom:
                 new_page();table_heading()
                 if grouped:group_heading(room)
-            fit=max(1,int((bottom-y-14)/10))
+            fit=max(1,int((bottom-y-14)/cell_leading))
             count=min(lines_count-offset,fit)
-            row_height=max(40,count*10+14)
+            row_height=max(40,count*cell_leading+14)
             x=margin
             if offset==0 and line_item.image:
                 image(line_item.image,pymupdf.Rect(margin+columns[0]+3,y+7,margin+columns[0]+31,y+35))
@@ -245,8 +250,8 @@ def export_quotation(quote,mode,font_path=None):
                 for j,value in enumerate(values):
                     color=GREEN if col_index==len(columns)-1 else GRAY if col_index in (0,2,4) else DARK
                     right=col_index not in (0,1)
-                    xpos=x+col_width-5-measure(value,7.5,'QuoteBold' if col_index in (3,len(columns)-1) else 'Quote') if right else x+5+(photo_width if col_index==1 else 0)
-                    text(xpos,y+14+j*10,value,7.5,color,col_index in (3,len(columns)-1))
+                    xpos=x+col_width-5-measure(value,cell_font,'QuoteBold' if col_index in (3,len(columns)-1) else 'Quote') if right else x+5+(photo_width if col_index==1 else 0)
+                    text(xpos,y+14+j*cell_leading,value,cell_font,color,col_index in (3,len(columns)-1))
                 x+=col_width
             y+=row_height
             line(y);y+=4

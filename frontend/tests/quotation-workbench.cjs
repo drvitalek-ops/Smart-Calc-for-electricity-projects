@@ -14,10 +14,11 @@ const frontend=process.env.FRAME_TEST_FRONTEND||'http://127.0.0.1:5174',backend=
  assert.equal(await editor.locator('.quotation-row-details[open]').count(),0);
  const row=number=>editor.locator(`[data-quote-line="row-${number}"]`),ids=()=>editor.locator('[data-quote-line]').evaluateAll(nodes=>nodes.map(node=>node.dataset.quoteLine));
  const height=(await row(2).boundingBox()).height;assert.ok(height<=95,'Compact row too tall: '+height);if(process.env.QUOTE_WORKBENCH_SCREENSHOT)await page.screenshot({path:process.env.QUOTE_WORKBENCH_SCREENSHOT.replace('.png','-initial.png')});
+ await row(3).locator('summary').click();
  await editor.getByLabel('Комментарий строки 3',{exact:true}).fill('Кабель в нише');await editor.getByLabel('Помещение строки 3',{exact:true}).fill('Гостиная');await editor.getByLabel('Цена строки 4',{exact:true}).click();
  const filter=editor.getByLabel('Группа позиций КП',{exact:true});await filter.selectOption('group:Гостиная');assert.equal(await editor.locator('[data-quote-line]').count(),1);
  const room=editor.getByLabel('Помещение строки 3',{exact:true});await room.fill('Сп');await room.pressSequentially('альня');assert.equal(await room.inputValue(),'Спальня','A filtered row must stay mounted until room editing finishes');
- await filter.selectOption('all');await editor.getByLabel('Помещение строки 1',{exact:true}).fill('Спальня');await filter.selectOption('group:Спальня');assert.equal(await editor.locator('[data-quote-line]').count(),2);
+ await filter.selectOption('all');await row(1).locator('summary').click();await editor.getByLabel('Помещение строки 1',{exact:true}).fill('Спальня');await filter.selectOption('group:Спальня');assert.equal(await editor.locator('[data-quote-line]').count(),2);await row(1).locator('summary').click();await row(3).locator('summary').click();
  const target=await row(3).boundingBox();await row(1).getByRole('button',{name:'Перетащить строку 1',exact:true}).dragTo(row(3),{targetPosition:{x:80,y:target.height-2}});
  await waitUntil(async()=>JSON.stringify(await ids())===JSON.stringify(['row-3','row-1']),'Native drag did not reorder the filtered rows');
  await dock.getByRole('button',{name:'Отменить правку КП',exact:true}).click();assert.deepEqual(await ids(),['row-1','row-3']);

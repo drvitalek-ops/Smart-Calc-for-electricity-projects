@@ -102,12 +102,20 @@ def run_stage(stage, root):
         # Every version must open plans, export all reports and retain discounts.
         for path in (f'/projects/{pid}/export/pdf',f'/projects/{pid}/export/xlsx',f"/projects/{pid}/pages/{project['pages'][0]['id']}/export.pdf",f"/pages/{project['pages'][0]['id']}/image",f'/projects/{pid}/quotation/export.pdf?mode=partner',f"/quotations/{ids['quote']}/export.pdf?mode=client"):
             response=client.get('/api'+path);assert response.is_success and len(response.content)>100, (stage,path)
-        # Keep the reference layout outside the intentionally repositioned totals.
+        # Compare the unchanged template at the legacy table font size. The approved
+        # +5% table typography and its pagination are checked by dedicated PDF tests.
         from app.quotations import QuoteInput,QuoteLine
         from app.quotation_pdf import export_quotation
         reference=QuoteInput(number='10574',date='2026-09-25',customer='Надежда дизайнер',global_discount='10',lines=[QuoteLine(id=str(i),name=f'Светильник для проекта {i+1}',quantity='2.5',unit_price='1234.56',sku=f'LED-{i:03}') for i in range(65)])
         pdf=export_quotation(reference,'partner')
-        with pymupdf.open(stream=pdf,filetype='pdf') as document:
+        import app.quotation_pdf as pdf_renderer
+        scale=getattr(pdf_renderer,'TABLE_TEXT_SCALE',None)
+        try:
+            if scale is not None:pdf_renderer.TABLE_TEXT_SCALE=1.0
+            baseline_pdf=export_quotation(reference,'partner')
+        finally:
+            if scale is not None:pdf_renderer.TABLE_TEXT_SCALE=scale
+        with pymupdf.open(stream=baseline_pdf,filetype='pdf') as document:
             digests=[]
             for index,page in enumerate(document):
                 pixmap=page.get_pixmap(matrix=pymupdf.Matrix(1,1),alpha=False)
@@ -120,7 +128,7 @@ def run_stage(stage, root):
             imported=checked(client.post(f'/api/projects/{pid}/quotation/import-file',files={'file':('reference.pdf',pdf,'application/pdf')}))
             assert len(imported['lines'])==65,(stage,len(imported['lines']))
             assert all(line['unit_price']=='1234.56' and line['quantity']=='2.500' for line in imported['lines'])
-        print(f'PASS {stage}: {len(project["elements"])} objects, frames, multi-strip supply, metres, custom category, photos, both CPs, reports and identical CP pixels outside totals')
+        print(f'PASS {stage}: {len(project["elements"])} objects, frames, multi-strip supply, metres, custom category, photos, both CPs, reports and stable CP template at baseline table font')
 
 
 def main():

@@ -666,6 +666,7 @@ def preview_page(body:QuoteInput,mode:Literal['client','partner']='client',page:
 
 
 class SkuLine(BaseModel):
+    manufacturer:str=Field(default='',max_length=500)
     id:str=Field(min_length=1,max_length=80)
     name:str=Field(min_length=1,max_length=500)
     quantity:RussianDecimal=Field(gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
@@ -709,7 +710,7 @@ def saved_sku(db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
 def draft_sku(body:SkuInput,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
     pid,standalone=scope
     if db.get(StandaloneQuotation if standalone else Project,pid) is None:raise HTTPException(404,'КП или проект не найден')
-    # Build a quantity-only document: commercial fields and images are never read.
+    # Build a price-free document: financial fields and images are never read.
     quote=QuoteInput(number=body.number,lines=[QuoteLine.model_validate(line.model_dump()) for line in body.lines])
     if standalone:validate_standalone(quote)
     else:sync_plan_quantities(db,pid,quote)

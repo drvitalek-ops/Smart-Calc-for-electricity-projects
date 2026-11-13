@@ -17,7 +17,8 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 `,target],{encoding:'utf8'});return text;}
  await editor(page).getByLabel('Количество строки 1',{exact:true}).waitFor();await editor(page).getByLabel('Наименование строки 1',{exact:true}).fill('Имя из черновика');await editor(page).getByLabel('Количество строки 1',{exact:true}).fill('2,5');await editor(page).getByLabel('Цена строки 1',{exact:true}).fill('');
  await editor(page).getByLabel('Поиск позиций КП',{exact:true}).fill('Имя из черновика');
- const text=await download(page,'draft');assert.ok(text.includes('Имя из черновика')&&text.includes('2,5')&&text.includes('1000'));assert.ok(text.indexOf('Имя из черновика')<text.indexOf('Светильник'));
+ await editor(page).getByLabel('Бренд строки 1',{exact:true}).fill('Бренд из черновика');
+ const text=await download(page,'draft');assert.ok(text.includes('Бренд из черновика'));assert.ok(text.includes('Имя из черновика')&&text.includes('2,5')&&text.includes('1000'));assert.ok(text.indexOf('Имя из черновика')<text.indexOf('Светильник'));
  for(const privateText of ['98765','87654','13.37','КЛИЕНТ_СЕКРЕТ','УСЛОВИЯ_СЕКРЕТ','ОПИСАНИЕ_СЕКРЕТ','КОММЕНТАРИЙ_СЕКРЕТ','Цена','Сумма','Скидка','₽'])assert.ok(!text.includes(privateText),privateText);
  const payload=JSON.stringify(requests[0]);assert.ok(!/unit_price|discount|description|comment|image|98765/.test(payload));
  assert.deepEqual(await checked(await api.get(base+'/quotations/'+qid)),saved,'Export must not save or replace the quote');assert.equal(await editor(page).getByLabel('Цена строки 1',{exact:true}).inputValue(),'');

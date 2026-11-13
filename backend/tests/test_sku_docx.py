@@ -24,11 +24,11 @@ def test_saved_and_draft_standalone_word_have_only_names_quantities_and_units(cl
     created=ok(client.post('/api/quotations',json={}))
     path='/api/quotations/'+str(created['id']);quote=created['quotation']
     quote.update(number='С-1',global_discount='17.25',customer='КЛИЕНТ_СЕКРЕТ',terms='УСЛОВИЯ_СЕКРЕТ')
-    quote['lines']=[{'id':'b','name':'Лента & профиль <24 В>','quantity':'2.5','unit':'м','unit_price':'98765.43','discount':'13.37','description':'ОПИСАНИЕ_СЕКРЕТ','comment':'КОММЕНТАРИЙ_СЕКРЕТ'},
+    quote['lines']=[{'id':'b','name':'Лента & профиль <24 В>','manufacturer':'Arlight','quantity':'2.5','unit':'м','unit_price':'98765.43','discount':'13.37','description':'ОПИСАНИЕ_СЕКРЕТ','comment':'КОММЕНТАРИЙ_СЕКРЕТ'},
                     {'id':'a','name':'Светильник','quantity':'1000','unit_price':'87654.32'}]
     saved=ok(client.put(path,json=quote))
     response=client.get(path+'/sku.docx');document,rows=table(response)
-    assert rows==[['№','Наименование','Количество','Ед.'],['1','Лента & профиль <24 В>','2,5','м'],['2','Светильник','1000','шт']]
+    assert rows==[['№','Наименование','Бренд','Количество','Ед.'],['1','Лента & профиль <24 В>','Arlight','2,5','м'],['2','Светильник','','1000','шт']]
     assert document.tables[0].rows[0]._tr.xpath('./w:trPr/w:tblHeader')
     assert abs(document.sections[0].page_width.mm-210)<.1
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
@@ -36,9 +36,9 @@ def test_saved_and_draft_standalone_word_have_only_names_quantities_and_units(cl
     for private in ('98765.43','87654.32','17.25','13.37','КЛИЕНТ_СЕКРЕТ','УСЛОВИЯ_СЕКРЕТ','ОПИСАНИЕ_СЕКРЕТ','КОММЕНТАРИЙ_СЕКРЕТ','Цена','Скидка','Сумма','₽'):
         assert private not in xml
     # The draft export accepts only its own fields, regardless of unfinished prices.
-    payload={'number':'Черновик','global_discount':'bad-discount','lines':[{'id':'a','name':'Новое название','quantity':'1,125','unit':'м','unit_price':'bad-price'}]}
+    payload={'number':'Черновик','global_discount':'bad-discount','lines':[{'id':'a','name':'Новое название','manufacturer':'Бренд из черновика','quantity':'1,125','unit':'м','unit_price':'bad-price'}]}
     _,draft=table(client.post(path+'/sku.docx',json=payload))
-    assert draft[1]==['1','Новое название','1,125','м']
+    assert draft[1]==['1','Новое название','Бренд из черновика','1,125','м']
     assert client.get(path).json()==saved
 
 
@@ -49,13 +49,13 @@ def test_linked_draft_word_uses_latest_plan_counts_and_explicit_manual_quantity(
     original=quote['lines'][0];original['unit_price']='98765.43'
     saved=ok(client.put(path,json=quote))
     ok(client.put('/api/elements/'+str(element['id']),json={**body,'parameters':{**body['parameters'],'length':8}}))
-    _,rows=table(client.get(path+'/sku.docx'));assert rows[1][2:] == ['8','м']
+    _,rows=table(client.get(path+'/sku.docx'));assert rows[1][3:] == ['8','м']
     original['name']='Название из несохранённых правок'
     _,rows=table(client.post(path+'/sku.docx',json={'number':'Черновик','lines':[original]}))
-    assert rows[1][1:] == ['Название из несохранённых правок','8','м']
+    assert rows[1][1:] == ['Название из несохранённых правок','','8','м']
     original['quantity_override']='12,75'
     _,rows=table(client.post(path+'/sku.docx',json={'lines':[original]}))
-    assert rows[1][2:] == ['12,75','м']
+    assert rows[1][3:] == ['12,75','м']
     current=ok(client.get(path));assert current['revision']==saved['revision']
     assert current['lines'][0]['name']!=original['name'] and Decimal(current['lines'][0]['quantity'])==8
     assert Decimal(current['lines'][0]['unit_price'])==Decimal('98765.43')

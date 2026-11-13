@@ -9,7 +9,7 @@ RUN --mount=type=secret,id=proxy_ca \
     npm ci
 COPY frontend/index.html frontend/tsconfig.json frontend/vite.config.ts ./
 COPY frontend/src ./src
-COPY backend/app/assets/plan-symbols.json /app/backend/app/assets/plan-symbols.json
+COPY backend/app/assets/*.json /app/backend/app/assets/
 RUN npm run build
 
 FROM nginx:1.28-alpine

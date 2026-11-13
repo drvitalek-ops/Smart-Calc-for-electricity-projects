@@ -119,8 +119,10 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.48'
+APP_VERSION = '1.0.49'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
+from .errors import install_error_handlers, exception_message
+install_error_handlers(app)
 
 def require(db, model, id):
     obj = db.get(model, id)
@@ -850,7 +852,7 @@ async def import_catalog(file: UploadFile, db: DbSession = Depends(session)):
     headers={str(header).strip().lower() for header in (rows[0].keys() if rows else []) if header}
     required={'name','type','manufacturer','price'}
     if not required.issubset(headers):
-        raise HTTPException(422,'Обязательные столбцы: name, type, manufacturer, price')
+        raise HTTPException(422,'В прайс-листе не хватает обязательных столбцов. Используйте шаблон и заполните название, тип, производителя и цену.')
     types_by_name={item.name.strip().casefold():item for item in db.scalars(select(ElementType).where(ElementType.active.is_(True)))}
     manufacturers={item.name.strip().casefold():item for item in db.scalars(select(Manufacturer))}
     suppliers={item.name.strip().casefold():item for item in db.scalars(select(Supplier))}
@@ -885,7 +887,7 @@ async def import_catalog(file: UploadFile, db: DbSession = Depends(session)):
                 raise ValueError(f'строка {index}: валюта должна состоять из трёх букв')
             active_value=(row.get('active') or 'true').casefold()
             if active_value not in {'true','false','1','0','да','нет','yes','no'}:
-                raise ValueError(f'строка {index}: active должен быть true или false')
+                raise ValueError(f'строка {index}: поле активности заполнено неверно. Используйте значения из шаблона')
             active=active_value in {'true','1','да','yes'}
             sku=row.get('sku','')
             query=select(Product).where(Product.manufacturer_id==manufacturer.id)
@@ -1047,7 +1049,7 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(422,f'Некорректная резервная копия: {exc}') from exc
+        raise HTTPException(422,'Некорректная резервная копия: '+exception_message(exc,'Не удалось прочитать архив. Выберите исправную резервную копию.')) from exc
     finally:
         if 'archive' in locals(): archive.close()
     paths=[]
@@ -1147,7 +1149,7 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
         db.rollback()
         for path in paths: path.unlink(missing_ok=True)
         if isinstance(exc,HTTPException): raise
-        raise HTTPException(422,f'Не удалось восстановить проект: {exc}') from exc
+        raise HTTPException(422,'Не удалось восстановить проект: '+exception_message(exc,'Проверьте файл резервной копии.')) from exc
 
 @app.get('/api/projects/{pid}')
 def project(pid: int, db: DbSession = Depends(session)):

@@ -1,3 +1,4 @@
+import {apiFetch,errorMessage} from "./errors";
 import {useEffect,useState} from 'react';
 export type Category={id:number|null;name:string;description:string;system:boolean;positions:number};
 export default function CategoryEditor({categories,onChanged,onDirtyChange,onBusyChange}:{categories:Category[];onChanged:()=>Promise<void>;onDirtyChange?:(dirty:boolean)=>void;onBusyChange?:(busy:boolean)=>void}){
@@ -6,10 +7,9 @@ export default function CategoryEditor({categories,onChanged,onDirtyChange,onBus
   useEffect(()=>{onDirtyChange?.(dirty);return()=>onDirtyChange?.(false);},[dirty,onDirtyChange]);
   useEffect(()=>{onBusyChange?.(busy);return()=>onBusyChange?.(false);},[busy,onBusyChange]);
   async function save(method:string,id?:number){setBusy(true);setError('');try{
-    const response=await fetch('/api/categories'+(id?'/'+id:''),{method,headers:{'Content-Type':'application/json'},body:method==='DELETE'?undefined:JSON.stringify({name:form.name,description:form.description})});
-    if(!response.ok){const result=await response.json();throw Error(typeof result.detail==='string'?result.detail:'Проверьте название категории');}
+    await apiFetch('/api/categories'+(id?'/'+id:''),{method,headers:{'Content-Type':'application/json'},body:method==='DELETE'?undefined:JSON.stringify({name:form.name,description:form.description})});
     await onChanged();setForm({id:0,name:'',description:''});
-  }catch(e){setError(e instanceof Error?e.message:'Ошибка');}finally{setBusy(false);}}
+  }catch(e){setError(errorMessage(e,'Ошибка'));}finally{setBusy(false);}}
   return <section aria-label="Категории каталога"><h3>Категории</h3><p className="hint">Создайте любую категорию, затем выберите её при добавлении номенклатуры. Категории сохраняются и без позиций.</p>
     {error&&<p role="alert" className="catalog-error">{error}</p>}
     <form className="nomenclature-form" onSubmit={event=>{event.preventDefault();void save(form.id?'PUT':'POST',form.id||undefined);}}>

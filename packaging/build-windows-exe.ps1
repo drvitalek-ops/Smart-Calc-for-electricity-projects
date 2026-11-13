@@ -124,6 +124,17 @@ try {
         if ([decimal]$autoUpdated.lines[0].quantity -ne 4 -or $autoUpdated.client.totals.RUB.total -ne "400.00") {
             throw "Packaged CP did not follow plan quantity automatically"
         }
+        $badNumbers = @{lines=@(@{id="invalid";quantity="";unit_price="100"})} | ConvertTo-Json -Depth 5
+        $numberError = Invoke-WebRequest -Uri "$autoQuoteUrl/calculate" -Method Post -ContentType "application/json" -Body $badNumbers -SkipHttpErrorCheck -TimeoutSec 10
+        $numberDetails = ($numberError.Content | ConvertFrom-Json).detail
+        if ($numberError.StatusCode -ne 422 -or $numberDetails[0].field -ne "Строка КП № 1 — Количество" -or $numberDetails[0].msg -notlike "Введите число*") {
+            throw "Packaged numeric validation is not Russian"
+        }
+        $ruNumbers = @{global_discount="10,0";lines=@(@{id="localized";quantity="2,5";unit_price="100,00"})} | ConvertTo-Json -Depth 5
+        $localizedTotals = Invoke-RestMethod -Uri "$autoQuoteUrl/calculate" -Method Post -ContentType "application/json" -Body $ruNumbers -TimeoutSec 10
+        if ($localizedTotals.client.totals.RUB.total -ne "250.00" -or $localizedTotals.partner.totals.RUB.total -ne "225.00") {
+            throw "Packaged Russian decimal calculation is incorrect"
+        }
         $wordPath = Join-Path $workDirectory "quotation-smoke.docx"
         & $PythonBinary -c 'import sys; from docx import Document; d=Document(); t=d.add_table(rows=1,cols=3); [setattr(c,"text",v) for c,v in zip(t.rows[0].cells,["Name","Price","Quantity"])]; [setattr(c,"text",v) for c,v in zip(t.add_row().cells,["Imported lamp","25.00","3"])]; d.save(sys.argv[1])' $wordPath
         $wordResult = Invoke-RestMethod -Uri "$quoteUrl/import-file" -Method Post -Form @{file=(Get-Item $wordPath)} -TimeoutSec 20

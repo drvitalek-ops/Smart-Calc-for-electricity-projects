@@ -25,7 +25,7 @@ internal static class Program
 
 internal sealed class MainWindow : Form
 {
-    private const string ApplicationVersion = "1.0.48";
+    private const string ApplicationVersion = "1.0.49";
     private static readonly string InstallDirectory = Path.GetDirectoryName(Environment.ProcessPath)
         ?? AppContext.BaseDirectory;
     private readonly int backendPort = FindAvailablePort();
@@ -84,6 +84,7 @@ internal sealed class MainWindow : Form
             await webView.EnsureCoreWebView2Async(environment).WaitAsync(TimeSpan.FromSeconds(45));
             LogStartup("WebView2 ready; opening local interface.");
 
+            webView.CoreWebView2.Settings.IsBuiltInErrorPageEnabled = false;
             webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
             webView.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = false;
             webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
@@ -139,7 +140,14 @@ internal sealed class MainWindow : Form
             LogStartup(exception.ToString());
             MessageBox.Show(
                 this,
-                "Не удалось открыть окно Smart Home Calc.\n\n" + exception.Message + "\n\nПодробности: %LOCALAPPDATA%\\SmartHomeCalc\\data\\desktop.log",
+                "Не удалось открыть окно Smart Home Calc.\n\n" + (exception switch
+                {
+                    TimeoutException => "Превышено время ожидания запуска. Повторите запуск. Если используется ВПН, разрешите локальные подключения в его настройках.",
+                    FileNotFoundException => "Не найден один из файлов приложения. Повторно запустите установочный файл.",
+                    UnauthorizedAccessException => "Нет доступа к папке приложения. Проверьте права доступа.",
+                    IOException => "Не удалось прочитать или записать файлы приложения. Проверьте свободное место и доступ к папке данных.",
+                    _ => "Повторите запуск приложения. Подробности ошибки записаны в журнал."
+                }) + "\n\nПодробности: %LOCALAPPDATA%\\SmartHomeCalc\\data\\desktop.log",
                 "Smart Home Calc",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);

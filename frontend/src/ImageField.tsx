@@ -1,3 +1,4 @@
+import {errorMessage} from "./errors";
 import {useEffect,useRef,useState} from 'react';
 import type {ClipboardEvent,DragEvent} from 'react';
 import './ImageField.css';
@@ -42,7 +43,7 @@ export default function ImageField({value,onChange,label,disabled=false,logo=fal
     if(disabled)return;
     const current=++request.current;setBusy(true);setError('');
     try {const image=await prepareImage(file,logo);if(current===request.current)onChange(image);}
-    catch(e){if(current===request.current)setError(e instanceof Error?e.message:'Ошибка изображения');}
+    catch(e){if(current===request.current)setError(errorMessage(e,'Ошибка изображения'));}
     finally{if(current===request.current)setBusy(false);}
   }
   function over(event:DragEvent){event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect=disabled?'none':'copy';setDrag(true);}

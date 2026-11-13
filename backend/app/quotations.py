@@ -17,6 +17,9 @@ from .db import session
 from .models import Project, Quotation, StandaloneQuotation, Element, ElementType, Product, Manufacturer, Layer
 
 router=APIRouter()
+from .numbers import RussianDecimal
+from .errors import exception_message
+
 CENT=Decimal('0.01')
 
 
@@ -26,14 +29,14 @@ def money(value):
 
 class PriceLine(BaseModel):
     id:str=Field(min_length=1,max_length=80)
-    quantity:Decimal=Field(default=1,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
-    unit_price:Decimal=Field(default=0,ge=0,le=1000000000,max_digits=12,decimal_places=2,allow_inf_nan=False)
+    quantity:RussianDecimal=Field(default=1,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
+    unit_price:RussianDecimal=Field(default=0,ge=0,le=1000000000,max_digits=12,decimal_places=2,allow_inf_nan=False)
     currency:str=Field(default='RUB',pattern='^[A-Z]{3}$')
-    discount:Decimal|None=Field(default=None,ge=0,le=100,max_digits=5,decimal_places=2,allow_inf_nan=False)
+    discount:RussianDecimal|None=Field(default=None,ge=0,le=100,max_digits=5,decimal_places=2,allow_inf_nan=False)
 
 
 class PriceInput(BaseModel):
-    global_discount:Decimal=Field(default=0,ge=0,le=100,max_digits=5,decimal_places=2,allow_inf_nan=False)
+    global_discount:RussianDecimal=Field(default=0,ge=0,le=100,max_digits=5,decimal_places=2,allow_inf_nan=False)
     lines:list[PriceLine]=Field(default_factory=list,max_length=5000)
 
     @model_validator(mode='after')
@@ -56,15 +59,15 @@ class QuoteLine(BaseModel):
     room: str = Field(default='',max_length=500)
     description: str = Field(default='',max_length=2000)
     comment: str = Field(default='',max_length=2000)
-    quantity: Decimal = Field(default=1,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
-    quantity_override: Decimal | None = Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
-    calculated_quantity: Decimal | None = Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
+    quantity: RussianDecimal = Field(default=1,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
+    quantity_override: RussianDecimal | None = Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
+    calculated_quantity: RussianDecimal | None = Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
     overrides: list[Literal['name','sku','manufacturer','room','description','unit_price','currency','image']] = Field(default_factory=list,max_length=8)
     unit: Literal['шт','м'] = 'шт'
-    unit_price: Decimal = Field(default=0,ge=0,le=1000000000,max_digits=12,decimal_places=2,allow_inf_nan=False)
+    unit_price: RussianDecimal = Field(default=0,ge=0,le=1000000000,max_digits=12,decimal_places=2,allow_inf_nan=False)
     currency: str = Field(default='RUB',pattern='^[A-Z]{3}$')
     image: str = Field(default='',max_length=300000)
-    discount: Decimal | None = Field(default=None,ge=0,le=100,max_digits=5,decimal_places=2,allow_inf_nan=False)
+    discount: RussianDecimal | None = Field(default=None,ge=0,le=100,max_digits=5,decimal_places=2,allow_inf_nan=False)
 
     @model_validator(mode='after')
     def manual_quantity(self):
@@ -153,7 +156,7 @@ class QuoteInput(BaseModel):
     customer: str = Field(default='',max_length=2000)
     contact: str = Field(default='',max_length=2000)
     terms: str = Field(default='',max_length=10000)
-    global_discount: Decimal = Field(default=0,ge=0,le=100,max_digits=5,decimal_places=2,allow_inf_nan=False)
+    global_discount: RussianDecimal = Field(default=0,ge=0,le=100,max_digits=5,decimal_places=2,allow_inf_nan=False)
     lines: list[QuoteLine] = Field(default_factory=list,max_length=5000)
 
     @model_validator(mode='after')
@@ -190,7 +193,7 @@ class QuoteProduct(QuoteRevision):
     name: str = Field(min_length=1,max_length=500)
     manufacturer: str = Field(min_length=1,max_length=500)
     sku: str = Field(default='',max_length=200)
-    unit_price: Decimal = Field(ge=0,le=1000000000,decimal_places=2,allow_inf_nan=False)
+    unit_price: RussianDecimal = Field(ge=0,le=1000000000,decimal_places=2,allow_inf_nan=False)
     currency: str = Field(default='RUB',pattern='^[A-Z]{3}$')
 
 
@@ -628,7 +631,7 @@ def create_quote_product(body:QuoteProduct,db:DbSession=Depends(session),scope:t
     if manufacturer is None:
         manufacturer=Manufacturer(name=manufacturer_name);db.add(manufacturer);db.flush()
     try: validate_image(body.image)
-    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    except ValueError as exc: raise HTTPException(422,exception_message(exc,'Не удалось прочитать данные файла. Проверьте его формат.')) from exc
     product=Product(type_id=typ.id,manufacturer_id=manufacturer.id,name=name,sku=body.sku,
         unit=typ.unit,price=float(body.unit_price),currency=body.currency,active=True,parameters={'image':body.image} if body.image else {})
     db.add(product);db.flush()
@@ -700,4 +703,4 @@ async def import_quote_file(file:UploadFile,db:DbSession=Depends(session),scope:
     raw=await file.read(20*1024*1024+1)
     if len(raw)>20*1024*1024: raise HTTPException(413,'Файл больше 20 МБ')
     try: return parse_quote_file(raw,file.filename or '')
-    except ValueError as exc: raise HTTPException(422,str(exc)) from exc
+    except ValueError as exc: raise HTTPException(422,exception_message(exc,'Не удалось прочитать данные файла. Проверьте его формат.')) from exc

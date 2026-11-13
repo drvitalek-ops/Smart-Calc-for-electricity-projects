@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	launcherVersion = "1.0.48"
+	launcherVersion = "1.0.49"
 	desktopHostName = "SmartHomeCalc.Desktop.exe"
 	backendName     = "SmartHomeCalc.Backend.exe"
 )
@@ -38,18 +38,19 @@ func showMessage(title, message string, flags uintptr) {
 func installDirectory() (string, error) {
 	root := os.Getenv("LOCALAPPDATA")
 	if root == "" {
-		return "", errors.New("LOCALAPPDATA is not defined")
+		return "", errors.New("Не определена папка локальных данных пользователя")
 	}
 	return filepath.Join(root, "SmartHomeCalc"), nil
 }
 
 func fail(message string, err error) {
 	text := message
-	if err != nil {
-		text += "\n\n" + err.Error()
-	}
 	if logFile != nil {
-		fmt.Fprintln(logFile, text)
+		fmt.Fprintln(logFile, message)
+		if err != nil {
+			fmt.Fprintln(logFile, err)
+		}
+		text += "\n\nПодробности ошибки записаны в журнал запуска в папке приложения."
 	}
 	showMessage("Smart Home Calc", text, 0x10)
 	os.Exit(1)

@@ -1,0 +1,38 @@
+const {chromium}=require('playwright'),assert=require('node:assert/strict');
+const {checked,waitUntil}=require('./workbench-helpers.cjs');
+const frontend=process.env.FRAME_TEST_FRONTEND||'http://127.0.0.1:5174',backend=process.env.FRAME_TEST_BACKEND||'http://127.0.0.1:8014';
+(async()=>{const browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE||chromium.executablePath(),headless:true,args:['--no-sandbox']});try{
+ const context=await browser.newContext({viewport:{width:1600,height:1000},locale:'en-US'}),page=await context.newPage(),errors=[],calculations=[];
+ page.on('pageerror',error=>errors.push(String(error)));page.on('request',request=>{if(request.url().endsWith('/calculate'))calculations.push(request);});
+ await page.route('**/api/**',route=>route.continue({url:route.request().url().replace(frontend,backend)}));
+ const api=context.request,base=backend+'/api',created=await checked(await api.post(base+'/quotations',{data:{}})),qid=created.id,number='RUS-'+qid;
+ await checked(await api.put(base+'/quotations/'+qid,{data:{...created.quotation,number,lines:[1,2,3].map(i=>({id:['z','a','m'][i-1],name:'Позиция '+i,quantity:'1',unit_price:'10'}))}}));
+ await page.goto(frontend);await page.getByRole('button',{name:'Все КП',exact:true}).click();const hub=page.getByRole('region',{name:'Все коммерческие предложения',exact:true});
+ await hub.getByLabel('Поиск КП',{exact:true}).fill(number);await hub.getByRole('button',{name:'Открыть КП '+number,exact:true}).click();
+ const editor=page.getByRole('region',{name:'Редактор коммерческого предложения',exact:true}),quantity=i=>editor.getByLabel('Количество строки '+i,{exact:true}),price=i=>editor.getByLabel('Цена строки '+i,{exact:true}),save=editor.getByRole('button',{name:'Сохранить изменения КП',exact:true});
+ await quantity(1).waitFor();await quantity(2).fill('');await quantity(3).fill('ошибка');
+ const alert=editor.getByRole('alert');await waitUntil(async()=>await alert.isVisible()&&(await alert.textContent()).includes('Строка КП № 3'),'Russian invalid-number message');
+ assert.ok((await alert.textContent()).includes('Строка КП № 2 — Количество'));assert.equal(calculations.length,0,'Incomplete numbers must not be sent for calculation');
+ await save.click();assert.equal((await checked(await api.get(base+'/quotations/'+qid))).lines[1].quantity,'1');
+ assert.equal(await quantity(2).inputValue(),'');assert.equal(await quantity(3).inputValue(),'ошибка');
+ await quantity(2).fill('2,5');await quantity(3).fill('1\u202f000');await price(2).fill('1 234,50');await editor.getByLabel('Скидка строки 2',{exact:true}).fill('20,5');
+ await waitUntil(async()=>calculations.length>0&&!await alert.isVisible(),'Comma decimals should recalculate');assert.deepEqual(calculations.at(-1).postDataJSON().lines.map(line=>line.id),['z','a','m'],'Validation row numbers must follow editor order');
+ await save.click();await waitUntil(async()=>!await save.isEnabled(),'Save localized decimals');
+ const saved=await checked(await api.get(base+'/quotations/'+qid));assert.equal(saved.lines[1].quantity,'2.5');assert.equal(saved.lines[1].unit_price,'1234.50');assert.equal(Number(saved.lines[2].quantity),1000);
+ // A legacy server's raw Pydantic details must also remain Russian.
+ await page.route('**/api/quotations/'+qid+'/calculate',route=>route.fulfill({status:422,json:{detail:[{loc:['body','lines',1,'quantity'],type:'decimal_parsing',msg:'Input should be a valid decimal'}]}}));
+ await price(1).fill('11');await waitUntil(async()=>await alert.isVisible()&&(await alert.textContent()).includes('Строка КП № 2'),'Legacy validation translation');
+ assert.ok(!(await alert.textContent()).includes('Input should'));assert.ok(!(await alert.textContent()).includes('lines.1'));
+ await page.unroute('**/api/quotations/'+qid+'/calculate');await price(1).fill('12');await waitUntil(async()=>!await alert.isVisible(),'Recover after validation failure');
+ await save.click();await waitUntil(async()=>!await save.isEnabled(),'Save before export');
+ await page.route('**/api/quotations/'+qid+'/export.pdf?mode=client',route=>route.fulfill({status:503,contentType:'text/html',body:'<h1>Internal Server Error</h1>'}));
+ await editor.getByRole('button',{name:'PDF для клиента — без скидок',exact:true}).click();await waitUntil(async()=>await alert.isVisible()&&(await alert.textContent()).includes('временно недоступно'),'Non-JSON export failures must be Russian');
+ await editor.locator('[data-quote-line]').first().locator('summary').click();await editor.getByRole('button',{name:'＋ Товар в базу',exact:true}).first().click();
+ const modal=page.getByRole('dialog',{name:'Новый товар из КП',exact:true}),manufacturer=modal.getByLabel('Производитель нового товара КП',{exact:true});
+ const native=await manufacturer.evaluate(node=>{node.checkValidity();return node.validationMessage;});assert.equal(native,'Заполните обязательное поле.','Form errors must stay Russian even in an English browser');
+ await page.screenshot({path:process.env.RUSSIAN_ERRORS_SCREENSHOT||'/tmp/russian-errors.png'});
+ await modal.getByRole('button',{name:'Отмена',exact:true}).click();
+ await page.route('**/api/projects',route=>route.abort('internetdisconnected'));await page.reload();
+ await waitUntil(async()=>await page.getByRole('alert').filter({hasText:'Не удалось связаться с приложением'}).count()>0,'Network failures must be Russian');
+ assert.deepEqual(errors,[]);console.log('PASS: empty/invalid quantities stay editable without requests, Russian row labels, comma/grouped decimals and exact saved money, legacy validation and non-JSON/network errors, Russian native validation in English browser');
+}finally{await browser.close();}})().catch(error=>{console.error(error);process.exitCode=1;});

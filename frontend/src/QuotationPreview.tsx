@@ -1,3 +1,4 @@
+import {apiFetch,errorMessage} from "./errors";
 import {useEffect,useState} from 'react';
 /** Pages are rasterized from the export PDF itself, without a browser PDF plugin. */
 export default function QuotationPreview({base,document,mode}:{base:string;document:unknown;mode:string}){
@@ -7,11 +8,10 @@ export default function QuotationPreview({base,document,mode}:{base:string;docum
     const controller=new AbortController();let objectUrl='';setLoading(true);setError('');setUrl('');
     const timer=setTimeout(async()=>{
       try {
-        const response=await fetch('/api'+base+'/preview.png?mode='+mode+'&page='+page,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(document),signal:controller.signal});
-        if(!response.ok){const result=await response.json();throw Error(typeof result.detail==='string'?result.detail:'Проверьте поля КП');}
+        const response=await apiFetch('/api'+base+'/preview.png?mode='+mode+'&page='+page,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(document),signal:controller.signal});
         const blob=await response.blob();if(controller.signal.aborted)return;
         objectUrl=URL.createObjectURL(blob);setPages(Number(response.headers.get('X-Preview-Pages'))||1);setUrl(objectUrl);setLoading(false);
-      }catch(e){if(!controller.signal.aborted){setError(e instanceof Error?e.message:'Не удалось открыть PDF');setLoading(false);}}
+      }catch(e){if(!controller.signal.aborted){setError(errorMessage(e,'Не удалось открыть PDF'));setLoading(false);}}
     },250);
     return()=>{clearTimeout(timer);controller.abort();if(objectUrl)URL.revokeObjectURL(objectUrl);};
   },[base,document,mode,page]);

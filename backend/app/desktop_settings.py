@@ -53,7 +53,7 @@ def rollback_settings(current):
         'rollback_version':previous.name.removeprefix('v') if previous else None,
         'rollback_directory':str(previous) if previous else None,
         'rollback_has_data':bool(previous and (previous/'data'/'smart-home-calc.db').is_file()),
-        'rollback_warning':warning.read_text(encoding='utf-8')[:2000] if warning and warning.is_file() else ''}
+        'rollback_warning':'Проверьте свободное место и права доступа к папке данных.' if warning and warning.is_file() else ''}
 
 
 def open_rollback_folder(instance,current):

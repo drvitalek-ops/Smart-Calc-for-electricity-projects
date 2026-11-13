@@ -1,3 +1,5 @@
+import DecimalInput,{decimalIssue,decimalValue} from "./DecimalInput";
+import {api,apiFetch,errorMessage} from "./errors";
 import {moveQuoteLine,QUOTE_LINE_DRAG} from "./quotationOrder";
 import ImageField,{imagePaste,prepareImage,imageDrop,imageDragOver} from "./ImageField";
 import SearchInput from "./SearchInput";
@@ -33,22 +35,26 @@ type Props = {
 type AttachmentProject={id:number;name:string;quote_revision:number};
 type ImportCheck={line_id:string;page:number;source_total:string|null;issues:string[];verified:boolean;modified?:boolean};
 
-async function api<T>(path:string,method="GET",body?:unknown,signal?:AbortSignal):Promise<T> {
-  const response=await fetch("/api"+path,{method,headers:{"Content-Type":"application/json"},
-    body:body===undefined ? undefined : JSON.stringify(body),signal});
-  if(!response.ok) {
-    const result=await response.json();
-    const detail=result.detail;
-    throw new Error(typeof detail==="string" ? detail : Array.isArray(detail) ? detail.map((item:{msg:string;loc:unknown[]})=>item.loc.slice(1).join(".")+": "+item.msg).join("; ") : "Ошибка запроса");
-  }
-  return response.json();
-}
+
 const cash=(value:string|number)=>Number(value).toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2});
 const amount=(value:string|number,code:string)=>cash(value)+" "+(({RUB:"₽",USD:"$",EUR:"€"} as Record<string,string>)[code] ?? code);
 const newLine=():Line=>({id:crypto.randomUUID(),source_key:"",source_ids:[],type_id:null,product_id:null,
   name:"Новая позиция",sku:"",manufacturer:"",room:"",description:"",comment:"",quantity:"1",unit:"шт",unit_price:"0",currency:"RUB",discount:null,image:""});
 
-function priceRequest(quote:Quote|null){return JSON.stringify({global_discount:quote?.global_discount??'0',lines:quote?.lines.map(line=>({id:line.id,quantity:line.quantity,unit_price:line.unit_price,currency:line.currency,discount:line.discount})).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0)??[]});}
+function pricePayload(quote:Quote|null){return {global_discount:quote?.global_discount??'0',lines:quote?.lines.map(line=>({id:line.id,quantity:line.quantity,unit_price:line.unit_price,currency:line.currency,discount:line.discount}))??[]};}
+function priceRequest(quote:Quote|null){const payload=pricePayload(quote);payload.lines.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);return JSON.stringify(payload);}
+function numberError(quote:Quote|null):string{
+ if(!quote)return '';
+ const issues:string[]=[];
+ const global=decimalIssue(quote.global_discount,0,100,2);
+ if(global)issues.push('Общая скидка: '+global);
+ quote.lines.forEach((line,index)=>{
+  const checks:[string,unknown,number,number,number,boolean?][]=[['Количество',line.quantity,.001,1000000,3,true],['Цена за единицу',line.unit_price,0,1000000000,2]];
+  if(line.discount!==null&&line.discount!=='')checks.push(['Скидка',line.discount,0,100,2]);
+  for(const [label,value,min,max,places,positive] of checks){const issue=decimalIssue(value,min,max,places,positive);if(issue)issues.push('Строка КП № '+(index+1)+' — '+label+': '+issue);}
+ });
+ return issues.slice(0,50).join('; ');
+}
 type Calculated=Pick<Quote,'client'|'partner'>;
 
 export default function QuotationEditor({projectId,quotationId,projectName,rooms=[],types,onChanged,onDirtyChange,onBusyChange,onBrowse,onAttached}:Props) {
@@ -95,6 +101,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const insertionAnchor=visibleLines.find(item=>item.line.id===activeLineId)??visibleLines.at(-1);
   const filteredProducts=useMemo(()=>catalogue.products.filter(product=>product.active&&matchesSearch([product.name,product.sku,product.manufacturer].join(' '),productSearch)),[catalogue.products,productSearch]);
   const docRef=useRef<Quote|null>(doc);docRef.current=doc;
+  const numericError=useMemo(()=>numberError(doc),[doc]);
   const calculationBody=useMemo(()=>priceRequest(doc),[doc]),calculatedKey=useRef('');
   const history=useRef<Quote[]>([]),future=useRef<Quote[]>([]),lastChange=useRef(0);
   const standalone=quotationId!==undefined;
@@ -102,7 +109,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   function apply(value:Quote) {calculatedKey.current=priceRequest(value);setDoc(value);setPrices(value);setDirty(false);setCalculating(false);history.current=[];future.current=[];lastChange.current=0;}
   async function work(action:()=>Promise<void>) {
     setBusy(true);setError("");setMessage("");
-    try {await action();} catch(error) {setError(error instanceof Error ? error.message : "Ошибка");}
+    try {await action();} catch(error) {setError(errorMessage(error,"Ошибка"));}
     finally {setBusy(false);}
   }
   async function load() {
@@ -122,12 +129,13 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     const cancellation=new AbortController();
     setCalculating(true);
     const timer=window.setTimeout(()=>{
-      api<Calculated>(base+"/calculate","POST",JSON.parse(calculationBody),cancellation.signal)
+      if(numericError){setError(numericError);setCalculating(false);return;}
+      api<Calculated>(base+"/calculate","POST",pricePayload(docRef.current),cancellation.signal)
         .then(value=>{if(!cancellation.signal.aborted){calculatedKey.current=calculationBody;setPrices(value);setCalculating(false);setError("");}})
-        .catch(error=>{if(!cancellation.signal.aborted){setError(error instanceof Error ? error.message : "Ошибка расчёта");setCalculating(false);}});
+        .catch(error=>{if(!cancellation.signal.aborted){setError(errorMessage(error,"Ошибка расчёта"));setCalculating(false);}});
     },350);
     return()=>{window.clearTimeout(timer);cancellation.abort();};
-  },[calculationBody,dirty,base]);
+  },[calculationBody,dirty,base,numericError]);
   function change(update:(current:Quote)=>Quote,separate=false) {
     const current=docRef.current;
     if(!current || busy)return;
@@ -197,11 +205,12 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   },[doc,busy,newProduct,imported,attachOpen]);
   useEffect(()=>{
     const controller=new AbortController();
-    api<Catalogue>('/catalog','GET',undefined,controller.signal).then(value=>{if(!controller.signal.aborted)setCatalogue(value);}).catch(error=>{if(!controller.signal.aborted)setError(error instanceof Error?error.message:'Не удалось обновить каталог');});
+    api<Catalogue>('/catalog','GET',undefined,controller.signal).then(value=>{if(!controller.signal.aborted)setCatalogue(value);}).catch(error=>{if(!controller.signal.aborted)setError(errorMessage(error,'Не удалось обновить каталог'));});
     return()=>controller.abort();
   },[types]);
   async function saveCurrent():Promise<Quote> {
     if(!doc)throw Error("КП ещё не загружено");
+    const issue=numberError(doc);if(issue)throw Error(issue);
     if(!dirty)return doc;
     const saved=await api<Quote>(base,"PUT",doc);apply(saved);return saved;
   }
@@ -216,8 +225,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     await work(async()=>{
       const saved=await saveCurrent();
       if(!saved.lines.length)throw Error("Добавьте позиции в КП");
-      const response=await fetch("/api"+base+"/export.pdf?mode="+target);
-      if(!response.ok){const result=await response.json();throw Error(result.detail ?? "Не удалось сформировать PDF");}
+      const response=await apiFetch("/api"+base+"/export.pdf?mode="+target);
       const url=URL.createObjectURL(await response.blob()),link=document.createElement("a");
       link.href=url;link.download="КП-"+saved.number.replace(/[^a-zа-яё0-9_-]/gi,"-")+"-"+target+".pdf";
       link.click();window.setTimeout(()=>URL.revokeObjectURL(url),30000);
@@ -228,9 +236,8 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     if(!file)return;
     await work(async()=>{
       const form=new FormData();form.append("file",file);
-      const response=await fetch("/api"+base+"/import-file",{method:"POST",body:form});
+      const response=await apiFetch("/api"+base+"/import-file",{method:"POST",body:form});
       const value=await response.json();
-      if(!response.ok)throw Error(typeof value.detail==="string" ? value.detail : "Не удалось прочитать КП");
       setImported(value);setImportMode("append");setImportPage(0);
     });
   }
@@ -240,13 +247,13 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   }
   async function upload(file:File|undefined,done:(value:string)=>void,logo=false) {
     if(!file)return;
-    try {done(await prepareImage(file,logo));}catch(error){setError(error instanceof Error ? error.message : "Ошибка изображения");}
+    try {done(await prepareImage(file,logo));}catch(error){setError(errorMessage(error,"Ошибка изображения"));}
   }
   if(!doc)return <section className="quotation-editor"><h2>Редактор КП</h2>{busy ? <p role="status">Загрузка КП…</p> : <><p role="alert">{error}</p><button onClick={()=>void work(load)}>Повторить загрузку КП</button></>}</section>;
   const calculated=prices ?? doc;
   const visiblePrices=calculated[mode];
   const rowPrices=new Map(visiblePrices.lines.map(line=>[line.id,line]));
-  const unpriced=doc.lines.filter(line=>Number(line.unit_price)===0).length;
+  const unpriced=doc.lines.filter(line=>decimalValue(line.unit_price)===0).length;
   const productOptions=(line:Line)=>{
     const options=(line.source_ids.length&&line.type_id!==null?productPickers.byType.get(line.unit+':'+line.type_id):productPickers.byUnit.get(line.unit))??[{value:'',label:'Без привязки к товару'}];
     const selected=line.product_id?productPickers.byId.get(line.product_id):null;
@@ -280,9 +287,9 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     <div className="quotation-status" role="status">{busy ? "Сохранение…" : dirty ? "Есть несохранённые изменения" : "КП сохранено"}{calculating ? " · Пересчёт итогов…" : ""}</div>
     <div className="quotation-totals">
       {(["client","partner"] as const).map(target=><article key={target}><small>{target==="client" ? "Для клиента · без скидок" : "Для партнёра · со скидками"}</small>
-        {Object.entries(calculated[target].totals).map(([code,total])=><strong key={code}>{amount(total.total,code)}</strong>)}
-        {!Object.keys(calculated[target].totals).length && <strong>0,00 ₽</strong>}
-        {target==="partner" && Object.entries(calculated.partner.totals).map(([code,total])=><span key={code}>Скидка: {amount(total.discount,code)}</span>)}
+        {!numericError&&Object.entries(calculated[target].totals).map(([code,total])=><strong key={code}>{amount(total.total,code)}</strong>)}
+        {numericError&&<span>Проверьте числовые поля КП</span>}{!numericError&&!Object.keys(calculated[target].totals).length && <strong>0,00 ₽</strong>}
+        {!numericError&&target==="partner" && Object.entries(calculated.partner.totals).map(([code,total])=><span key={code}>Скидка: {amount(total.discount,code)}</span>)}
       </article>)}
     </div>
 
@@ -291,7 +298,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
         <label>Номер КП<input aria-label="Номер КП" maxLength={100} value={doc.number} onChange={e=>change(q=>({...q,number:e.target.value}))}/></label>
         <label>Дата<input aria-label="Дата КП" type="date" value={doc.date} onChange={e=>change(q=>({...q,date:e.target.value}))}/></label>
         <label>Срок действия, дней<input aria-label="Срок действия КП" type="number" min="1" max="365" value={doc.valid_days} onChange={e=>change(q=>({...q,valid_days:Number(e.target.value)}))}/></label>
-        <label>Общая скидка, %<input aria-label="Общая скидка КП" type="number" min="0" max="100" step=".01" value={doc.global_discount} onChange={e=>change(q=>({...q,global_discount:e.target.value}))}/></label>
+        <label>Общая скидка, %<DecimalInput aria-label="Общая скидка КП"  min="0" max="100" step=".01" value={doc.global_discount} onChange={e=>change(q=>({...q,global_discount:e.target.value}))}/></label>
         <label>Кому<input aria-label="Клиент КП" value={doc.customer} onChange={e=>change(q=>({...q,customer:e.target.value}))}/></label>
         <label>Контакт клиента<input aria-label="Контакт клиента КП" value={doc.contact} onChange={e=>change(q=>({...q,contact:e.target.value}))}/></label>
       </fieldset>
@@ -328,12 +335,12 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
             <textarea aria-label={"Описание строки "+(index+1)} placeholder="Описание товара" value={line.description} disabled={busy} onChange={e=>editLine(line.id,{description:e.target.value})}/>
             </>}</details>
           </td>
-          <td><input aria-label={"Количество строки "+(index+1)} type="number" min=".001" max="1000000" step=".001" value={line.quantity} disabled={busy || (Boolean(line.source_key)&&line.quantity_override==null)} onChange={e=>editLine(line.id,{quantity:e.target.value,...(line.source_key?{quantity_override:e.target.value}:{})})}/>{line.source_key&&<><label className="manual-quantity"><input type="checkbox" aria-label={"Ручное количество строки "+(index+1)} checked={line.quantity_override!=null} onChange={event=>editLine(line.id,event.target.checked?{calculated_quantity:line.calculated_quantity??line.quantity,quantity_override:line.quantity}:{quantity_override:null,quantity:line.calculated_quantity??line.quantity})}/>Вручную</label><small>По плану: {line.calculated_quantity??line.quantity}</small></>}</td>
+          <td><DecimalInput aria-label={"Количество строки "+(index+1)}  min=".001" max="1000000" step=".001" value={line.quantity} disabled={busy || (Boolean(line.source_key)&&line.quantity_override==null)} onChange={e=>editLine(line.id,{quantity:e.target.value,...(line.source_key?{quantity_override:e.target.value}:{})})}/>{line.source_key&&<><label className="manual-quantity"><input type="checkbox" aria-label={"Ручное количество строки "+(index+1)} checked={line.quantity_override!=null} onChange={event=>editLine(line.id,event.target.checked?{calculated_quantity:line.calculated_quantity??line.quantity,quantity_override:line.quantity}:{quantity_override:null,quantity:line.calculated_quantity??line.quantity})}/>Вручную</label><small>По плану: {line.calculated_quantity??line.quantity}</small></>}</td>
           <td><SearchSelect aria-label={"Единица строки "+(index+1)} value={line.unit} disabled={busy || Boolean(line.source_key) || Boolean(line.product_id)} onChange={e=>editLine(line.id,{unit:e.target.value as "шт"|"м"})}><option value="шт">шт</option><option value="м">м</option></SearchSelect></td>
-          <td><input aria-label={"Цена строки "+(index+1)} type="number" min="0" max="1000000000" step=".01" value={line.unit_price} disabled={busy} onChange={e=>editLine(line.id,{unit_price:e.target.value})}/></td>
+          <td><DecimalInput aria-label={"Цена строки "+(index+1)}  min="0" max="1000000000" step=".01" value={line.unit_price} disabled={busy} onChange={e=>editLine(line.id,{unit_price:e.target.value})}/></td>
           <td><input aria-label={"Валюта строки "+(index+1)} maxLength={3} value={line.currency} disabled={busy} onChange={e=>editLine(line.id,{currency:e.target.value.toUpperCase()})}/></td>
-          <td><input aria-label={"Скидка строки "+(index+1)} type="number" min="0" max="100" step=".01" placeholder="Общая" value={line.discount ?? ""} disabled={busy} onChange={e=>editLine(line.id,{discount:e.target.value==="" ? null : e.target.value})}/><small>{line.discount===null ? "По общей" : "Индивидуальная"}</small></td>
-          <td className="quotation-row-total">{calculating ? "…" : rowPrices.has(line.id) ? amount(rowPrices.get(line.id)!.total,line.currency) : "—"}</td>
+          <td><DecimalInput required={false} aria-label={"Скидка строки "+(index+1)}  min="0" max="100" step=".01" placeholder="Общая" value={line.discount ?? ""} disabled={busy} onChange={e=>editLine(line.id,{discount:e.target.value==="" ? null : e.target.value})}/><small>{line.discount===null ? "По общей" : "Индивидуальная"}</small></td>
+          <td className="quotation-row-total">{calculating ? "…" : numericError ? "—" : rowPrices.has(line.id) ? amount(rowPrices.get(line.id)!.total,line.currency) : "—"}</td>
           <td><button aria-label={"Удалить строку "+(index+1)+" из КП"} title="Убрать только из КП" disabled={busy} onClick={()=>change(q=>({...q,lines:q.lines.filter(item=>item.id!==line.id)}),true)}>×</button></td>
         </tr></Fragment>;})}</tbody></table></div>
       <div className="quotation-pagination" aria-label="Страницы позиций КП"><span>{filteredLines.length?activePage*linePageSize+1:0}–{Math.min((activePage+1)*linePageSize,filteredLines.length)} из {filteredLines.length}{lineQuery?' · всего '+doc.lines.length:''}</span><button type="button" disabled={activePage<=0} onClick={()=>setLinePage(activePage-1)}>Назад</button><span>Страница {activePage+1} из {linePages}</span><button type="button" disabled={activePage>=linePages-1} onClick={()=>setLinePage(activePage+1)}>Далее</button></div>
@@ -375,7 +382,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
           <label>Номенклатура<SearchSelect aria-label="Номенклатура нового товара КП" required={!doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:")} value={newProduct.typeId} onChange={e=>setNewProduct({...newProduct,typeId:e.target.value})}><option value="">{doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:") ? "Рамка по расчёту" : "Выберите номенклатуру"}</option>{types.filter(type=>type.active && type.unit===doc.lines.find(line=>line.id===newProduct.lineId)?.unit && (!doc.lines.find(line=>line.id===newProduct.lineId)?.source_ids.length || type.id===doc.lines.find(line=>line.id===newProduct.lineId)?.type_id)).map(type=><option key={type.id} value={type.id}>{type.name}</option>)}</SearchSelect></label>
           <label>Производитель<SearchInput aria-label="Производитель нового товара КП" required options={catalogue.manufacturers.map(m=>m.name)} value={newProduct.manufacturer} onChange={manufacturer=>setNewProduct(current=>current?{...current,manufacturer}:null)}/></label>
           <label>Артикул<input aria-label="Артикул нового товара КП" value={newProduct.sku} onChange={e=>setNewProduct({...newProduct,sku:e.target.value})}/></label>
-          <label>Цена<input aria-label="Цена нового товара КП" required type="number" min="0" max="1000000000" step=".01" value={newProduct.price} onChange={e=>setNewProduct({...newProduct,price:e.target.value})}/></label>
+          <label>Цена<DecimalInput aria-label="Цена нового товара КП" required  min="0" max="1000000000" step=".01" value={newProduct.price} onChange={e=>setNewProduct({...newProduct,price:e.target.value})}/></label>
           <label>Валюта<input aria-label="Валюта нового товара КП" required pattern="[A-Z]{3}" maxLength={3} value={newProduct.currency} onChange={e=>setNewProduct({...newProduct,currency:e.target.value.toUpperCase()})}/></label>
           <ImageField label="Фото нового товара КП" value={newProduct.image} disabled={busy} onChange={image=>setNewProduct(current=>current?{...current,image}:null)}/>
 
@@ -408,10 +415,10 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
         const index=importPage*100+offset,check=imported.checks?.find(item=>item.line_id===line.id);
         return <tr key={line.id} className={check?.issues.length ? "quotation-import-review" : ""}>
           <td><input aria-label={"Импорт: наименование "+(index+1)} value={line.name} onChange={e=>editImportedLine(line.id,{name:e.target.value})}/><input aria-label={"Импорт: артикул "+(index+1)} placeholder="Артикул" value={line.sku} onChange={e=>editImportedLine(line.id,{sku:e.target.value})}/></td>
-          <td><input aria-label={"Импорт: количество "+(index+1)} type="number" min=".001" step=".001" value={line.quantity} onChange={e=>editImportedLine(line.id,{quantity:e.target.value})}/></td>
+          <td><DecimalInput aria-label={"Импорт: количество "+(index+1)}  min=".001" step=".001" value={line.quantity} onChange={e=>editImportedLine(line.id,{quantity:e.target.value})}/></td>
           <td><SearchSelect aria-label={"Импорт: единица "+(index+1)} value={line.unit} onChange={e=>editImportedLine(line.id,{unit:e.target.value as Line["unit"]})}><option>шт</option><option>м</option></SearchSelect></td>
-          <td><input aria-label={"Импорт: цена "+(index+1)} type="number" min="0" step=".01" value={line.unit_price} onChange={e=>editImportedLine(line.id,{unit_price:e.target.value})}/></td>
-          <td><input aria-label={"Импорт: скидка "+(index+1)} type="number" min="0" max="100" step=".01" placeholder="Нет" value={line.discount??""} onChange={e=>editImportedLine(line.id,{discount:e.target.value||null})}/></td>
+          <td><DecimalInput aria-label={"Импорт: цена "+(index+1)}  min="0" step=".01" value={line.unit_price} onChange={e=>editImportedLine(line.id,{unit_price:e.target.value})}/></td>
+          <td><DecimalInput required={false} aria-label={"Импорт: скидка "+(index+1)}  min="0" max="100" step=".01" placeholder="Нет" value={line.discount??""} onChange={e=>editImportedLine(line.id,{discount:e.target.value||null})}/></td>
           <td><input aria-label={"Импорт: валюта "+(index+1)} maxLength={3} value={line.currency} onChange={e=>editImportedLine(line.id,{currency:e.target.value.toUpperCase()})}/></td>
           <td>{check ? <><small>Стр. {check.page}{check.source_total!==null ? " · Сумма "+cash(check.source_total)+" "+line.currency : ""}</small><small>{check.modified ? "Изменено вручную" : check.verified ? "Сумма совпала" : "Проверьте строку"}</small>{check.issues.map((issue,i)=><small key={i} className="warning">{issue}</small>)}</> : "—"}</td>
           <td><button aria-label={"Удалить импортированную строку "+(index+1)} onClick={()=>{

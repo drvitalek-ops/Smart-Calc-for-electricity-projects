@@ -1,3 +1,4 @@
+import {api,errorMessage} from "./errors";
 import { useCallback, useEffect, useState } from "react";
 import {matchesSearch} from "./SearchSelect";
 import QuotationEditor, { type QuotationKind } from "./QuotationEditor";
@@ -8,11 +9,7 @@ type Listing={standalone:Draft[];projects:ProjectQuote[]};
 type Props={types:QuotationKind[];onChanged:()=>Promise<void>;onOpenProject:(id:number)=>Promise<void>;
   onDirtyChange:(value:boolean)=>void;onBusyChange:(value:boolean)=>void};
 
-async function api<T>(path:string,method="GET",body?:unknown):Promise<T> {
-  const response=await fetch("/api"+path,{method,headers:{"Content-Type":"application/json"},body:body===undefined ? undefined : JSON.stringify(body)});
-  if(!response.ok){const data=await response.json();throw Error(typeof data.detail==="string" ? data.detail : "Не удалось выполнить действие с КП");}
-  return response.status===204 ? undefined as T : response.json();
-}
+
 
 export default function QuotationHub({types,onChanged,onOpenProject,onDirtyChange,onBusyChange}:Props) {
   const [search,setSearch]=useState("");
@@ -22,7 +19,7 @@ export default function QuotationHub({types,onChanged,onOpenProject,onDirtyChang
   const dirtyChanged=useCallback((value:boolean)=>{setDirty(value);onDirtyChange(value);},[onDirtyChange]);
   async function work(action:()=>Promise<void>) {
     busyChanged(true);setError("");
-    try{await action();}catch(error){setError(error instanceof Error ? error.message : "Ошибка КП");}
+    try{await action();}catch(error){setError(errorMessage(error,"Ошибка КП"));}
     finally{busyChanged(false);}
   }
   async function load(){setListing(await api<Listing>("/quotations"));}

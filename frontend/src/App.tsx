@@ -1,3 +1,4 @@
+import {api,errorMessage} from "./errors";
 import LayerTree from "./LayerTree";
 import {planGroup,layerGroups,displayedElement} from "./planGroups";
 import {useDesktopState} from "./desktopBridge";
@@ -207,34 +208,7 @@ function ReportTotals({ categories }: { categories: SummaryCategory[] }) {
   );
 }
 type Report = { rows: Row[]; warnings: string[]; summary: ReportSummary };
-async function api<T>(
-  path: string,
-  method = "GET",
-  body?: unknown,
-): Promise<T> {
-  const r = await fetch("/api" + path, {
-    method,
-    headers:
-      body instanceof FormData
-        ? undefined
-        : { "Content-Type": "application/json" },
-    body:
-      body === undefined
-        ? undefined
-        : body instanceof FormData
-          ? body
-          : JSON.stringify(body),
-  });
-  if (!r.ok) {
-    const error = await r.json();
-    throw Error(
-      typeof error.detail === "string"
-        ? error.detail
-        : JSON.stringify(error.detail),
-    );
-  }
-  return r.status === 204 ? (undefined as T) : r.json();
-}
+
 const labels: Record<string, string> = {
   power_watts: "Мощность, Вт",
   led_strip: "Питает ленты",
@@ -456,7 +430,7 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
   const [adaptiveLabels,setAdaptiveLabels]=usePreference<boolean>('adaptive-labels',true),[showGrid,setShowGrid]=usePreference<boolean>('canvas-grid',true);
   const [info,setInfo]=useState<AppSettings|null>(null),[error,setError]=useState(""),[message,setMessage]=useState(""),[opening,setOpening]=useState(false);
   useEffect(()=>{onBusyChange(opening);return()=>onBusyChange(false);},[opening,onBusyChange]);
-  useEffect(()=> {let active=true;api<AppSettings>("/settings").then(info=> {if(active)setInfo(info);}).catch(error=> {if(active)setError(error instanceof Error ? error.message : "Не удалось загрузить настройки");});return()=>{active=false;};},[]);
+  useEffect(()=> {let active=true;api<AppSettings>("/settings").then(info=> {if(active)setInfo(info);}).catch(error=> {if(active)setError(errorMessage(error,"Не удалось загрузить настройки"));});return()=>{active=false;};},[]);
   return <AppModal title="Настройки" onClose={onClose} returnFocus={returnFocus} busy={opening} className="settings-modal">
     <div className="settings-heading"><ToolIcon name="folder"/><div><h3>Данные и перенос на другой компьютер</h3><p>Здесь хранятся все проекты, общий каталог, PDF-планы и изображения.</p></div></div>
     {!info && !error && <p role="status">Загрузка настроек…</p>}
@@ -464,7 +438,7 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
     {info && <button className="primary icon-button open-data-folder" disabled={opening || !info.can_open_data_folder} onClick={()=>void(async()=> {
       setOpening(true);setError("");setMessage("");
       try {await api("/settings/open-data-folder","POST",{instance:info.instance});setMessage("Папка данных открыта в Проводнике");}
-      catch(error){setError(error instanceof Error ? error.message : "Не удалось открыть папку");}
+      catch(error){setError(errorMessage(error,"Не удалось открыть папку"));}
       finally {setOpening(false);}
     })()}><ToolIcon name="folder"/>{opening ? "Открытие…" : "Открыть папку данных"}</button>}
     {info && !info.can_open_data_folder && <p className="hint">Открытие папки доступно в автономном приложении Smart Home Calc для Windows.</p>}
@@ -475,16 +449,16 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
       <button type="button" className="tool-action" disabled={opening||!info?.can_backup_all||backupBlocked} onClick={()=>void(async()=>{
         if(!info)return;setOpening(true);setError('');setMessage('Подготовка полной копии…');
         try{const backup=await api<{url:string;filename:string;size:number}>('/settings/backups','POST',{instance:info.instance});const link=document.createElement('a');link.href=backup.url;link.download=backup.filename;link.click();setMessage('Копия готова: '+(backup.size/1024/1024).toLocaleString('ru-RU',{maximumFractionDigits:1})+' МБ. Дождитесь загрузки ZIP перед закрытием приложения.');}
-        catch(error){setMessage('');setError(error instanceof Error?error.message:'Не удалось подготовить копию');}
+        catch(error){setMessage('');setError(errorMessage(error,'Не удалось подготовить копию'));}
         finally{setOpening(false);}
       })()}><ActionIcon name="save"/><span>{opening?'Подготовка…':'Скачать полную копию ZIP'}</span></button>
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
-    <section className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Формат проектов и КП совместим с v1.0.47.</p></div></div>
-      {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(error instanceof Error?error.message:'Не удалось открыть папку');}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
+    <section className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Формат проектов и КП совместим с v1.0.48.</p></div></div>
+      {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.47" target="_blank" rel="noreferrer">Открыть релиз v1.0.47</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.48" target="_blank" rel="noreferrer">Открыть релиз v1.0.48</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -507,7 +481,7 @@ function NomenclatureEditor({types,categories=[],onChanged,onDirtyChange,onBusyC
   useEffect(()=>{onBusyChange?.(saving);return()=>onBusyChange?.(false);},[saving,onBusyChange]);
   async function work(action:()=>Promise<void>) {
     setSaving(true);setError("");setMessage("");
-    try {await action();} catch(error) {setError(error instanceof Error ? error.message : "Ошибка");} finally {setSaving(false);}
+    try {await action();} catch(error) {setError(errorMessage(error,"Ошибка"));} finally {setSaving(false);}
   }
   const groups=groupKinds(types.filter(item=>item.active || showDeleted));
   const visible=types.filter(item => (item.active || showDeleted) && (!groupFilter || (item.group ?? item.category)===groupFilter) && `${item.name} ${item.category} ${item.group ?? ""}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
@@ -609,7 +583,7 @@ function CatalogManager({
     try {
       await action();
     } catch (e) {
-      setLocalError(e instanceof Error ? e.message : "Ошибка");
+      setLocalError(errorMessage(e,"Ошибка"));
     } finally {
       setSaving(false);
     }
@@ -834,7 +808,7 @@ function CatalogManager({
         <div className="catalog-products">
           <div className="product-editor">
             <h3>{form.id ? "Редактирование товара" : "Новый товар"}</h3>
-            <form data-image-target onDragOver={imageDragOver} onDrop={event=>imageDrop(event,file=>{void prepareImage(file).then(image=>setForm(current=>current.id===form.id?({...current,parameters:{...current.parameters,image}}):current)).catch(error=>setLocalError(error instanceof Error?error.message:'Ошибка изображения'));})} onPasteCapture={event=>imagePaste(event,file=>{void prepareImage(file).then(image=>setForm(current=>current.id===form.id?({...current,parameters:{...current.parameters,image}}):current)).catch(error=>setLocalError(error instanceof Error?error.message:'Ошибка изображения'));})} onSubmit={(e) => void saveProduct(e)}>
+            <form data-image-target onDragOver={imageDragOver} onDrop={event=>imageDrop(event,file=>{void prepareImage(file).then(image=>setForm(current=>current.id===form.id?({...current,parameters:{...current.parameters,image}}):current)).catch(error=>setLocalError(errorMessage(error,'Ошибка изображения')));})} onPasteCapture={event=>imagePaste(event,file=>{void prepareImage(file).then(image=>setForm(current=>current.id===form.id?({...current,parameters:{...current.parameters,image}}):current)).catch(error=>setLocalError(errorMessage(error,'Ошибка изображения')));})} onSubmit={(e) => void saveProduct(e)}>
               <label>
                 Название
                 <input
@@ -1193,7 +1167,7 @@ export default function App() {
     try {
       await work();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Ошибка");
+      setError(errorMessage(e,"Ошибка"));
     } finally {
       pendingActions.current-=1;if(!pendingActions.current)setBusy(false);
     }
@@ -1246,7 +1220,7 @@ export default function App() {
     const form=new FormData();form.append("name",pdfImport.name.trim());form.append("file",pdfImport.file);
     let created:{id:number};
     try {created=await api<{id:number}>("/projects/from-pdf","POST",form);}
-    catch(error){setPdfImportError(error instanceof Error ? error.message : "Не удалось загрузить PDF");return;}
+    catch(error){setPdfImportError(errorMessage(error,"Не удалось загрузить PDF"));return;}
     setPdfImport(null);setPdfImportError("");setProjects(await api("/projects"));await open(created.id);setPlacing(false);setCalibrating(false);
   }
   async function refresh(id: number) {
@@ -1303,7 +1277,7 @@ export default function App() {
     const id=deletingProject.id;
     let result:{cleanup_failed:boolean};
     try {result=await api(`/projects/${id}`,"DELETE");}
-    catch(error){setDeleteProjectError(error instanceof Error ? error.message : "Не удалось удалить проект");return;}
+    catch(error){setDeleteProjectError(errorMessage(error,"Не удалось удалить проект"));return;}
     try {localStorage.removeItem(symbolScaleKey(id));}catch{}
     clearProject();setDeletingProject(null);setDeleteProjectError("");
     setProjects(current=>current.filter(item=>item.id!==id));
@@ -3726,9 +3700,7 @@ export default function App() {
                               void savePage(p.id, { overlay_visible }).catch(
                                 (error) =>
                                   setError(
-                                    error instanceof Error
-                                      ? error.message
-                                      : "Ошибка",
+                                    errorMessage(error,"Ошибка"),
                                   ),
                               );
                             }}
@@ -4011,7 +3983,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.48</span>
+        <span>SMART HOME CALC / 1.0.49</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

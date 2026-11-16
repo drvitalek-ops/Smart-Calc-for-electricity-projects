@@ -29,12 +29,15 @@ def calculated_rows(db,pid,layout):
 
 
 def _terms(line):
-    fields=('type_id','product_id','name','sku','manufacturer','description','comment','unit','unit_price','currency','discount','image')
-    return json.dumps({**{key:getattr(line,key) for key in fields},'overrides':sorted(set(line.overrides)-{'room'}),'manual':line.quantity_override is not None},ensure_ascii=False,sort_keys=True,default=lambda value:str(value.normalize()) if isinstance(value,Decimal) else str(value))
+    fields=('type_id','product_id','name','sku','manufacturer','description','ip','comment','unit','unit_price','currency','discount','image')
+    return json.dumps({**{key:getattr(line,key) for key in fields},'overrides':sorted(set(line.overrides)-{'room','unit_price'}),'manual':line.quantity_override is not None},ensure_ascii=False,sort_keys=True,default=lambda value:str(value.normalize()) if isinstance(value,Decimal) else str(value))
 
 
 def regroup_quote(db,pid,quote,target):
     from .quotations import QuoteInput,source_key
+    if target=='combined':
+        from .quotation_prices import inherit_prices
+        quote.room_layout=target;inherit_prices(quote)
     linked=[line for line in quote.lines if line.source_key]
     if not linked:raise HTTPException(422,'Сначала добавьте позиции с плана кнопкой «Обновить из расчёта»')
     rows=calculated_rows(db,pid,target)
@@ -77,7 +80,7 @@ def regroup_quote(db,pid,quote,target):
             if amount<=0:continue
             if part.id in used:part.id=uuid.uuid4().hex
             used.add(part.id);order[part.id]=min(ranks[line.id] for line in lines)
-            part.room=row['room'];part.overrides=[field for field in part.overrides if field!='room'];part.source_signature=''
+            part.room=row['room'];part.overrides=sorted(set(field for line in lines for field in line.overrides)-{'room'});part.source_signature=''
             part.calculated_quantity=amount
             part.quantity_override=sum((line.quantity_override for line in lines),Decimal(0)) if original.quantity_override is not None else None
             part.quantity=part.quantity_override if part.quantity_override is not None else amount

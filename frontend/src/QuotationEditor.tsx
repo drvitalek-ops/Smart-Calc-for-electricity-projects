@@ -1,3 +1,4 @@
+import {priceIdentity,priceConflicts,exportIssues,exportAlarm} from "./quotationPrices";
 import DecimalInput,{decimalIssue,decimalValue} from "./DecimalInput";
 import {api,apiFetch,errorMessage} from "./errors";
 import {moveQuoteLine,QUOTE_LINE_DRAG} from "./quotationOrder";
@@ -11,11 +12,11 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import "./QuotationEditor.css";
 
 export type QuotationKind = { id:number; name:string; category:string; unit:string; active:boolean };
-type Product = { id:number; type_id:number; name:string; sku:string; unit:string; price:number; currency:string; active:boolean; manufacturer:string; parameters?:{image?:string;description?:string} };
+type Product = { id:number; type_id:number; name:string; sku:string; unit:string; price:number; currency:string; active:boolean; manufacturer:string; parameters?:{image?:string;description?:string;ip?:string|number} };
 type Catalogue = { products:Product[]; manufacturers:{id:number;name:string}[] };
 type Line = {
   id:string; source_key:string; source_signature?:string; source_ids:number[]; type_id:number|null; product_id:number|null;
-  name:string; sku:string; manufacturer:string; room:string; description:string; comment?:string; quantity:string;
+  name:string; sku:string; manufacturer:string; ip?:string; room:string; description:string; comment?:string; quantity:string;
   quantity_override?:string|null; calculated_quantity?:string|null; overrides?:string[];
   unit:"шт"|"м"; unit_price:string; currency:string; discount:string|null; image:string;
 };
@@ -82,9 +83,24 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   function expandRow(id:string,open=true){setExpandedRows(current=>{const next=new Set(current);if(open)next.add(id);else next.delete(id);return next;});}
   useEffect(()=>{
     if(!draggedId)return;
-    let frame=0;
-    const scroll=()=>{const node=tableWrap.current,y=dragY.current;if(node&&y!==null){const rect=node.getBoundingClientRect(),outer=node.closest('.quotation-content')?.getBoundingClientRect(),top=Math.max(rect.top,outer?.top??rect.top),bottom=Math.min(rect.bottom,outer?.bottom??rect.bottom),edge=42;const delta=y<top+edge?-Math.min(15,(top+edge-y)/3):y>bottom-edge?Math.min(15,(y-bottom+edge)/3):0;if(delta)node.scrollTop+=delta;}frame=requestAnimationFrame(scroll);};
-    frame=requestAnimationFrame(scroll);return()=>cancelAnimationFrame(frame);
+    let frame=0,last=0;
+    const track=(event:DragEvent)=>{if(dragSource.current&&event.dataTransfer?.types.includes(QUOTE_LINE_DRAG)){event.preventDefault();event.dataTransfer.dropEffect='move';dragY.current=event.clientY;}};
+    const scroll=(time:number)=>{
+      const node=tableWrap.current,y=dragY.current,dt=Math.min(50,last?time-last:16)/1000;last=time;
+      if(node&&y!==null){
+        const outer=node.closest<HTMLElement>('.quotation-content'),rect=node.getBoundingClientRect(),outside=outer?.getBoundingClientRect(),dock=node.closest('.quotation-editor')?.querySelector('.quotation-dock')?.getBoundingClientRect();
+        const top=Math.max(rect.top,outside?.top??rect.top)+(node.querySelector('thead')?.getBoundingClientRect().height??30),bottom=Math.min(rect.bottom,outside?.bottom??rect.bottom,dock?dock.top-8:Infinity),edge=Math.min(110,(bottom-top)/3);
+        const distance=y<top+edge?y-top-edge:y>bottom-edge?y-bottom+edge:0;
+        if(distance&&edge>0){
+          const delta=Math.sign(distance)*(300+Math.min(1,Math.abs(distance)/edge)**1.5*1700)*dt;
+          const before=node.scrollTop;node.scrollTop+=delta;
+          if(node.scrollTop===before&&outer)outer.scrollTop+=delta;
+        }
+      }
+      frame=requestAnimationFrame(scroll);
+    };
+    document.addEventListener('dragover',track,true);frame=requestAnimationFrame(scroll);
+    return()=>{cancelAnimationFrame(frame);document.removeEventListener('dragover',track,true);};
   },[draggedId]);
   const productPickers=useMemo(()=>{
     const byUnit=new Map<string,SearchOption[]>(),byType=new Map<string,SearchOption[]>(),byId=new Map<number,SearchOption>();
@@ -182,12 +198,17 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     change(current=>{const order=new Map<string,number>();for(const line of current.lines){const room=normalizeRoom(line.room);if(!order.has(room))order.set(room,order.size);}return {...current,lines:[...current.lines].sort((a,b)=>order.get(normalizeRoom(a.room))!-order.get(normalizeRoom(b.room))!)};},true);setLinePage(0);
   }
   function editLine(id:string,patch:Partial<Line>) {
-    change(current=>({...current,lines:current.lines.map(line=>{
-      if(line.id!==id)return line;
-      const allowed=['name','sku','manufacturer','room','description','unit_price','currency','image'];
-      const overrides=line.source_key ? [...new Set([...(line.overrides??[]),...Object.keys(patch).filter(key=>allowed.includes(key))])] : line.overrides;
-      return {...line,...patch,overrides};
-    })}));
+    change(current=>{
+      const source=current.lines.find(line=>line.id===id),key=source?priceIdentity(source):'';
+      const general=current.room_layout==='combined'||current.room_layout==='legacy'&&!current.lines.some(line=>normalizeRoom(line.room));
+      return {...current,lines:current.lines.map(line=>{
+        const values=line.id===id?patch:general&&Object.hasOwn(patch,'unit_price')&&priceIdentity(line)===key?{unit_price:patch.unit_price}:null;
+        if(!values)return line;
+        const allowed=['name','sku','manufacturer','room','description','ip','unit_price','currency','image'];
+        const overrides=line.source_key ? [...new Set([...(line.overrides??[]),...Object.keys(values).filter(key=>allowed.includes(key))])] : line.overrides;
+        return {...line,...values,overrides};
+      })};
+    });
   }
   function undo(redo=false) {
     if(!doc || busy)return;
@@ -229,6 +250,8 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     await work(async()=>{
       const saved=await saveCurrent();
       if(!saved.lines.length)throw Error("Добавьте позиции в КП");
+      const alarm=exportAlarm(saved.lines);
+      if(alarm&&!confirm(alarm)){setMessage("Формирование PDF отменено. Заполните отмеченные данные и повторите экспорт.");return;}
       const response=await apiFetch("/api"+base+"/export.pdf?mode="+target);
       const url=URL.createObjectURL(await response.blob()),link=document.createElement("a");
       link.href=url;link.download="КП-"+saved.number.replace(/[^a-zа-яё0-9_-]/gi,"-")+"-"+target+".pdf";
@@ -269,7 +292,8 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const calculated=prices ?? doc;
   const visiblePrices=calculated[mode];
   const rowPrices=new Map(visiblePrices.lines.map(line=>[line.id,line]));
-  const unpriced=doc.lines.filter(line=>decimalValue(line.unit_price)===0).length;
+  const issues=exportIssues(doc.lines),conflicts=priceConflicts(doc.lines);
+  const unpriced=issues.filter(item=>item.missing.includes('цена')).length;
   const productOptions=(line:Line)=>{
     const options=(line.source_ids.length&&line.type_id!==null?productPickers.byType.get(line.unit+':'+line.type_id):productPickers.byUnit.get(line.unit))??[{value:'',label:'Без привязки к товару'}];
     const selected=line.product_id?productPickers.byId.get(line.product_id):null;
@@ -301,6 +325,8 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     <input ref={importInput} hidden type="file" aria-label="Файл внешнего КП" accept=".pdf,.xlsx,.xls,.xlsm,.docx,.csv" disabled={busy} onChange={event=>{void importFile(event.target.files?.[0]);event.target.value='';}}/>
     {!newProduct && !imported && !attachOpen && error && <p className="catalog-error" role="alert">{error}</p>}
     {message && <p className="catalog-success" role="status">{message}</p>}
+    {issues.length>0&&<details className="quotation-export-check"><summary>Перед PDF проверьте КП: без цены — {unpriced}, без фото — {issues.filter(item=>item.missing.includes('фото')).length}, без артикула — {issues.filter(item=>item.missing.includes('артикул')).length}</summary><ul>{issues.slice(0,50).map(item=><li key={item.id}><button type="button" onClick={()=>{chooseQuoteTool('positions');setRoomFilter(null);setLineQuery('');setLinePage(Math.floor(item.index/linePageSize));setActiveLineId(item.id);expandRow(item.id);requestAnimationFrame(()=>document.querySelector(`[data-quote-line="${CSS.escape(item.id)}"]`)?.scrollIntoView({block:'center'}));}}>№ {item.index+1} · {item.name} — {item.missing.join(', ')}</button></li>)}</ul>{issues.length>50&&<small>Показаны первые 50 из {issues.length} незаполненных позиций.</small>}</details>}
+    {conflicts.length>0&&<p className="warning" role="alert">Для {conflicts.length} позиций найдены разные цены одинакового товара. Укажите нужную цену в общем КП — она применится ко всем его одинаковым позициям.</p>}
     {!standalone&&doc.lines.some(line=>line.source_key)&&<p className="hint">Количество связанных позиций обновляется из плана при открытии, сохранении и экспорте КП. Галочка «Вручную» сохраняет заданное вами количество.</p>}
     <div className="quotation-status" role="status">{busy ? "Сохранение…" : dirty ? "Есть несохранённые изменения" : "КП сохранено"}{calculating ? " · Пересчёт итогов…" : ""}</div>
     <div className="quotation-totals">
@@ -336,7 +362,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
         <tr data-quote-line={line.id} className={(activeLineId===line.id?'quote-row-active ':'')+(draggedId===line.id?'quote-row-dragging ':'')+(dropTarget?.id===line.id?(dropTarget.after?'quote-drop-after':'quote-drop-before'):'')}
           onFocusCapture={()=>{setActiveLineId(line.id);setEditingLineId(line.id);}} onBlurCapture={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setEditingLineId(null);}} data-image-target onDragOver={event=>rowDragOver(event,line.id)} onDrop={event=>rowDrop(event,line.id)} onPasteCapture={event=>imagePaste(event,file=>void upload(file,image=>editLine(line.id,{image})))}>
           <td><div className="quotation-line-name"><button type="button" className="quote-drag-handle" draggable={!busy} disabled={busy} aria-label={'Перетащить строку '+(index+1)} title="Перетащите для перемещения. Ctrl+↑ / Ctrl+↓ — на одну позицию."
-            onDragStart={event=>{if(busy){event.preventDefault();return;}event.stopPropagation();dragSource.current=line.id;setDraggedId(line.id);setActiveLineId(line.id);event.dataTransfer.effectAllowed='move';event.dataTransfer.setData(QUOTE_LINE_DRAG,JSON.stringify({base,id:line.id}));}}
+            onDragStart={event=>{if(busy){event.preventDefault();return;}event.stopPropagation();dragSource.current=line.id;dragY.current=event.clientY;setDraggedId(line.id);setActiveLineId(line.id);event.dataTransfer.effectAllowed='move';event.dataTransfer.setData(QUOTE_LINE_DRAG,JSON.stringify({base,id:line.id}));}}
             onDragEnd={endDrag} onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&['ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();const target=doc.lines[index+(event.key==='ArrowUp'?-1:1)];if(target){moveLine(line.id,target.id,event.key==='ArrowDown');setLinePage(Math.floor((index+(event.key==='ArrowUp'?-1:1))/linePageSize));requestAnimationFrame(()=>document.querySelector<HTMLButtonElement>(`[data-quote-line="${CSS.escape(line.id)}"] .quote-drag-handle`)?.focus());}}}}><span aria-hidden="true">⠿</span><small>{index+1}</small></button>
             {line.image&&<img src={line.image} alt=""/>}<div><input className="quotation-name-input" title={[line.name,line.sku].filter(Boolean).join(" · ")} aria-label={"Наименование строки "+(index+1)} value={line.name} disabled={busy} onChange={e=>editLine(line.id,{name:e.target.value})}/></div></div>
             <div className="quotation-row-meta"><input aria-label={"Артикул строки "+(index+1)} placeholder="Артикул" maxLength={200} title={line.sku||''} value={line.sku} disabled={busy} onChange={event=>editLine(line.id,{sku:event.target.value})}/>
@@ -349,6 +375,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
             </div>
             <div className="quotation-row-context"><label>Помещение<SearchInput aria-label={"Помещение строки "+(index+1)} placeholder="Без помещения" maxLength={500} options={roomChoices} value={group} disabled={busy} onChange={room=>editLine(line.id,{room})}/></label>
               <label>Комментарий<textarea className="quotation-row-comment" aria-label={"Комментарий строки "+(index+1)} placeholder="Комментарий" rows={2} maxLength={2000} value={line.comment??''} disabled={busy} onChange={event=>editLine(line.id,{comment:event.target.value})}/></label></div>
+            <label>IP<input aria-label={"IP строки "+(index+1)} placeholder="IP44" maxLength={16} value={line.ip??''} disabled={busy} onChange={event=>editLine(line.id,{ip:event.target.value})}/></label>
             <label>Номенклатура<SearchSelect aria-label={"Номенклатура строки "+(index+1)} disabled={busy||Boolean(line.source_ids.length)} value={line.type_id??''} onChange={event=>{const type=types.find(type=>type.id===Number(event.target.value));editLine(line.id,{type_id:type?.id??null,product_id:null});}}><option value="">Без категории</option>{types.filter(type=>type.active&&type.unit===line.unit).map(type=><option key={type.id} value={type.id}>{type.category} · {type.name}</option>)}</SearchSelect></label>
             <ToolButton icon="copy" type="button" disabled={busy} aria-label={"Дублировать строку "+(index+1)+" в КП"} onClick={()=>appendLine({...line,id:crypto.randomUUID(),source_key:'',source_ids:[],quantity_override:null,calculated_quantity:null,overrides:[]})}>Ручная копия строки</ToolButton>
             <ToolButton icon="list" type="button" disabled={busy} aria-label={'Переместить строку '+(index+1)+' на номер'} onClick={()=>moveToPosition(line.id)}>Переместить на №…</ToolButton>
@@ -369,7 +396,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       {!doc.lines.length && <p className="hint">Пока нет позиций. Добавьте строку вручную или импортируйте расчёт проекта.</p>}
 
       {quoteTool==='catalog'&&<section className="quote-catalog-panel" aria-label="Товары для КП"><h3>Добавить товар из базы</h3><input aria-label="Поиск товаров для КП" type="search" placeholder="Название, артикул, производитель…" value={productSearch} onChange={event=>{setProductSearch(event.target.value);setCatalogLimit(100);}}/>
-        <div className="quote-catalog-products">{filteredProducts.slice(0,catalogLimit).map(product=><article key={product.id}><strong>{product.name}</strong><small>{product.manufacturer} · {product.sku}</small><b>{amount(product.price,product.currency)} / {product.unit}</b><ToolButton icon="plus" disabled={busy} onClick={()=>{appendLine({...newLine(),name:product.name,sku:product.sku,manufacturer:product.manufacturer,product_id:product.id,type_id:product.type_id,unit:product.unit as 'шт'|'м',unit_price:String(product.price),currency:product.currency,image:product.parameters?.image??'',description:product.parameters?.description??''});}}>Добавить в КП</ToolButton></article>)}</div>
+        <div className="quote-catalog-products">{filteredProducts.slice(0,catalogLimit).map(product=><article key={product.id}><strong>{product.name}</strong><small>{product.manufacturer} · {product.sku}</small><b>{amount(product.price,product.currency)} / {product.unit}</b><ToolButton icon="plus" disabled={busy} onClick={()=>{appendLine({...newLine(),name:product.name,sku:product.sku,manufacturer:product.manufacturer,product_id:product.id,type_id:product.type_id,unit:product.unit as 'шт'|'м',unit_price:String(product.price),currency:product.currency,image:product.parameters?.image??'',description:product.parameters?.description??'',ip:String(product.parameters?.ip??'')});}}>Добавить в КП</ToolButton></article>)}</div>
         {filteredProducts.length>catalogLimit&&<button type="button" onClick={()=>setCatalogLimit(value=>value+100)}>Показать ещё {Math.min(100,filteredProducts.length-catalogLimit)} товаров</button>}
         <p className="hint">Найдено товаров: {filteredProducts.length}</p>
       </section>}
@@ -470,7 +497,7 @@ function QuoteDialog({title,busy,onClose,children,className=""}:{title:string;bu
   },[]);
   useEffect(()=>{
     const key=(event:KeyboardEvent)=>{
-      if(event.key==="Escape" && !(event.target as HTMLElement)?.closest("[data-search-popup]")){event.preventDefault();event.stopImmediatePropagation();if(!busy)onClose();}
+      if(event.key==="Escape" && !(event.target as HTMLElement)?.closest('[data-search-popup],[role="combobox"][aria-expanded="true"]')){event.preventDefault();event.stopImmediatePropagation();if(!busy)onClose();}
     };
     window.addEventListener("keydown",key,true);return()=>window.removeEventListener("keydown",key,true);
   },[busy,onClose]);

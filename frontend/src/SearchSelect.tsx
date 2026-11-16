@@ -3,6 +3,7 @@ import type {PlanKind} from './planDomain';
 import {useEffect,useId,useLayoutEffect,useRef,useState} from 'react';
 import {createPortal,flushSync} from 'react-dom';
 import './SearchSelect.css';
+import usePopupPosition from './usePopupPosition';
 
 export type SearchOption={value:string;label:string;group?:string;disabled?:boolean;color?:string;iconKind?:PlanKind};
 type Props=React.SelectHTMLAttributes<HTMLSelectElement>&{dataOptions?:readonly SearchOption[]};
@@ -23,7 +24,7 @@ export default function SearchSelect({dataOptions,...props}:Props) {
   const select=useRef<HTMLSelectElement>(null),popup=useRef<HTMLDivElement>(null),input=useRef<HTMLInputElement>(null);
   const [pending,setPending]=useState<SearchOption|null>(null),[limit,setLimit]=useState(200);
   const [open,setOpen]=useState(false),[query,setQuery]=useState(''),[options,setOptions]=useState<Option[]>([]),[active,setActive]=useState(0);
-  const [position,setPosition]=useState({left:0,top:0,width:260,height:280,above:false});
+  const position=usePopupPosition(select,popup,open,()=>close());
   const id=useId();
   const needle=fold(query.trim()),filtered=open?options.filter(option=>option.search.includes(needle)):[];
   const [derivedLabel,setDerivedLabel]=useState('');
@@ -52,23 +53,15 @@ export default function SearchSelect({dataOptions,...props}:Props) {
     select.current.value=option.value;
     select.current.dispatchEvent(new Event('change',{bubbles:true}));close(true);
   }
-  function place() {
-    if(!select.current)return;
-    const rect=select.current.getBoundingClientRect(),width=Math.min(Math.max(rect.width,300),window.innerWidth-16);
-    if(rect.bottom<0||rect.top>window.innerHeight){close();return;}
-    const below=window.innerHeight-rect.bottom-12,above=rect.top-12;
-    setPosition({left:Math.max(8,Math.min(rect.left,window.innerWidth-width-8)),top:rect.top,width,height:Math.max(100,Math.min(340,below<160&&above>below ? above : below)),above:below<160&&above>below});
-  }
   useLayoutEffect(()=>{
     if(!open)return;
-    place();input.current?.focus({preventScroll:true});
+    input.current?.focus({preventScroll:true});
   },[open]);
   useEffect(()=>{
     if(!open)return;
     const outside=(event:PointerEvent)=>{if(!popup.current?.contains(event.target as Node)&&event.target!==select.current)close();};
-    const move=(event:Event)=>{if(!popup.current?.contains(event.target as Node))place();};
-    document.addEventListener('pointerdown',outside);window.addEventListener('resize',move);window.addEventListener('scroll',move,true);
-    return()=>{document.removeEventListener('pointerdown',outside);window.removeEventListener('resize',move);window.removeEventListener('scroll',move,true);};
+    document.addEventListener('pointerdown',outside);
+    return()=>{document.removeEventListener('pointerdown',outside);};
   },[open]);
   useEffect(()=>{if(props.disabled)setOpen(false);},[props.disabled]);
   useEffect(()=>{
@@ -88,8 +81,8 @@ export default function SearchSelect({dataOptions,...props}:Props) {
         if(['ArrowDown','ArrowUp','Enter',' '].includes(event.key)){event.preventDefault();show();}
         else if(event.key.length===1&&!event.ctrlKey&&!event.metaKey&&!event.altKey){event.preventDefault();show(event.key);}
       }}>{dataOptions?<>{[...new Map([dataOptions.find(option=>option.value===String(props.value??'')),pending].filter((option):option is SearchOption=>Boolean(option)).map(option=>[option.value,option])).values()].map(option=><option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>)}</>:props.children}</select>
-    {open && createPortal(<div ref={popup} data-search-popup="true" className={'search-select-popup'+(position.above ? ' search-select-above' : '')}
-      style={{left:position.left,top:position.top,width:position.width}} onKeyDown={event=>{
+    {open && createPortal(<div ref={popup} data-search-popup="true" className="search-select-popup"
+      style={position} onKeyDown={event=>{
         if(event.key==='Escape'){event.preventDefault();event.stopPropagation();close(true);}
         if(event.key==='Tab'){event.stopPropagation();close(true);}
       }}>
@@ -100,7 +93,7 @@ export default function SearchSelect({dataOptions,...props}:Props) {
             event.preventDefault();event.stopPropagation();setActive(current=>{const step=event.key==='ArrowDown'?1:-1;let next=current+step;while(next>=0&&next<filtered.length&&filtered[next].disabled)next+=step;if(next>=limit)setLimit(next+50);return next>=0&&next<filtered.length ? next : current;});
           } else if(event.key==='Enter'){event.preventDefault();event.stopPropagation();if(filtered[active])choose(filtered[active]);}
         }}/><button type="button" aria-label="Очистить поиск" onClick={()=>{setQuery('');setActive(0);input.current?.focus({preventScroll:true});}}>×</button></div>
-      <div className="search-select-options" role="listbox" id={id} aria-label={label} style={{maxHeight:position.height}}>
+      <div className="search-select-options" role="listbox" id={id} aria-label={label}>
         {filtered.slice(0,limit).map((option,index)=><button key={option.value+'-'+index} type="button" role="option" id={id+'-'+index} aria-selected={option.value===String(props.value??'')}
           aria-disabled={option.disabled} data-active={index===active} disabled={option.disabled} onPointerDown={event=>event.preventDefault()} onClick={()=>choose(option)}>
           <span className="search-option-main">{option.iconKind&&<svg viewBox="-20 -20 40 40" aria-hidden="true"><PlanSymbol kind={option.iconKind} color={option.color??'#38bdf8'} radius={10}/></svg>}<span className="search-option-copy"><span>{highlight(option.label)}</span>{option.group&&<small>{highlight(option.group)}</small>}</span></span>
@@ -108,6 +101,6 @@ export default function SearchSelect({dataOptions,...props}:Props) {
         {filtered.length>limit&&<button type="button" onPointerDown={event=>event.preventDefault()} onClick={()=>setLimit(value=>value+200)}>Показать ещё {Math.min(200,filtered.length-limit)}</button>}
         {!filtered.length && <p>Ничего не найдено</p>}
       </div><small className="search-select-count" aria-live="polite">Найдено: {filtered.length}</small>
-    </div>,select.current?.closest('[role="dialog"]') || document.body)}
+    </div>,select.current?.closest('[role="dialog"]')||document.body)}
   </span>;
 }

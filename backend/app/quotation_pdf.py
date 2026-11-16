@@ -25,6 +25,23 @@ def currency(code):
     return {'RUB':'₽','USD':'$','EUR':'€'}.get(code,code)
 
 
+def item_details(item):
+    import re
+    ip_pattern=r'^\s*(?:степень\s+защиты\s*[:：]?\s*(?:IP\s*)?|IP\s*[:：]?\s*)([0-6X][0-9X]K?)(?=$|[\s;,.])'
+    statuses=[];description=[]
+    if item.ip.strip():statuses.append('IP'+re.sub(r'^IP\s*','',item.ip.strip(),flags=re.I).upper())
+    for part in item.description.splitlines():
+        found=re.match(ip_pattern,part,re.I)
+        if found:
+            if not statuses:statuses.append('IP'+found[1].upper())
+            rest=part[found.end():].strip(' ;,.')
+            if rest:description.append(rest)
+        else:description.append(re.sub(r'^\s*артикул\s*[:：]\s*','',part,flags=re.I))
+    sku=re.sub(r'^\s*(?:артикул(?:\s*[:：№#]\s*|\s+)|SKU\s*[:：]\s*)','',item.sku,flags=re.I).strip()
+    metadata=' · '.join(filter(None,[sku,*statuses,item.manufacturer.strip()]))
+    return '\n'.join(filter(None,[item.name,metadata,'\n'.join(description),('Комментарий: '+item.comment) if item.comment else '']))
+
+
 def export_quotation(quote,mode,font_path=None):
     result=totals(quote,mode)
     doc=pymupdf.open()
@@ -223,11 +240,7 @@ def export_quotation(quote,mode,font_path=None):
             group_heading(room);current_group=room
         # Product photo is aligned beside its name; article and manufacturer are secondary.
         photo_width=33 if line_item.image else 0
-        details=line_item.name
-        if line_item.sku: details+='\n'+line_item.sku
-        if line_item.manufacturer: details+=' · '+line_item.manufacturer
-        if line_item.description: details+='\n'+line_item.description
-        if line_item.comment: details+='\nКомментарий: '+line_item.comment
+        details=item_details(line_item)
         quantity=number(line_item.quantity,3).rstrip('0').rstrip(',')
         cells=[str(index),details,number(line_item.unit_price)+' '+currency(line_item.currency),quantity,line_item.unit]
         if mode=='partner': cells.append(number(row['effective_discount'])+'%')

@@ -19,3 +19,5 @@
 .quote-workspace .quotation-row-context{display:grid;gap:7px;margin:7px 0}.quote-workspace .quotation-row-context>label{display:grid;gap:4px;font-size:10px;margin:0}.quote-workspace .quotation-row-context .quotation-row-comment{height:56px;min-height:56px}
 
 .quotation-room-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}.quotation-room-actions button{font-size:11px;min-height:30px;padding:5px 9px}.quotation-room-actions small{font-size:10px;color:#738b8e}
+
+.quotation-export-check{margin:8px 0;padding:7px 10px;border:1px solid #edcf8f;border-radius:6px;background:#fff8e8;color:#886224;font-size:11px}.quotation-export-check>summary{cursor:pointer}.quotation-export-check ul{max-height:180px;overflow:auto;margin:8px 0;padding-left:18px}.quotation-export-check li button{border:0;background:transparent;text-align:left;font-size:11px;color:inherit;min-height:25px;padding:4px}.quotation-export-check li button:hover{background:#f9e9c6}

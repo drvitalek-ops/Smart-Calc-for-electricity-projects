@@ -157,8 +157,17 @@ try {
         $roomQuote = Invoke-RestMethod -Uri "$roomBase/quotation" -Method Put -ContentType "application/json; charset=utf-8" -Body ($roomQuote | ConvertTo-Json -Depth 20) -TimeoutSec 10
         $roomQuote = Invoke-RestMethod -Uri "$roomBase/quotation/room-layout" -Method Post -ContentType "application/json" -Body (@{revision=$roomQuote.revision;layout="rooms"} | ConvertTo-Json) -TimeoutSec 10
         if ($roomQuote.lines.Count -ne 2 -or $roomQuote.lines[0].room -ne "Room 2" -or [decimal]$roomQuote.lines[0].quantity -ne 2 -or [decimal]$roomQuote.lines[1].quantity -ne 3 -or $roomQuote.partner.totals.RUB.total -ne "450.00") { throw "Packaged room distribution lost quantity, room, price or discount" }
+        $roomQuote.lines[1].unit_price = "0"
+        $roomQuote = Invoke-RestMethod -Uri "$roomBase/quotation" -Method Put -ContentType "application/json; charset=utf-8" -Body ($roomQuote | ConvertTo-Json -Depth 20) -TimeoutSec 10
         $roomQuote = Invoke-RestMethod -Uri "$roomBase/quotation/room-layout" -Method Post -ContentType "application/json" -Body (@{revision=$roomQuote.revision;layout="combined"} | ConvertTo-Json) -TimeoutSec 10
         if ($roomQuote.lines.Count -ne 1 -or $roomQuote.lines[0].room -ne "" -or [decimal]$roomQuote.lines[0].quantity -ne 5 -or $roomQuote.partner.totals.RUB.total -ne "450.00") { throw "Packaged CP rooms did not combine without changing commercial terms" }
+        $roomQuote.lines[0].sku = "LIGHT-53"
+        $roomQuote.lines[0].ip = "IP44"
+        $roomQuote = Invoke-RestMethod -Uri "$roomBase/quotation" -Method Put -ContentType "application/json; charset=utf-8" -Body ($roomQuote | ConvertTo-Json -Depth 20) -TimeoutSec 10
+        $roomPdf = Join-Path $workDirectory "room-metadata.pdf"
+        Invoke-WebRequest -Uri "$roomBase/quotation/export.pdf?mode=client" -OutFile $roomPdf -TimeoutSec 20
+        & $PythonBinary -c 'import sys,pymupdf; d=pymupdf.open(sys.argv[1]); t=" ".join(p.get_text() for p in d); assert "LIGHT-53 · IP44" in t and "Степень защиты" not in t and "Артикул:" not in t, "Invalid article/IP metadata in packaged PDF"' $roomPdf
+        if ($LASTEXITCODE -ne 0) { throw "Packaged quotation article/IP PDF check failed" }
         $wordPath = Join-Path $workDirectory "quotation-smoke.docx"
         & $PythonBinary -c 'import sys; from docx import Document; d=Document(); t=d.add_table(rows=1,cols=3); [setattr(c,"text",v) for c,v in zip(t.rows[0].cells,["Name","Price","Quantity"])]; [setattr(c,"text",v) for c,v in zip(t.add_row().cells,["Imported lamp","25.00","3"])]; d.save(sys.argv[1])' $wordPath
         $wordResult = Invoke-RestMethod -Uri "$quoteUrl/import-file" -Method Post -Form @{file=(Get-Item $wordPath)} -TimeoutSec 20

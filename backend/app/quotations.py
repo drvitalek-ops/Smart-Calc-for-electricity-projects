@@ -55,6 +55,7 @@ class QuoteLine(BaseModel):
     product_id: int | None = Field(default=None,gt=0)
     name: str = Field(min_length=1,max_length=500)
     sku: str = Field(default='',max_length=200)
+    ip: str = Field(default='',max_length=16)
     manufacturer: str = Field(default='',max_length=500)
     room: str = Field(default='',max_length=500)
     description: str = Field(default='',max_length=2000)
@@ -62,7 +63,7 @@ class QuoteLine(BaseModel):
     quantity: RussianDecimal = Field(default=1,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
     quantity_override: RussianDecimal | None = Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
     calculated_quantity: RussianDecimal | None = Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
-    overrides: list[Literal['name','sku','manufacturer','room','description','unit_price','currency','image']] = Field(default_factory=list,max_length=8)
+    overrides: list[Literal['name','sku','manufacturer','room','description','ip','unit_price','currency','image']] = Field(default_factory=list,max_length=9)
     unit: Literal['шт','м'] = 'шт'
     unit_price: RussianDecimal = Field(default=0,ge=0,le=1000000000,max_digits=12,decimal_places=2,allow_inf_nan=False)
     currency: str = Field(default='RUB',pattern='^[A-Z]{3}$')
@@ -208,12 +209,14 @@ def get_quote(db,pid,standalone=False):
     if standalone:
         stored=db.get(StandaloneQuotation,pid)
         if stored is None: raise HTTPException(404,'Самостоятельное КП не найдено')
-        return QuoteInput.model_validate({'room_layout':'legacy',**stored.content,'revision':stored.revision})
+        from .quotation_prices import inherit_prices
+        return inherit_prices(QuoteInput.model_validate({'room_layout':'legacy',**stored.content,'revision':stored.revision}))
     project=require_project(db,pid)
     stored=db.get(Quotation,pid)
     if stored is None:
         return QuoteInput(number=str(pid),title='Коммерческое предложение',customer=project.name)
-    return sync_plan_quantities(db,pid,QuoteInput.model_validate({'room_layout':'legacy',**stored.content,'revision':stored.revision}))
+    from .quotation_prices import inherit_prices
+    return inherit_prices(sync_plan_quantities(db,pid,QuoteInput.model_validate({'room_layout':'legacy',**stored.content,'revision':stored.revision})))
 
 
 def check_revision(db,pid,revision,standalone=False):
@@ -230,6 +233,8 @@ def persist_quote(db,pid,quote,standalone=False):
     primary_key=StandaloneQuotation.id if standalone else Quotation.project_id
     stored=db.get(model,pid)
     if not standalone:sync_plan_quantities(db,pid,quote,update_signatures=True)
+    from .quotation_prices import inherit_prices
+    inherit_prices(quote)
     payload=quote.model_dump(mode='json',exclude={'revision'})
     if stored is None:
         if standalone: raise HTTPException(409,'Самостоятельное КП было удалено')
@@ -349,6 +354,8 @@ def totals(quote,mode):
 
 
 def present(quote):
+    from .quotation_prices import inherit_prices
+    inherit_prices(quote)
     return {**quote.model_dump(mode='json'),'client':totals(quote,'client'),'partner':totals(quote,'partner')}
 
 
@@ -358,6 +365,7 @@ def product_snapshot(db,line,product):
     line.name=product.name;line.sku=product.sku
     line.manufacturer=db.get(Manufacturer,product.manufacturer_id).name
     line.unit_price=money(product.price);line.currency=product.currency
+    if product.parameters.get('ip') not in (None,''):line.ip=str(product.parameters['ip'])
     image=product.parameters.get('image','')
     if not isinstance(image,str): image=''
     try: validate_image(image)
@@ -420,7 +428,7 @@ def import_lines(db,pid,quote):
         order_hints[line_id]=previous_order[old.id] if old else len(quote.lines)+len(lines)
         line=QuoteLine(id=line_id,source_key=key,source_signature=source_signature(row),
             source_ids=row.get('element_ids',[]),type_id=row.get('type_id'),
-            name=row['product'] or row['name'],room=row['room'],
+            name=row['product'] or row['name'],room=row['room'],ip=str(json.loads(row['parameters']).get('ip','')),
             quantity=str(row['quantity']),calculated_quantity=str(row['quantity']),quantity_override=old.quantity_override if old else None,overrides=old.overrides if old else [],unit=row['unit'],unit_price=str(money(row['unit_price'])),
             product_id=row['product_id'],sku=row['sku'],manufacturer=row['manufacturer'],
             description=parameters_text(row['parameters'])[:2000],currency=row['currency'],
@@ -662,6 +670,8 @@ def preview_document(body:QuoteInput,mode:Literal['client','partner']='client',d
     if db.get(StandaloneQuotation if standalone else Project,pid) is None: raise HTTPException(404,"КП или проект не найден")
     if standalone: validate_standalone(body)
     else:sync_plan_quantities(db,pid,body)
+    from .quotation_prices import inherit_prices
+    inherit_prices(body)
     from .quotation_cache import quotation_pdf
     return StreamingResponse(io.BytesIO(quotation_pdf(body,mode,scope)),media_type='application/pdf',
         headers={'Cache-Control':'no-store'})
@@ -674,6 +684,8 @@ def preview_page(body:QuoteInput,mode:Literal['client','partner']='client',page:
     if db.get(StandaloneQuotation if standalone else Project,pid) is None: raise HTTPException(404,'КП или проект не найден')
     if standalone: validate_standalone(body)
     else:sync_plan_quantities(db,pid,body)
+    from .quotation_prices import inherit_prices
+    inherit_prices(body)
     from .quotation_cache import quotation_page
     pages,image=quotation_page(body,mode,page,scope)
     return Response(image,media_type='image/png',headers={'X-Preview-Pages':str(pages),'Cache-Control':'no-store'})

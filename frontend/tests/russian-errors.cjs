@@ -3,7 +3,7 @@ const {checked,waitUntil}=require('./workbench-helpers.cjs');
 const frontend=process.env.FRAME_TEST_FRONTEND||'http://127.0.0.1:5174',backend=process.env.FRAME_TEST_BACKEND||'http://127.0.0.1:8014';
 (async()=>{const browser=await chromium.launch({executablePath:process.env.CHROMIUM_EXECUTABLE||chromium.executablePath(),headless:true,args:['--no-sandbox']});try{
  const context=await browser.newContext({viewport:{width:1600,height:1000},locale:'en-US'}),page=await context.newPage(),errors=[],calculations=[];
- page.on('pageerror',error=>errors.push(String(error)));page.on('request',request=>{if(request.url().endsWith('/calculate'))calculations.push(request);});
+ page.on('dialog',dialog=>dialog.accept());page.on('pageerror',error=>errors.push(String(error)));page.on('request',request=>{if(request.url().endsWith('/calculate'))calculations.push(request);});
  await page.route('**/api/**',route=>route.continue({url:route.request().url().replace(frontend,backend)}));
  const api=context.request,base=backend+'/api',created=await checked(await api.post(base+'/quotations',{data:{}})),qid=created.id,number='RUS-'+qid;
  await checked(await api.put(base+'/quotations/'+qid,{data:{...created.quotation,number,lines:[1,2,3].map(i=>({id:['z','a','m'][i-1],name:'Позиция '+i,quantity:'1',unit_price:'10'}))}}));

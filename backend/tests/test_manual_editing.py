@@ -168,7 +168,8 @@ def test_manual_quote_fields_survive_product_price_updates_and_reset_on_rebind(c
 
 def test_split_groups_never_duplicate_manual_quantity(client):
     pid,body=setup(client);a=create(client,pid,body);b=create(client,pid,{**body,'x':.8})
-    url=f'/api/projects/{pid}/quotation';quote=client.get(url).json()
+    url=f'/api/projects/{pid}/quotation';quote=client.get(url).json();quote['room_layout']='legacy'
+    quote=client.put(url,json=quote).json();quote=client.post(url+'/import',json={'revision':quote['revision']}).json()
     quote['lines'][0].update(quantity_override='2.5',unit_price='100',overrides=['unit_price'])
     saved=client.put(url,json=quote).json()
     room=client.post(f'/api/projects/{pid}/rooms',json={'name':'Другая комната'}).json()
@@ -187,7 +188,8 @@ def test_merge_preserves_equal_manual_fields_and_rejects_conflicting_prices(clie
     pid,body=setup(client)
     room=client.post(f'/api/projects/{pid}/rooms',json={'name':'Вторая'}).json()
     a=create(client,pid,body);b=create(client,pid,{**body,'room_id':room['id'],'x':.7})
-    url=f'/api/projects/{pid}/quotation';quote=client.get(url).json()
+    url=f'/api/projects/{pid}/quotation';quote=client.get(url).json();quote['room_layout']='legacy'
+    quote=client.put(url,json=quote).json();quote=client.post(url+'/import',json={'revision':quote['revision']}).json()
     for index,line in enumerate(quote['lines']): line.update(unit_price=str(100+index),overrides=['unit_price'])
     saved=client.put(url,json=quote).json()
     assert client.put('/api/elements/'+str(b['id']),json={**b,'room_id':body['room_id']}).status_code==200

@@ -18,7 +18,7 @@ import tempfile
 def canonical(value):
     if isinstance(value,list):return [canonical(item) for item in value]
     if isinstance(value,dict):
-        result={key:canonical(item) for key,item in value.items() if key!='source_signature' and not (key=='comment' and item=='' or key=='hidden_groups' and item==[])}
+        result={key:canonical(item) for key,item in value.items() if key not in ('source_signature','room_layout') and not (key=='comment' and item=='' or key=='hidden_groups' and item==[])}
         # v46 intentionally replaces the old identical yellow fixture defaults.
         seed=result.get('seed_key') or ''
         if result.get('category')=='Освещение' and seed.startswith('Освещение:') and str(result.get('color','')).lower()=='#facc15':
@@ -93,7 +93,7 @@ def run_stage(stage, root):
             checked(client.patch(f'/api/projects/{pid}/elements/appearance',json={'element_ids':[first['id']],'changes':{'plan_icon':'R','plan_shape':'diamond','plan_size':1.25,'plan_rotation':30}}))
             checked(client.post(f'/api/projects/{pid}/elements/undo'))
             checked(client.post(f'/api/projects/{pid}/elements/redo'))
-            quote=capture['quote'];quote['lines'][0]['discount']='17.5'
+            quote=get(f'/projects/{pid}/quotation');quote['lines'][0]['discount']='17.5'
             checked(client.put(f'/api/projects/{pid}/quotation',json=quote))
             project=get(f'/projects/{pid}');project.pop('history',None)
             capture.update(project=project,quote=get(f'/projects/{pid}/quotation'))

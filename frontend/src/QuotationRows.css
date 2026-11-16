@@ -17,3 +17,5 @@
 @media(max-width:800px){.quote-workspace .quotation-content{margin-bottom:100px;padding-bottom:20px}}
 
 .quote-workspace .quotation-row-context{display:grid;gap:7px;margin:7px 0}.quote-workspace .quotation-row-context>label{display:grid;gap:4px;font-size:10px;margin:0}.quote-workspace .quotation-row-context .quotation-row-comment{height:56px;min-height:56px}
+
+.quotation-room-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}.quotation-room-actions button{font-size:11px;min-height:30px;padding:5px 9px}.quotation-room-actions small{font-size:10px;color:#738b8e}

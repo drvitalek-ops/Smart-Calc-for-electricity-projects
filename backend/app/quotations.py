@@ -134,6 +134,7 @@ def validate_image(value):
 class QuoteInput(BaseModel):
     model_config=ConfigDict(validate_default=True)
     revision: int = Field(default=0,ge=0)
+    room_layout:Literal['combined','rooms','legacy']='combined'
     number: str = Field(default='',max_length=100)
     date: str = Field(default_factory=lambda:date.today().isoformat(),pattern=r'^\d{4}-\d{2}-\d{2}$')
     title: str = Field(default='Коммерческое предложение',min_length=1,max_length=300)
@@ -207,12 +208,12 @@ def get_quote(db,pid,standalone=False):
     if standalone:
         stored=db.get(StandaloneQuotation,pid)
         if stored is None: raise HTTPException(404,'Самостоятельное КП не найдено')
-        return QuoteInput.model_validate({**stored.content,'revision':stored.revision})
+        return QuoteInput.model_validate({'room_layout':'legacy',**stored.content,'revision':stored.revision})
     project=require_project(db,pid)
     stored=db.get(Quotation,pid)
     if stored is None:
         return QuoteInput(number=str(pid),title='Коммерческое предложение',customer=project.name)
-    return sync_plan_quantities(db,pid,QuoteInput.model_validate({**stored.content,'revision':stored.revision}))
+    return sync_plan_quantities(db,pid,QuoteInput.model_validate({'room_layout':'legacy',**stored.content,'revision':stored.revision}))
 
 
 def check_revision(db,pid,revision,standalone=False):
@@ -379,14 +380,14 @@ def source_key(row):
 
 
 def import_lines(db,pid,quote):
-    from .main import report_rows
     from .report_export import parameters_text
     previous={line.source_key:line for line in quote.lines if line.source_key}
     previous_order={line.id:index for index,line in enumerate(quote.lines)}
     order_hints={}
     used_ids=set()
     lines=[]
-    calculated=[row for row in report_rows(db,pid)['rows'] if row['quantity']>0]
+    from .quotation_rooms import calculated_rows
+    calculated=calculated_rows(db,pid,quote.room_layout)
     for candidate in previous.values():
         if candidate.quantity_override is None or not candidate.source_ids: continue
         matching=[row for row in calculated if set(candidate.source_ids).intersection(row.get('element_ids',[]))]
@@ -451,8 +452,8 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False):
     """
     linked=[line for line in quote.lines if line.source_key]
     if not linked:return quote
-    from .main import report_rows
-    rows=[row for row in report_rows(db,pid)['rows'] if row['quantity']>0]
+    from .quotation_rooms import calculated_rows
+    rows=calculated_rows(db,pid,quote.room_layout)
     elements={item.id:item for item in db.scalars(select(Element).where(Element.project_id==pid))}
     owners={eid:line for line in linked for eid in line.source_ids}
     frames={line.source_key:line for line in linked if not line.source_ids}
@@ -584,6 +585,19 @@ def import_quote(pid:int,body:QuoteRevision,db:DbSession=Depends(session)):
     return present(quote)
 
 
+class QuoteRoomLayout(QuoteRevision):
+    layout:Literal['combined','rooms']
+
+
+@router.post('/api/projects/{pid}/quotation/room-layout')
+def change_room_layout(pid:int,body:QuoteRoomLayout,db:DbSession=Depends(session)):
+    from .quotation_rooms import regroup_quote
+    quote=check_revision(db,pid,body.revision)
+    quote=regroup_quote(db,pid,quote,body.layout)
+    persist_quote(db,pid,quote);db.commit()
+    return present(quote)
+
+
 @router.post('/api/quotations/{qid}/bind')
 @router.post('/api/projects/{pid}/quotation/bind')
 def bind_quote(body:QuoteBinding,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
@@ -686,6 +700,7 @@ class SkuLine(BaseModel):
 
 
 class SkuInput(BaseModel):
+    room_layout:Literal['combined','rooms','legacy']|None=None
     number:str=Field(default='',max_length=100)
     lines:list[SkuLine]=Field(min_length=1,max_length=5000)
 
@@ -711,7 +726,9 @@ def draft_sku(body:SkuInput,db:DbSession=Depends(session),scope:tuple=Depends(qu
     pid,standalone=scope
     if db.get(StandaloneQuotation if standalone else Project,pid) is None:raise HTTPException(404,'КП или проект не найден')
     # Build a price-free document: financial fields and images are never read.
-    quote=QuoteInput(number=body.number,lines=[QuoteLine.model_validate(line.model_dump()) for line in body.lines])
+    stored=db.get(StandaloneQuotation if standalone else Quotation,pid)
+    layout=body.room_layout or (stored.content.get('room_layout','legacy') if stored else 'combined')
+    quote=QuoteInput(number=body.number,room_layout=layout,lines=[QuoteLine.model_validate(line.model_dump()) for line in body.lines])
     if standalone:validate_standalone(quote)
     else:sync_plan_quantities(db,pid,quote)
     return sku_file(quote)
@@ -735,7 +752,7 @@ def backup_quote(db,pid):
 
 
 def restore_quote(db,pid,payload,type_map,product_map,element_map):
-    quote=QuoteInput.model_validate({**payload,'revision':0})
+    quote=QuoteInput.model_validate({'room_layout':'legacy',**payload,'revision':0})
     for line in quote.lines:
         # Partial project imports remap type/product IDs used in the signature.
         line.source_signature=''

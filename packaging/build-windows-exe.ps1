@@ -139,6 +139,26 @@ try {
         Invoke-WebRequest -Uri "$autoQuoteUrl/sku.docx" -OutFile $skuPath -TimeoutSec 20
         & $PythonBinary -c 'import sys; from docx import Document; d=Document(sys.argv[1]); rows=[[c.text for c in r.cells] for r in d.tables[0].rows]; assert len(rows)==2 and len(rows[0])==5 and rows[0][2]=="Бренд"; assert rows[1][3]=="4"; assert all(s not in " ".join(p.text for p in d.paragraphs)+" ".join(c for row in rows for c in row) for s in ["Цена","Скидка","Сумма","100,00"]), "SKU contains prices"' $skuPath
         if ($LASTEXITCODE -ne 0) { throw "Packaged SKU Word export is invalid or contains financial data" }
+        $roomProject = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects" -Method Post -ContentType "application/json" -Body '{"name":"Room layout smoke"}'
+        $roomBase = "http://127.0.0.1:5173/api/projects/$($roomProject.id)"
+        $roomPages = Invoke-RestMethod -Uri "$roomBase/pdf" -Method Post -Form @{file=(Get-Item $quotePdf)} -TimeoutSec 30
+        $roomPlan = Invoke-RestMethod -Uri $roomBase -TimeoutSec 10
+        $roomKind = $planKinds | Where-Object {$_.name -eq "Люстра"} | Select-Object -First 1
+        $roomLayer = $roomPlan.layers | Where-Object {$_.name -eq $roomKind.category} | Select-Object -First 1
+        foreach ($roomNumber in @(2,3)) {
+            $room = Invoke-RestMethod -Uri "$roomBase/rooms" -Method Post -ContentType "application/json" -Body (@{name="Room $roomNumber"} | ConvertTo-Json) -TimeoutSec 10
+            $roomBody = @{page_id=$roomPages[0].id;layer_id=$roomLayer.id;type_id=$roomKind.id;room_id=$room.id;x=0.1*$roomNumber;y=0.25;parameters=@{quantity=$roomNumber}}
+            $null = Invoke-RestMethod -Uri "$roomBase/elements" -Method Post -ContentType "application/json" -Body ($roomBody | ConvertTo-Json -Depth 10) -TimeoutSec 10
+        }
+        $roomQuote = Invoke-RestMethod -Uri "$roomBase/quotation" -TimeoutSec 10
+        if ($roomQuote.room_layout -ne "combined" -or $roomQuote.lines.Count -ne 1 -or [decimal]$roomQuote.lines[0].quantity -ne 5) { throw "Packaged new CP is not combined across rooms" }
+        $roomQuote.lines[0].unit_price = "100"
+        $roomQuote.lines[0].discount = "10"
+        $roomQuote = Invoke-RestMethod -Uri "$roomBase/quotation" -Method Put -ContentType "application/json; charset=utf-8" -Body ($roomQuote | ConvertTo-Json -Depth 20) -TimeoutSec 10
+        $roomQuote = Invoke-RestMethod -Uri "$roomBase/quotation/room-layout" -Method Post -ContentType "application/json" -Body (@{revision=$roomQuote.revision;layout="rooms"} | ConvertTo-Json) -TimeoutSec 10
+        if ($roomQuote.lines.Count -ne 2 -or $roomQuote.lines[0].room -ne "Room 2" -or [decimal]$roomQuote.lines[0].quantity -ne 2 -or [decimal]$roomQuote.lines[1].quantity -ne 3 -or $roomQuote.partner.totals.RUB.total -ne "450.00") { throw "Packaged room distribution lost quantity, room, price or discount" }
+        $roomQuote = Invoke-RestMethod -Uri "$roomBase/quotation/room-layout" -Method Post -ContentType "application/json" -Body (@{revision=$roomQuote.revision;layout="combined"} | ConvertTo-Json) -TimeoutSec 10
+        if ($roomQuote.lines.Count -ne 1 -or $roomQuote.lines[0].room -ne "" -or [decimal]$roomQuote.lines[0].quantity -ne 5 -or $roomQuote.partner.totals.RUB.total -ne "450.00") { throw "Packaged CP rooms did not combine without changing commercial terms" }
         $wordPath = Join-Path $workDirectory "quotation-smoke.docx"
         & $PythonBinary -c 'import sys; from docx import Document; d=Document(); t=d.add_table(rows=1,cols=3); [setattr(c,"text",v) for c,v in zip(t.rows[0].cells,["Name","Price","Quantity"])]; [setattr(c,"text",v) for c,v in zip(t.add_row().cells,["Imported lamp","25.00","3"])]; d.save(sys.argv[1])' $wordPath
         $wordResult = Invoke-RestMethod -Uri "$quoteUrl/import-file" -Method Post -Form @{file=(Get-Item $wordPath)} -TimeoutSec 20

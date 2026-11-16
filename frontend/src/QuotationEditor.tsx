@@ -22,7 +22,7 @@ type Line = {
 type Prices = {lines:(Line & {total:string;base_total:string;discount_amount:string;effective_discount:string})[];
   totals:Record<string,{base:string;discount:string;total:string}>};
 type Quote = {
-  revision:number; number:string; date:string; title:string; seller:string; customer:string;
+  revision:number; room_layout?:'combined'|'rooms'|'legacy'; number:string; date:string; title:string; seller:string; customer:string;
   contact:string; terms:string; global_discount:string; lines:Line[];
   city:string;phone:string;email:string;website:string;address:string;slogan:string;valid_days:number;
   tax_note:string;logo:string;benefits:{title:string;text:string}[];
@@ -214,6 +214,10 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     if(!dirty)return doc;
     const saved=await api<Quote>(base,"PUT",doc);apply(saved);return saved;
   }
+  async function setRoomLayout(layout:'combined'|'rooms'){
+    if(standalone)return;
+    await work(async()=>{const saved=await saveCurrent();apply(await api<Quote>(base+'/room-layout','POST',{revision:saved.revision,layout}));setRoomFilter(null);setLineQuery('');setLinePage(0);setMessage(layout==='rooms'?'Светильники и электроустановки распределены по помещениям плана.':'Одинаковые позиции объединены в общее КП.');});
+  }
   async function bind(lineId:string,productId:string) {
     await work(async()=>{
       const saved=await saveCurrent();
@@ -237,7 +241,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       const current=docRef.current;if(!current?.lines.length)throw Error('Добавьте позиции для выгрузки в Word');
       const issues=current.lines.flatMap((line,index)=>{const issue=decimalIssue(line.quantity,.001,1000000,3,true);return issue?['Строка КП № '+(index+1)+' — Количество: '+issue]:[];});
       if(issues.length)throw Error(issues.slice(0,50).join('; '));
-      const payload={number:current.number,lines:current.lines.map(({id,name,manufacturer,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override})=>({id,name,manufacturer,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override}))};
+      const payload={number:current.number,room_layout:current.room_layout,lines:current.lines.map(({id,name,manufacturer,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override})=>({id,name,manufacturer,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override}))};
       const response=await apiFetch('/api'+base+'/sku.docx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');
       link.href=url;link.download='SKU-КП-'+(current.number||'без-номера').replace(/[^a-zа-яё0-9_-]/gi,'-')+'.docx';
@@ -281,6 +285,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     {id:'load',label:'Загрузить сохранённое',icon:'refresh',actionLabel:'Загрузить сохранённое КП',disabled:busy,command:()=>void work(async()=>{if(dirty&&!confirm('Отменить несохранённые правки и загрузить сохранённое КП?'))return;await load();})},
     {id:'import',label:'Импорт из файла',icon:'import',actionLabel:'Импорт из PDF / Excel / Word',disabled:busy,command:()=>importInput.current?.click()},
     {id:'sync',label:'Обновить из расчёта',icon:'refresh',actionLabel:'Обновить из расчёта',disabled:busy||standalone,command:()=>void work(async()=>{if(doc.lines.length&&!confirm('Обновить позиции из расчёта? Ручные правки, количество и скидки сохранятся. Удалённые на плане позиции уйдут из КП.'))return;const saved=await saveCurrent();apply(await api<Quote>(base+'/import','POST',{revision:saved.revision}));setMessage('Позиции обновлены из расчёта');})},
+    {id:'rooms',label:'Распределить по помещениям',icon:'room',actionLabel:'Распределить по помещениям',disabled:busy||standalone,command:()=>void setRoomLayout('rooms')},
     {id:'sku',label:'Сделать SKU',icon:'sku',actionLabel:'Сделать SKU — Word без цен',disabled:busy||!doc.lines.length,command:()=>void downloadSku()},
     {id:'client',label:'PDF клиенту',icon:'pdf',actionLabel:'PDF для клиента — без скидок',disabled:busy||!doc.lines.length,command:()=>void download('client')},
     {id:'partner',label:'PDF партнёру',icon:'pdf',actionLabel:'PDF для партнёра — со скидками',disabled:busy||!doc.lines.length,command:()=>void download('partner')},
@@ -317,6 +322,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       </fieldset>
       <p className="hint">Пустая скидка строки использует общую. Индивидуальная скидка, включая 0%, заменяет общую. В клиентском PDF все скидки отключены.</p>
       {unpriced>0 && <p className="warning">Позиций без цены: {unpriced}. Выберите товар или укажите цену перед отправкой КП.</p>}
+      {quoteTool==='positions'&&!standalone&&<div className="quotation-room-actions"><ToolButton icon="room" disabled={busy} onClick={()=>void setRoomLayout('rooms')}>Распределить по помещениям</ToolButton>{doc.room_layout!=='combined'&&<ToolButton icon="layers" disabled={busy} onClick={()=>void setRoomLayout('combined')}>Объединить помещения</ToolButton>}<small>{doc.room_layout==='combined'?'Общее КП':doc.room_layout==='rooms'?'По помещениям плана':'Сохранённая разбивка по помещениям'}</small></div>}
       {quoteTool==='positions'&&<div className="quotation-position-tools"><label className="quotation-line-search">Поиск в позициях<input type="search" aria-label="Поиск позиций КП" placeholder="Название, артикул, бренд, помещение, комментарий…" value={lineQuery} onChange={event=>{setLineQuery(event.target.value);setLinePage(0);}}/></label>
         <label className="quotation-group-filter">Группа / помещение<SearchSelect aria-label="Группа позиций КП" value={roomFilter===null?'all':roomFilter===''?'none':'group:'+roomFilter} onChange={event=>{setEditingLineId(null);const value=event.target.value;setRoomFilter(value==='all'?null:value==='none'?'':value.slice(6));setLinePage(0);}}><option value="all">Все помещения</option><option value="none">Без помещения</option>{roomChoices.map(room=><option value={'group:'+room} key={room}>{room}</option>)}</SearchSelect></label>
         <ToolButton icon="layers" disabled={busy||!grouped} onClick={groupLines}>Сгруппировать</ToolButton>

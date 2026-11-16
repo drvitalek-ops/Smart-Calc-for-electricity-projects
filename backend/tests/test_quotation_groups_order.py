@@ -37,7 +37,8 @@ def test_plan_refresh_preserves_manual_room_comment_and_interleaved_order(client
     a=checked(client.post(f'/api/projects/{pid}/elements',json=body))
     room=checked(client.post(f'/api/projects/{pid}/rooms',json={'name':'Вторая комната'}))
     b=checked(client.post(f'/api/projects/{pid}/elements',json={**body,'room_id':room['id'],'x':.7}))
-    path=f'/api/projects/{pid}/quotation';doc=checked(client.get(path))
+    path=f'/api/projects/{pid}/quotation';doc=checked(client.get(path));doc['room_layout']='legacy'
+    doc=checked(client.put(path,json=doc));doc=checked(client.post(path+'/import',json={'revision':doc['revision']}))
     first=next(line for line in doc['lines'] if a['id'] in line['source_ids'])
     second=next(line for line in doc['lines'] if b['id'] in line['source_ids'])
     second.update(room='Спальня заказчика',comment='Оставить запас кабеля',overrides=['room'])
@@ -64,7 +65,8 @@ def test_comments_survive_calculated_row_split_and_merge(client):
     pid,body=setup(client)
     a=checked(client.post(f'/api/projects/{pid}/elements',json=body))
     b=checked(client.post(f'/api/projects/{pid}/elements',json={**body,'x':.7}))
-    path=f'/api/projects/{pid}/quotation';doc=checked(client.get(path))
+    path=f'/api/projects/{pid}/quotation';doc=checked(client.get(path));doc['room_layout']='legacy'
+    doc=checked(client.put(path,json=doc));doc=checked(client.post(path+'/import',json={'revision':doc['revision']}))
     assert len(doc['lines'])==1
     doc['lines'][0]['comment']='Общий комментарий'
     saved=checked(client.put(path,json=doc))

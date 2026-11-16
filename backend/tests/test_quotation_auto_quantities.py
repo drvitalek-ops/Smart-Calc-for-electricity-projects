@@ -167,7 +167,8 @@ def test_manual_cp_row_removal_is_not_reversed_by_quantity_updates(client):
     ok(client.post(f'/api/projects/{pid}/elements',json=body))
     room=ok(client.post(f'/api/projects/{pid}/rooms',json={'name':'Другая'}))
     ok(client.post(f'/api/projects/{pid}/elements',json={**body,'room_id':room['id'],'x':.8}))
-    path=f'/api/projects/{pid}/quotation';quote=ok(client.get(path))
+    path=f'/api/projects/{pid}/quotation';quote=ok(client.get(path));quote['room_layout']='legacy'
+    quote=ok(client.put(path,json=quote));quote=ok(client.post(path+'/import',json={'revision':quote['revision']}))
     kept=quote['lines'][0];quote['lines']=[kept]
     saved=ok(client.put(path,json=quote))
     assert saved['lines']==ok(client.get(path))['lines'] and len(saved['lines'])==1

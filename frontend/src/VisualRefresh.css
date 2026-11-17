@@ -190,6 +190,7 @@
 .app-shell .quote-workspace .quotation-table .manual-quantity+small{margin-top:0;line-height:12px}
 .app-shell .quote-workspace .quotation-table td>input,.app-shell .quote-workspace .quotation-table td>select{display:block;height:28px;box-sizing:border-box}
 .app-shell .search-input-arrow{min-width:24px;min-height:24px}
+.app-shell .quotation-row-meta .search-input-arrow{top:50%;right:2px;transform:translateY(-50%)}
 .app-shell .header-actions .restore-project{position:relative}
 .app-shell .header-actions .restore-project>input{display:block;position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
 .app-shell .header-actions .restore-project:focus-within{outline:2px solid #8be1cb;outline-offset:2px}

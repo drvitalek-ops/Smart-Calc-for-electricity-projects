@@ -16,7 +16,7 @@ export default function CategoryEditor({categories,onChanged,onDirtyChange,onBus
       <label>Название категории<input required aria-label="Название категории" maxLength={200} value={form.name} onChange={event=>setForm({...form,name:event.target.value})}/></label>
       <label>Описание категории<textarea aria-label="Описание категории" maxLength={1000} value={form.description} onChange={event=>setForm({...form,description:event.target.value})}/></label>
       <button disabled={busy}>{form.id?'Сохранить категорию':'Добавить категорию'}</button>{form.id>0&&<button type="button" onClick={()=>setForm({id:0,name:'',description:''})}>Отменить</button>}
-    </form><div className="nomenclature-rows">{categories.map(category=><article key={category.name}><div><strong>{category.name}</strong><small>{category.description} · Позиций: {category.positions}{category.system?' · Системная':''}</small></div>
+    </form><div className="nomenclature-rows" tabIndex={0} role="region" aria-label="Список категорий">{categories.map(category=><article key={category.name}><div><strong>{category.name}</strong><small>{category.description} · Позиций: {category.positions}{category.system?' · Системная':''}</small></div>
       {category.id&&!category.system&&<><button disabled={busy} aria-label={'Редактировать категорию '+category.name} onClick={()=>setForm({id:category.id!,name:category.name,description:category.description})}>Редактировать</button>
         {!category.positions&&<button disabled={busy} aria-label={'Удалить категорию '+category.name} onClick={()=>void save('DELETE',category.id!)}>Удалить</button>}</>}
     </article>)}</div></div>

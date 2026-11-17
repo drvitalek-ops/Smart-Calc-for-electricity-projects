@@ -1,0 +1,72 @@
+/* Desktop audit A01–A10: preserve the compact canvas and the approved PDF. */
+:root{--muted:#526874;--accent:#147d6d;--error:#a52d35;--label:#4c626f}
+label{color:var(--label)}
+.decimal-field{display:grid;min-width:0;width:100%;gap:3px}
+.field-error{display:block;color:var(--error)!important;font-size:11px!important;line-height:1.35;overflow-wrap:anywhere}
+input[aria-invalid=true]{border-color:var(--error)!important;background:#fff8f8}
+.quote-workspace.quotation-editor{display:grid;grid-template-columns:56px minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}
+.quote-workspace>.tool-rail-slot{grid-column:1;grid-row:1/-1}
+.quote-workspace>.quotation-content{grid-column:2;grid-row:1;margin-bottom:0;padding:10px 14px 16px}
+.quote-workspace>.quotation-content[data-tool=positions]{display:flex;flex-direction:column;overflow:hidden;padding-bottom:0}
+.quote-workspace .quotation-content[data-tool=positions]>*{flex-shrink:0}
+.quote-workspace .quotation-content[data-tool=positions]>.quotation-heading{margin-bottom:4px}
+.quote-workspace .quotation-heading .quotation-status{font-size:11px;margin:0;color:#4c665d}
+.quote-workspace .quotation-heading p{max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.quote-workspace .quotation-totals{margin:4px 0;gap:8px}
+.quote-workspace .quotation-totals article{padding:5px 10px;min-height:38px;gap:8px}
+.quote-workspace .quotation-totals strong{font-size:18px}
+.quote-workspace .quotation-position-tools{margin:5px 0;gap:7px}
+.quote-workspace .quotation-room-actions{margin:4px 0}
+.quote-workspace .quotation-content[data-tool=positions]>.quotation-positions-body{flex:1;display:flex;min-height:0;flex-direction:column}
+.quote-workspace .quotation-positions-body>.quotation-table-wrap{flex:1;min-height:0;max-height:none;overflow:auto;scroll-padding-top:34px;scroll-padding-bottom:10px}
+.quote-workspace .quotation-pagination{flex-shrink:0;padding:5px 2px;gap:8px;min-height:36px}
+.quote-workspace>.quotation-dock{position:static;grid-column:2;grid-row:2;margin:7px 12px 8px;padding:7px 9px;backdrop-filter:none;min-width:0;box-shadow:0 2px 8px #16372c12}
+.quote-workspace .quotation-table .manual-quantity,.quote-workspace .quotation-table .manual-quantity+small,.quote-workspace .quotation-table td>small{font-size:11px}
+.quote-error-summary{max-height:132px;overflow:auto;flex-shrink:0;padding:8px 10px;margin:4px 0;border:1px solid #d39398;border-radius:6px;background:#fff2f2;color:var(--error);scroll-margin:8px}
+.quote-error-summary ul{margin:4px 0;padding-left:18px}.quote-error-summary button{border:0;background:transparent;text-align:left;color:inherit;font-size:12px;min-height:26px;padding:3px 4px;text-decoration:underline;text-underline-offset:2px}
+.quote-error-summary p{margin:4px 0}.quotation-content:not([data-tool=positions])>.quote-error-summary{position:sticky;top:0;z-index:8}
+.quotation-help{align-self:flex-end;position:relative;font-size:11px;margin:0 0 3px}.quotation-help>summary{cursor:pointer;color:#3f5e6c}.quotation-help>div{position:absolute;z-index:40;right:0;top:100%;width:min(390px,80vw);padding:12px;border:1px solid #b7cec9;border-radius:8px;background:white;box-shadow:0 8px 25px #19374625;font-size:12px;line-height:1.5}
+.quotation-export-check{position:relative;margin:3px 0;padding:5px 8px;min-width:0}
+.quote-check-panel{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:35;max-height:min(400px,55vh);overflow:auto;padding:9px;background:#fffaf0;border:1px solid #d5b26e;border-radius:7px;box-shadow:0 8px 24px #17313c25}
+.quote-check-filters,.quote-check-panel nav{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.quote-check-panel nav{justify-content:space-between}.quote-check-panel nav>span{font-size:11px}.quote-check-panel button{min-height:28px;padding:4px 8px;font-size:11px}.quote-check-panel ul{max-height:220px;margin:6px 0}.quote-check-panel li button{width:100%;overflow-wrap:anywhere}.quote-check-filters [aria-pressed=true]{background:#f4e2b9;color:#61470f}
+.catalog-admin{margin:8px 0 12px;border:1px solid #d6e3df;border-radius:7px;padding:8px 10px}.catalog-admin>summary{cursor:pointer;color:#365f54;font-size:12px;font-weight:600}.catalog-admin[open]>.catalog-grid{margin-top:12px}.catalog-admin .catalog-import{margin-bottom:0}
+.layer-tree .layer{gap:2px;align-items:center}.layer-tree .layer>button{min-width:26px;min-height:28px;padding:4px}.layer-tree .layer-title{flex:1;min-width:0!important}.layer-tree .layer-expand{width:24px;min-width:24px}.layer-tree .layer-export{width:26px;min-width:26px;height:28px;margin:0;display:flex;align-items:center;justify-content:center;cursor:pointer}.layer-tree .layer-export>input{width:14px;height:14px;margin:0}.layer-tree .layer-title>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-panel[data-active-tool=list] [data-tool-section=list]{display:block}
+.plan-object-list ul{list-style:none;padding:0;margin:8px 0}.plan-object-list li>button{width:100%;display:grid;gap:4px;text-align:left;margin:4px 0;padding:7px 8px;background:white;font-size:12px}.plan-object-list li>button>strong{overflow-wrap:anywhere}.plan-object-list li small{font-size:11px;color:var(--muted)}.plan-object-list nav{display:flex;align-items:center;justify-content:space-between;gap:5px;font-size:11px}.plan-object-list nav button{font-size:11px;padding:5px}
+.toolbar button,.toolbar .tool-link{display:inline-flex;align-items:center;justify-content:center;gap:5px}.toolbar button>svg,.toolbar .tool-link>svg{width:15px;height:15px;flex-shrink:0}
+@media(max-width:1250px){.quote-workspace .quotation-heading p{max-width:210px}.quote-workspace .quotation-heading>div:first-child{gap:7px}.quote-workspace .quotation-heading .quotation-status{flex-basis:100%}.quote-workspace .quotation-heading h2{font-size:16px}.quote-workspace .quotation-switch .search-select{width:180px}.toolbar>div{gap:4px}.toolbar button:has(>svg),.toolbar .tool-link{min-width:30px;min-height:30px;padding:5px}.toolbar button:has(>svg)>span,.toolbar .tool-link>span{display:none}.toolbar .symbol-scale{gap:4px;font-size:11px}.toolbar .symbol-scale input{width:65px}.toolbar>strong{font-size:11px;line-height:1.35}.toolbar{gap:5px;padding:6px 9px}}
+@media(max-width:800px){.quote-workspace>.quotation-dock{margin:5px 6px;padding:5px;gap:4px}.quote-workspace>.quotation-content{padding:8px}.quote-workspace .quotation-position-tools .quotation-line-search{flex-basis:180px}}
+@media print{.quotation-help,.quote-error-summary,.quote-check-panel{display:none!important}}
+/* Give the table the first screen, with details available on demand. */
+.quote-workspace .quotation-heading{min-height:34px;margin:0!important;gap:7px}
+.quote-workspace .quotation-heading h2{font-size:16px!important}
+.quote-workspace .quotation-heading>.quotation-switch{gap:10px}
+.quote-workspace .quotation-heading .quotation-status{font-size:11px;flex-basis:auto}
+.quote-workspace .quotation-help{align-self:auto;margin:0;white-space:nowrap}
+.quote-overview{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;margin:3px 0}
+.quote-workspace .quote-overview .quotation-totals{margin:0;gap:7px}
+.quote-workspace .quote-overview article{min-height:34px;padding:4px 8px;flex-wrap:nowrap}
+.quote-workspace .quote-overview article>small{font-size:11px;white-space:nowrap}
+.quote-workspace .quote-overview article>strong{font-size:17px;white-space:nowrap}
+.quote-workspace .quotation-content[data-tool=positions] .quote-overview article>.quote-discount-summary{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.quote-workspace .quote-overview .quotation-export-check{margin:0;max-width:330px}
+.quote-workspace .quote-overview .quotation-export-check>summary{font-size:11px;line-height:1.4}
+.quote-workspace .quote-overview .quote-check-panel{left:auto;width:min(650px,80vw);right:0}
+.quote-workspace .quotation-position-tools{flex-wrap:nowrap;margin:4px 0;gap:7px}
+.quote-workspace .quotation-position-tools .quotation-line-search{flex:1 1 160px;min-width:150px}
+.quote-workspace .quotation-position-tools .quotation-group-filter{width:140px;flex-shrink:0}
+.quote-workspace .quotation-position-tools>label:last-child{width:100px}
+.quote-workspace .quotation-room-actions{margin:0;gap:5px;flex-shrink:0}
+.quote-workspace .quotation-room-actions small{display:none}
+.quote-workspace .quotation-room-actions button{font-size:11px;padding:4px 6px}
+.quote-workspace .quotation-table td{padding-top:3px;padding-bottom:3px}
+.quote-workspace .quotation-line-name{margin-bottom:3px}
+.quote-workspace .quotation-name-input{height:26px}
+.quote-workspace .quotation-table .manual-quantity{margin:2px 0;line-height:14px}
+.quote-workspace .quotation-table td>small,.quote-workspace .quotation-table .manual-quantity+small{margin-top:2px;line-height:14px}
+@media(max-width:1250px){.quote-workspace .quotation-heading p{max-width:170px}.quote-workspace .quote-overview .quotation-export-check{max-width:220px}.quote-workspace .quotation-room-actions button{font-size:0;min-width:30px;gap:0}.quote-workspace .quotation-room-actions button>svg{width:17px;height:17px}.quote-workspace .quotation-position-tools>button{font-size:0;gap:0;min-width:31px}.quote-workspace .quotation-position-tools>button>svg{width:17px;height:17px}}
+
+.quote-workspace .quotation-totals article:nth-child(2)>small{color:#b8d2c5}
+
+.quote-workspace .quotation-content[data-tool=positions] .quote-overview{margin:0}
+.quote-workspace .quotation-position-tools{margin:2px 0}

@@ -11,11 +11,11 @@ export default function LayerTree({layers,groups,active,busy,savingGroups,onSele
     return <section className="layer-tree-item" key={layer.id}>
       <div className={'layer '+(layer.id===active?'active':'')}>
         <button className="layer-expand" type="button" aria-label={'Группы слоя '+layer.name} aria-expanded={expanded.has(layer.id)} onClick={()=>expand(layer.id,true)}><svg viewBox="0 0 16 16" aria-hidden="true"><path d={expanded.has(layer.id)?'m3 5 5 5 5-5':'m5 3 5 5-5 5'} fill="none" stroke="currentColor" strokeWidth="1.5"/></svg></button>
-        <button className="layer-title" aria-label={"Выбрать слой "+layer.name} onClick={()=>{onSelect(layer.id);expand(layer.id);}}><span>{layer.name}</span></button>
+        <button className="layer-title" title={layer.name} aria-label={"Выбрать слой "+layer.name} onClick={()=>{onSelect(layer.id);expand(layer.id);}}><span>{layer.name}</span></button>
         <ToolButton icon="edit" aria-label={'Переименовать слой '+layer.name} title="Переименовать слой" disabled={busy} onClick={()=>onRename(layer)}/>
         <button title="Видимость" aria-label={(layer.visible?'Скрыть слой ':'Показать слой ')+layer.name} disabled={busy} onClick={()=>onToggle(layer,'visible')}><ActionIcon name={layer.visible?'eye':'eyeOff'}/></button>
-        <button title="Блокировка" disabled={busy} onClick={()=>onToggle(layer,'locked')}><ActionIcon name={layer.locked?'lock':'unlock'}/></button>
-        <input aria-label={'Экспорт '+layer.name} title="Включение в ведомость" type="checkbox" checked={layer.export} disabled={busy} onChange={()=>onToggle(layer,'export')}/>
+        <button title="Блокировка" aria-label={(layer.locked?'Разблокировать слой ':'Заблокировать слой ')+layer.name} disabled={busy} onClick={()=>onToggle(layer,'locked')}><ActionIcon name={layer.locked?'lock':'unlock'}/></button>
+        <label className="layer-export" title="Включение в ведомость"><input aria-label={'Экспорт '+layer.name} title="Включение в ведомость" type="checkbox" checked={layer.export} disabled={busy} onChange={()=>onToggle(layer,'export')}/></label>
       </div>
       {expanded.has(layer.id)&&<div className="layer-groups" role="group" aria-label={'Видимость групп: '+layer.name}>
         <div className="layer-group-actions"><button type="button" disabled={disabled||shown===entries.length} onClick={()=>onGroups(layer,[])}>Показать все</button><button type="button" disabled={disabled||shown===0} onClick={()=>onGroups(layer,[...new Set([...hidden,...entries.map(group=>group.key)])])}>Скрыть все</button></div>

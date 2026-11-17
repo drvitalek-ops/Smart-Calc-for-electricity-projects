@@ -1,3 +1,5 @@
+import QuotePreflight from "./QuotePreflight";
+import {quoteNumberIssues,type QuoteNumberIssue} from "./quotationValidation";
 import {priceIdentity,priceConflicts,exportIssues,exportAlarm} from "./quotationPrices";
 import DecimalInput,{decimalIssue,decimalValue} from "./DecimalInput";
 import {api,apiFetch,errorMessage} from "./errors";
@@ -44,18 +46,7 @@ const newLine=():Line=>({id:crypto.randomUUID(),source_key:"",source_ids:[],type
 
 function pricePayload(quote:Quote|null){return {global_discount:quote?.global_discount??'0',lines:quote?.lines.map(line=>({id:line.id,quantity:line.quantity,unit_price:line.unit_price,currency:line.currency,discount:line.discount}))??[]};}
 function priceRequest(quote:Quote|null){const payload=pricePayload(quote);payload.lines.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);return JSON.stringify(payload);}
-function numberError(quote:Quote|null):string{
- if(!quote)return '';
- const issues:string[]=[];
- const global=decimalIssue(quote.global_discount,0,100,2);
- if(global)issues.push('Общая скидка: '+global);
- quote.lines.forEach((line,index)=>{
-  const checks:[string,unknown,number,number,number,boolean?][]=[['Количество',line.quantity,.001,1000000,3,true],['Цена за единицу',line.unit_price,0,1000000000,2]];
-  if(line.discount!==null&&line.discount!=='')checks.push(['Скидка',line.discount,0,100,2]);
-  for(const [label,value,min,max,places,positive] of checks){const issue=decimalIssue(value,min,max,places,positive);if(issue)issues.push('Строка КП № '+(index+1)+' — '+label+': '+issue);}
- });
- return issues.slice(0,50).join('; ');
-}
+function numberError(quote:Quote|null){return quoteNumberIssues(quote).slice(0,50).map(issue=>issue.label+': '+issue.message).join('; ');}
 type Calculated=Pick<Quote,'client'|'partner'>;
 
 export default function QuotationEditor({projectId,quotationId,projectName,rooms=[],types,onChanged,onDirtyChange,onBusyChange,onBrowse,onAttached}:Props) {
@@ -117,7 +108,10 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const insertionAnchor=visibleLines.find(item=>item.line.id===activeLineId)??visibleLines.at(-1);
   const filteredProducts=useMemo(()=>catalogue.products.filter(product=>product.active&&matchesSearch([product.name,product.sku,product.manufacturer].join(' '),productSearch)),[catalogue.products,productSearch]);
   const docRef=useRef<Quote|null>(doc);docRef.current=doc;
-  const numericError=useMemo(()=>numberError(doc),[doc]);
+  const numericError=useMemo(()=>numberError(doc),[doc]),validationIssues=useMemo(()=>quoteNumberIssues(doc),[doc]);
+  const errorSummary=useRef<HTMLDivElement>(null),focusError=useRef(false);
+  const productInitial=useRef('');
+  useEffect(()=>{if(!busy&&focusError.current){focusError.current=false;errorSummary.current?.focus();}},[busy,error]);
   const calculationBody=useMemo(()=>priceRequest(doc),[doc]),calculatedKey=useRef('');
   const history=useRef<Quote[]>([]),future=useRef<Quote[]>([]),lastChange=useRef(0);
   const standalone=quotationId!==undefined;
@@ -229,9 +223,27 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     api<Catalogue>('/catalog','GET',undefined,controller.signal).then(value=>{if(!controller.signal.aborted)setCatalogue(value);}).catch(error=>{if(!controller.signal.aborted)setError(errorMessage(error,'Не удалось обновить каталог'));});
     return()=>controller.abort();
   },[types]);
+  function jumpToLine(id:string,index:number,field?:QuoteNumberIssue['field']){
+    chooseQuoteTool('positions');setLineQuery('');setRoomFilter(null);setEditingLineId(null);setLinePage(Math.floor(index/linePageSize));setActiveLineId(id);
+    if(!field)expandRow(id);
+    requestAnimationFrame(()=>{const row=document.querySelector<HTMLElement>(`[data-quote-line="${CSS.escape(id)}"]`),prefix=field==='quantity'?'Количество строки ':field==='unit_price'?'Цена строки ':field==='discount'?'Скидка строки ':'';row?.scrollIntoView({block:'nearest'});const control=prefix?row?.querySelector<HTMLInputElement>(`[aria-label^="${prefix}"]`):row?.querySelector<HTMLInputElement>('.quotation-name-input');control?.focus({preventScroll:true});});
+  }
+  function jumpToError(issue:QuoteNumberIssue){
+    if(issue.id!==undefined&&issue.index!==undefined)jumpToLine(issue.id,issue.index,issue.field);
+    else {chooseQuoteTool('details');requestAnimationFrame(()=>document.querySelector<HTMLInputElement>('[aria-label="Общая скидка КП"]')?.focus());}
+  }
+  function openNewProduct(line:Line){
+    const draft={lineId:line.id,name:line.name,manufacturer:line.manufacturer,sku:line.sku,typeId:line.type_id?String(line.type_id):"",price:line.unit_price,currency:line.currency,image:line.image};
+    productInitial.current=JSON.stringify(draft);setError('');setNewProduct(draft);
+  }
+  function closeNewProduct(){
+    if(busy)return;
+    if(newProduct&&JSON.stringify(newProduct)!==productInitial.current&&!confirm('Закрыть форму нового товара без сохранения? Нажмите «Отмена», чтобы продолжить редактирование.'))return;
+    setNewProduct(null);setError('');
+  }
   async function saveCurrent():Promise<Quote> {
     if(!doc)throw Error("КП ещё не загружено");
-    const issue=numberError(doc);if(issue)throw Error(issue);
+    const issue=numberError(doc);if(issue){focusError.current=true;throw Error(issue);}
     if(!dirty)return doc;
     const saved=await api<Quote>(base,"PUT",doc);apply(saved);return saved;
   }
@@ -263,7 +275,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     await work(async()=>{
       const current=docRef.current;if(!current?.lines.length)throw Error('Добавьте позиции для выгрузки в Word');
       const issues=current.lines.flatMap((line,index)=>{const issue=decimalIssue(line.quantity,.001,1000000,3,true);return issue?['Строка КП № '+(index+1)+' — Количество: '+issue]:[];});
-      if(issues.length)throw Error(issues.slice(0,50).join('; '));
+      if(issues.length){focusError.current=true;throw Error(issues.slice(0,50).join('; '));}
       const payload={number:current.number,room_layout:current.room_layout,lines:current.lines.map(({id,name,manufacturer,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override})=>({id,name,manufacturer,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override}))};
       const response=await apiFetch('/api'+base+'/sku.docx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');
@@ -293,7 +305,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const visiblePrices=calculated[mode];
   const rowPrices=new Map(visiblePrices.lines.map(line=>[line.id,line]));
   const issues=exportIssues(doc.lines),conflicts=priceConflicts(doc.lines);
-  const unpriced=issues.filter(item=>item.missing.includes('цена')).length;
+
   const productOptions=(line:Line)=>{
     const options=(line.source_ids.length&&line.type_id!==null?productPickers.byType.get(line.unit+':'+line.type_id):productPickers.byUnit.get(line.unit))??[{value:'',label:'Без привязки к товару'}];
     const selected=line.product_id?productPickers.byId.get(line.product_id):null;
@@ -319,22 +331,25 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   return <section className="quotation-editor quote-workspace" aria-label="Редактор коммерческого предложения">
     <ToolRail label="Инструменты коммерческого предложения" active={quoteTool} onSelect={chooseQuoteTool} items={tools}/>
     <div className="quotation-content" data-tool={quoteTool}>
-    <div className="quotation-heading"><div><div className="eyebrow">КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div><h2>КП № {doc.number}</h2><p>{projectName} · {tools.find(tool=>tool.id===quoteTool)?.label}</p></div><div className="quotation-switch">
+    <div className="quotation-heading"><div><div className="eyebrow">КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div><h2>КП № {doc.number}</h2><p>{projectName} · {tools.find(tool=>tool.id===quoteTool)?.label}</p><div className="quotation-status" role="status">{busy ? "Сохранение…" : dirty ? "Есть несохранённые изменения" : "КП сохранено"}{calculating ? " · Пересчёт итогов…" : ""}</div></div><div className="quotation-switch">
       <label>Цены<SearchSelect aria-label="Цены предпросмотра КП" value={mode} onChange={event=>setMode(event.target.value as "client"|"partner")}><option value="partner">Партнёр — со скидками</option><option value="client">Клиент — без скидок</option></SearchSelect></label>
+    <details className="quotation-help"><summary>Справка по КП</summary><div><p>Количество связанных позиций обновляется из плана при открытии, сохранении и экспорте. «Вручную» сохраняет заданное вами количество.</p><p>Пустая скидка строки использует общую. Индивидуальная скидка, включая 0%, заменяет общую. В клиентском PDF скидки отключены.</p><p>Ctrl+Z — отмена правки. Ctrl+↑/↓ на маркере строки — перемещение позиции.</p></div></details>
     </div></div>
+
     <input ref={importInput} hidden type="file" aria-label="Файл внешнего КП" accept=".pdf,.xlsx,.xls,.xlsm,.docx,.csv" disabled={busy} onChange={event=>{void importFile(event.target.files?.[0]);event.target.value='';}}/>
-    {!newProduct && !imported && !attachOpen && error && <p className="catalog-error" role="alert">{error}</p>}
+    {!newProduct&&!imported&&!attachOpen&&error&&<div className="quote-error-summary catalog-error" role="alert" tabIndex={-1} ref={errorSummary}><strong>Не удалось завершить действие</strong>{validationIssues.length?<ul>{validationIssues.map(issue=><li key={(issue.id??'global')+issue.field}><button type="button" onClick={()=>jumpToError(issue)}>{issue.label}: {issue.message}</button></li>)}</ul>:<p>{error}</p>}</div>}
     {message && <p className="catalog-success" role="status">{message}</p>}
-    {issues.length>0&&<details className="quotation-export-check"><summary>Перед PDF проверьте КП: без цены — {unpriced}, без фото — {issues.filter(item=>item.missing.includes('фото')).length}, без артикула — {issues.filter(item=>item.missing.includes('артикул')).length}</summary><ul>{issues.slice(0,50).map(item=><li key={item.id}><button type="button" onClick={()=>{chooseQuoteTool('positions');setRoomFilter(null);setLineQuery('');setLinePage(Math.floor(item.index/linePageSize));setActiveLineId(item.id);expandRow(item.id);requestAnimationFrame(()=>document.querySelector(`[data-quote-line="${CSS.escape(item.id)}"]`)?.scrollIntoView({block:'center'}));}}>№ {item.index+1} · {item.name} — {item.missing.join(', ')}</button></li>)}</ul>{issues.length>50&&<small>Показаны первые 50 из {issues.length} незаполненных позиций.</small>}</details>}
     {conflicts.length>0&&<p className="warning" role="alert">Для {conflicts.length} позиций найдены разные цены одинакового товара. Укажите нужную цену в общем КП — она применится ко всем его одинаковым позициям.</p>}
-    {!standalone&&doc.lines.some(line=>line.source_key)&&<p className="hint">Количество связанных позиций обновляется из плана при открытии, сохранении и экспорте КП. Галочка «Вручную» сохраняет заданное вами количество.</p>}
-    <div className="quotation-status" role="status">{busy ? "Сохранение…" : dirty ? "Есть несохранённые изменения" : "КП сохранено"}{calculating ? " · Пересчёт итогов…" : ""}</div>
+
+    <div className="quote-overview">
     <div className="quotation-totals">
-      {(["client","partner"] as const).map(target=><article key={target}><small>{target==="client" ? "Для клиента · без скидок" : "Для партнёра · со скидками"}</small>
+      {(["client","partner"] as const).map(target=><article key={target} title={(target==="client"?"Без скидок":"Со скидками")+Object.entries(calculated[target].totals).map(([code,total])=>" · Скидка: "+amount(total.discount,code)).join("")}><small>{target==="client" ? "Клиент" : "Партнёр"}</small>
         {!numericError&&Object.entries(calculated[target].totals).map(([code,total])=><strong key={code}>{amount(total.total,code)}</strong>)}
         {numericError&&<span>Проверьте числовые поля КП</span>}{!numericError&&!Object.keys(calculated[target].totals).length && <strong>0,00 ₽</strong>}
-        {!numericError&&target==="partner" && Object.entries(calculated.partner.totals).map(([code,total])=><span key={code}>Скидка: {amount(total.discount,code)}</span>)}
+        {!numericError&&target==="partner" && Object.entries(calculated.partner.totals).map(([code,total])=><span className="quote-discount-summary" key={code}>Скидка: {amount(total.discount,code)}</span>)}
       </article>)}
+    </div>
+    <QuotePreflight issues={issues} onSelect={item=>jumpToLine(item.id,item.index)}/>
     </div>
 
     {!preview ? <>
@@ -346,15 +361,16 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
         <label>Кому<input aria-label="Клиент КП" value={doc.customer} onChange={e=>change(q=>({...q,customer:e.target.value}))}/></label>
         <label>Контакт клиента<input aria-label="Контакт клиента КП" value={doc.contact} onChange={e=>change(q=>({...q,contact:e.target.value}))}/></label>
       </fieldset>
-      <p className="hint">Пустая скидка строки использует общую. Индивидуальная скидка, включая 0%, заменяет общую. В клиентском PDF все скидки отключены.</p>
-      {unpriced>0 && <p className="warning">Позиций без цены: {unpriced}. Выберите товар или укажите цену перед отправкой КП.</p>}
-      {quoteTool==='positions'&&!standalone&&<div className="quotation-room-actions"><ToolButton icon="room" disabled={busy} onClick={()=>void setRoomLayout('rooms')}>Распределить по помещениям</ToolButton>{doc.room_layout!=='combined'&&<ToolButton icon="layers" disabled={busy} onClick={()=>void setRoomLayout('combined')}>Объединить помещения</ToolButton>}<small>{doc.room_layout==='combined'?'Общее КП':doc.room_layout==='rooms'?'По помещениям плана':'Сохранённая разбивка по помещениям'}</small></div>}
+
+
+
       {quoteTool==='positions'&&<div className="quotation-position-tools"><label className="quotation-line-search">Поиск в позициях<input type="search" aria-label="Поиск позиций КП" placeholder="Название, артикул, бренд, помещение, комментарий…" value={lineQuery} onChange={event=>{setLineQuery(event.target.value);setLinePage(0);}}/></label>
         <label className="quotation-group-filter">Группа / помещение<SearchSelect aria-label="Группа позиций КП" value={roomFilter===null?'all':roomFilter===''?'none':'group:'+roomFilter} onChange={event=>{setEditingLineId(null);const value=event.target.value;setRoomFilter(value==='all'?null:value==='none'?'':value.slice(6));setLinePage(0);}}><option value="all">Все помещения</option><option value="none">Без помещения</option>{roomChoices.map(room=><option value={'group:'+room} key={room}>{room}</option>)}</SearchSelect></label>
         <ToolButton icon="layers" disabled={busy||!grouped} onClick={groupLines}>Сгруппировать</ToolButton>
+        {quoteTool==='positions'&&!standalone&&<div className="quotation-room-actions"><ToolButton icon="room" disabled={busy} onClick={()=>void setRoomLayout('rooms')}>Распределить по помещениям</ToolButton>{doc.room_layout!=='combined'&&<ToolButton icon="layers" disabled={busy} onClick={()=>void setRoomLayout('combined')}>Объединить помещения</ToolButton>}<small>{doc.room_layout==='combined'?'Общее КП':doc.room_layout==='rooms'?'По помещениям плана':'Сохранённая разбивка по помещениям'}</small></div>}
         <label>Строк на странице<SearchSelect aria-label="Строк на странице КП" value={linePageSize} onChange={event=>{setLinePageSize(Number(event.target.value));setLinePage(0);}}>{[25,50,100,200,500].map(size=><option key={size} value={size}>{size}</option>)}</SearchSelect></label>
       </div>}
-      {quoteTool==='positions'&&<>
+      {quoteTool==='positions'&&<div className="quotation-positions-body">
       <div ref={tableWrap} className="quotation-table-wrap"><table className="quotation-table"><thead><tr><th>Позиция / товар</th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Валюта</th><th>Скидка, %</th><th>Сумма</th><th></th></tr></thead>
         <tbody>{visibleLines.map(({line,index},visibleIndex)=>{
           const group=normalizeRoom(line.room),showGroup=grouped&&(visibleIndex===0||normalizeRoom(visibleLines[visibleIndex-1].line.room)!==group);
@@ -370,7 +386,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
             <details className="quotation-row-details" open={expandedRows.has(line.id)} onToggle={event=>{const open=event.currentTarget.open;if(open!==expandedRows.has(line.id))expandRow(line.id,open);}}><summary aria-label={"Свойства строки "+(index+1)} title="Товар, фото и свойства">Товар, фото и свойства{line.sku?' · '+line.sku:''}{line.source_ids.length?' · На плане: '+line.source_ids.length:''}</summary>
             {expandedRows.has(line.id)&&<>
             <SearchSelect aria-label={"Товар строки "+(index+1)} value={line.product_id??''} disabled={busy} dataOptions={productOptions(line)} onChange={event=>void bind(line.id,event.target.value)}/>
-            <div className="quotation-inline-actions"><button type="button" disabled={busy} onClick={()=>{setError("");setNewProduct({lineId:line.id,name:line.name,manufacturer:line.manufacturer,sku:line.sku,typeId:line.type_id?String(line.type_id):"",price:line.unit_price,currency:line.currency,image:line.image});}}>＋ Товар в базу</button>
+            <div className="quotation-inline-actions"><button type="button" disabled={busy} onClick={()=>openNewProduct(line)}>＋ Товар в базу</button>
               <ImageField label={"Фото строки "+(index+1)} value={line.image} disabled={busy} onChange={image=>editLine(line.id,{image})}/>
             </div>
             <div className="quotation-row-context"><label>Помещение<SearchInput aria-label={"Помещение строки "+(index+1)} placeholder="Без помещения" maxLength={500} options={roomChoices} value={group} disabled={busy} onChange={room=>editLine(line.id,{room})}/></label>
@@ -392,7 +408,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
         </tr></Fragment>;})}</tbody></table></div>
       <div className="quotation-pagination" aria-label="Страницы позиций КП"><span>{filteredLines.length?activePage*linePageSize+1:0}–{Math.min((activePage+1)*linePageSize,filteredLines.length)} из {filteredLines.length}{lineQuery?' · всего '+doc.lines.length:''}</span><button type="button" disabled={activePage<=0} onClick={()=>setLinePage(activePage-1)}>Назад</button><span>Страница {activePage+1} из {linePages}</span><button type="button" disabled={activePage>=linePages-1} onClick={()=>setLinePage(activePage+1)}>Далее</button></div>
       {!filteredLines.length&&doc.lines.length>0&&<p className="hint">Подходящих позиций нет. Измените поиск.</p>}
-      </>}
+      </div>}
       {!doc.lines.length && <p className="hint">Пока нет позиций. Добавьте строку вручную или импортируйте расчёт проекта.</p>}
 
       {quoteTool==='catalog'&&<section className="quote-catalog-panel" aria-label="Товары для КП"><h3>Добавить товар из базы</h3><input aria-label="Поиск товаров для КП" type="search" placeholder="Название, артикул, производитель…" value={productSearch} onChange={event=>{setProductSearch(event.target.value);setCatalogLimit(100);}}/>
@@ -417,7 +433,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       <ToolButton icon="save" disabled={busy||!dirty} onClick={()=>void work(async()=>{await saveCurrent();setMessage('КП сохранено');})}>Сохранить изменения КП</ToolButton>
       <ToolButton icon="sku" title="Word: наименования, бренды и количество без цен" disabled={busy||!doc.lines.length} onClick={()=>void downloadSku()}>Сделать SKU</ToolButton>
     </div>
-    {newProduct && <QuoteDialog title="Новый товар из КП" busy={busy} onClose={()=>{setNewProduct(null);setError("");}}>
+    {newProduct && <QuoteDialog title="Новый товар из КП" busy={busy} onClose={closeNewProduct}>
       <h2>Новый товар в базу</h2><p>{standalone ? "Товар сохранится в общем каталоге и строке КП." : "Товар сохранится в общем каталоге и будет привязан к этой строке и её объектам на плане."}</p>
       <form onSubmit={event=>{event.preventDefault();void work(async()=>{
         const saved=await saveCurrent();
@@ -436,7 +452,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
 
         </fieldset>
         {error && <p role="alert" className="catalog-error">{error}</p>}
-        <div className="modal-actions"><button type="button" disabled={busy} onClick={()=>{setNewProduct(null);setError("");}}>Отмена</button><button className="quote-primary" disabled={busy}>Создать и привязать товар</button></div>
+        <div className="modal-actions"><button type="button" disabled={busy} onClick={closeNewProduct}>Отмена</button><button className="quote-primary" disabled={busy}>Создать и привязать товар</button></div>
       </form>
     </QuoteDialog>}
     {attachOpen && <QuoteDialog title="Прикрепить КП к проекту" busy={busy} onClose={()=>{setAttachOpen(false);setError("");}}>

@@ -65,6 +65,24 @@ try {
         if (-not $backendReady) {
             throw "Packaged backend did not become ready"
         }
+        # Verify the UI served by the frozen binary, including its actual hashed assets.
+        # A gallery or new version label alone does not prove that the redesign shipped.
+        $versionMatch = Select-String -Path (Join-Path $projectRoot "backend/app/main.py") -Pattern "APP_VERSION = '(?<version>[^']+)'"
+        if ($health.version -ne $versionMatch.Matches[0].Groups["version"].Value) { throw "Packaged application version is stale" }
+        $index = Invoke-WebRequest -Uri "http://127.0.0.1:5173/" -TimeoutSec 10
+        $assets = [regex]::Matches($index.Content, '(?:src|href)="(/assets/[^"]+)"')
+        $servedScripts = ""
+        $servedStyles = ""
+        foreach ($asset in $assets) {
+            $assetPath = $asset.Groups[1].Value
+            $response = Invoke-WebRequest -Uri ("http://127.0.0.1:5173" + $assetPath) -TimeoutSec 10
+            if ($assetPath.EndsWith(".js")) { $servedScripts += $response.Content }
+            if ($assetPath.EndsWith(".css")) { $servedStyles += $response.Content }
+        }
+        if (-not $servedScripts.Contains("workbench-2026") -or -not $servedStyles.Contains("--ds-color-shell") -or -not $servedStyles.Contains("catalog-workspace")) {
+            throw "Packaged frontend does not contain the applied visual refresh"
+        }
+        Write-Host "Verified refreshed frontend assets served by the packaged EXE"
         $settings = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/settings" -TimeoutSec 5
         $expectedDataDirectory = Join-Path $workDirectory "SmartHomeCalc\data"
         if (-not $settings.can_open_data_folder -or $settings.instance -ne $smokeToken -or $settings.data_directory -ne $expectedDataDirectory) {

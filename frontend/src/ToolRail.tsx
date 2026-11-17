@@ -3,6 +3,8 @@ import './ToolRail.css';
 import {Button} from './ui/Controls';
 export type ToolItem={id:string;label:string;icon?:string;actionLabel?:string;disabled?:boolean;command?:()=>void};
 const shapes:Record<string,React.ReactNode>={
+    grip:<><circle cx="8" cy="5" r="1"/><circle cx="16" cy="5" r="1"/><circle cx="8" cy="12" r="1"/><circle cx="16" cy="12" r="1"/><circle cx="8" cy="19" r="1"/><circle cx="16" cy="19" r="1"/></>,
+    print:<><path d="M6 8V3h12v5M6 17H3V8h18v9h-3M6 14h12v7H6Z"/><path d="M17 11h1"/></>,
     cursor:<path d="m5 3 14 9-7 1-3 7Z"/>,objects:<><circle cx="7" cy="7" r="3"/><rect x="14" y="4" width="6" height="6"/><path d="m7 14 4 6H3Z"/><circle cx="17" cy="17" r="3"/></>,
     frame:<><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M9 6v12m6-12v12"/></>,room:<><path d="M3 4h18v16H3Zm4 0v4m14 8h-4"/><path d="M7 12h7m-3-3 3 3-3 3"/></>,
     layers:<><path d="m12 3 10 5-10 5L2 8Zm-9 9 9 5 9-5m-18 5 9 5 9-5"/></>,pages:<><rect x="7" y="3" width="14" height="17" rx="1"/><path d="M3 7v15h13m-5-14h6m-6 4h6"/></>,

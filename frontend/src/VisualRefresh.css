@@ -194,6 +194,12 @@
 .app-shell .header-actions .restore-project{position:relative}
 .app-shell .header-actions .restore-project>input{display:block;position:absolute;width:1px;height:1px;opacity:0;overflow:hidden}
 .app-shell .header-actions .restore-project:focus-within{outline:2px solid #8be1cb;outline-offset:2px}
+/* Fixed control heights keep the same density across system-font fallbacks. */
+.app-shell .quote-workspace .quotation-line-name{margin-bottom:2px}
+.app-shell .quote-workspace .quotation-line-name img{width:26px;height:26px}
+.app-shell .quote-workspace .quote-drag-handle{min-height:26px}
+.app-shell .quote-workspace .quotation-row-meta input,.app-shell .quote-workspace .quotation-table .decimal-field>input,.app-shell .quote-workspace .quotation-table td>.search-select>select,.app-shell .quote-workspace .quotation-table td>input{height:26px;min-height:26px;padding:3px 7px}
+.app-shell .quote-workspace .quotation-row-meta .search-input input{padding-right:29px}
 /* Quote library: overview, filters and document rows. */
 .app-shell>.quotation-hub{max-width:none;margin:0;padding:26px clamp(20px,4vw,64px) 32px;overflow:auto;background:var(--ds-color-workspace)}
 .quotation-hub .workspace-heading{margin-bottom:22px}

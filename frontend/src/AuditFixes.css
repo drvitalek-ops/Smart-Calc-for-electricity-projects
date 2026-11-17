@@ -70,3 +70,6 @@ input[aria-invalid=true]{border-color:var(--error)!important;background:#fff8f8}
 
 .quote-workspace .quotation-content[data-tool=positions] .quote-overview{margin:0}
 .quote-workspace .quotation-position-tools{margin:2px 0}
+
+.quote-workspace .quote-overview article>.quote-number-warning{font-size:11px;color:var(--error)}
+.quote-workspace .quote-overview article:last-child>.quote-number-warning{color:#ffc2c2}

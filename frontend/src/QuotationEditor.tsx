@@ -345,7 +345,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     <div className="quotation-totals">
       {(["client","partner"] as const).map(target=><article key={target} title={(target==="client"?"Без скидок":"Со скидками")+Object.entries(calculated[target].totals).map(([code,total])=>" · Скидка: "+amount(total.discount,code)).join("")}><small>{target==="client" ? "Клиент" : "Партнёр"}</small>
         {!numericError&&Object.entries(calculated[target].totals).map(([code,total])=><strong key={code}>{amount(total.total,code)}</strong>)}
-        {numericError&&<span>Проверьте числовые поля КП</span>}{!numericError&&!Object.keys(calculated[target].totals).length && <strong>0,00 ₽</strong>}
+        {numericError&&<span className="quote-number-warning">Проверьте числовые поля КП</span>}{!numericError&&!Object.keys(calculated[target].totals).length && <strong>0,00 ₽</strong>}
         {!numericError&&target==="partner" && Object.entries(calculated.partner.totals).map(([code,total])=><span className="quote-discount-summary" key={code}>Скидка: {amount(total.discount,code)}</span>)}
       </article>)}
     </div>

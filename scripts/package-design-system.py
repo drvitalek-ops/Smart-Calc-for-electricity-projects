@@ -17,7 +17,7 @@ def package(output):
     shutil.copy2(preview, html)
     paths = [*PROFILE.glob('*.md'), PROFILE/'tokens.json', *PROFILE.glob('pages/*.md'),
              *ROOT.glob('frontend/src/ui/*'), *ROOT.glob('frontend/src/design-system/*'),
-             ROOT/'scripts/build-design-tokens.py', ROOT/'frontend/build-design-system.mjs']
+             ROOT/'frontend/src/VisualRefresh.css', ROOT/'scripts/build-design-tokens.py', ROOT/'frontend/build-design-system.mjs']
     archive = output / 'SmartHomeCalc-Design-System.zip'
     with ZipFile(archive, 'w', compression=ZIP_DEFLATED) as bundle:
         bundle.write(preview, html.name)
@@ -25,7 +25,7 @@ def package(output):
             if path.is_file():
                 bundle.write(path, path.relative_to(ROOT).as_posix())
         bundle.writestr('README.txt',
-            'Smart Home Calc — дизайн-система 1.0\n\n'
+            'Smart Home Calc — дизайн-система 1.1\n\n'
             'Откройте SmartHomeCalc-Design-System.html в браузере. Интернет и установка не нужны.\n'
             'Внутри образца можно скачать JSON и CSS токенов.\n'
             'Правила: design-system/smart-home-calc/MASTER.md и pages/.\n'

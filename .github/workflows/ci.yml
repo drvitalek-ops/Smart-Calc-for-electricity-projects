@@ -132,6 +132,7 @@ jobs:
           node frontend/tests/quotation-export-prices.cjs
           node frontend/tests/popup-drag-scroll.cjs
           node frontend/tests/audit-fixes.cjs
+          node frontend/tests/visual-refresh.cjs
           node frontend/tests/catalog.cjs
 
       - name: Validate Docker Compose

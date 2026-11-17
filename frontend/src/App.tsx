@@ -1,3 +1,4 @@
+import {WorkspaceHeading,KindThumbnail,PanelHeading} from "./ui/Workspace";
 import {api,errorMessage} from "./errors";
 import LayerTree from "./LayerTree";
 import {planGroup,layerGroups,displayedElement} from "./planGroups";
@@ -421,7 +422,7 @@ function AppModal({title,onClose,busy=false,children,className="",returnFocus}:{
     }
   }}>
     <section className={`catalog-modal app-modal ${className}`}>
-      <div className="app-modal-title"><h2>{title}</h2><button type="button" aria-label={`Закрыть: ${title}`} disabled={busy} onClick={onClose}>×</button></div>
+      <div className="app-modal-title"><span className="modal-heading-icon" aria-hidden="true"><ActionIcon name={title.includes("Настройки")?"settings":title.includes("PDF")?"pdf":title.includes("Удалить")?"trash":"folder"}/></span><h2>{title}</h2><button type="button" aria-label={`Закрыть: ${title}`} title="Закрыть" disabled={busy} onClick={onClose}><ActionIcon name="close"/></button></div>
       {children}
     </section>
   </div>;
@@ -433,7 +434,8 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
   useEffect(()=>{onBusyChange(opening);return()=>onBusyChange(false);},[opening,onBusyChange]);
   useEffect(()=> {let active=true;api<AppSettings>("/settings").then(info=> {if(active)setInfo(info);}).catch(error=> {if(active)setError(errorMessage(error,"Не удалось загрузить настройки"));});return()=>{active=false;};},[]);
   return <AppModal title="Настройки" onClose={onClose} returnFocus={returnFocus} busy={opening} className="settings-modal">
-    <div className="settings-heading"><ToolIcon name="folder"/><div><h3>Данные и перенос на другой компьютер</h3><p>Здесь хранятся все проекты, общий каталог, PDF-планы и изображения.</p></div></div>
+    <div className="settings-layout"><nav className="settings-nav" aria-label="Разделы настроек">{[['data','folder','Данные'],['workspace','palette','Рабочая область'],['backup','save','Резервная копия'],['rollback','undo','Откат версии'],['transfer','link','Перенос на ПК']].map(([id,icon,label])=><a key={id} href={'#settings-'+id} onClick={event=>{event.preventDefault();const target=document.getElementById('settings-'+id);target?.scrollIntoView({block:'start'});target?.focus({preventScroll:true});}}><ActionIcon name={icon}/><span>{label}</span></a>)}</nav><div className="settings-body">
+    <section id="settings-data" className="settings-data-section" tabIndex={-1}><div className="settings-heading"><ToolIcon name="folder"/><div><h3>Данные и перенос на другой компьютер</h3><p>Здесь хранятся все проекты, общий каталог, PDF-планы и изображения.</p></div></div>
     {!info && !error && <p role="status">Загрузка настроек…</p>}
     {info?.data_directory && <label>Папка всех данных<input aria-label="Папка всех данных" readOnly value={info.data_directory} onFocus={event=>event.target.select()} /></label>}
     {info && <button className="primary icon-button open-data-folder" disabled={opening || !info.can_open_data_folder} onClick={()=>void(async()=> {
@@ -445,8 +447,8 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
     {info && !info.can_open_data_folder && <p className="hint">Открытие папки доступно в автономном приложении Smart Home Calc для Windows.</p>}
     {error && <p className="catalog-error" role="alert">{error}</p>}
     {message && <p className="catalog-success" role="status">{message}</p>}
-    <section className="settings-backup"><h3>Рабочая область</h3><label className="check"><input type="checkbox" checked={adaptiveLabels} onChange={event=>setAdaptiveLabels(event.target.checked)}/>Автоматически упрощать большие планы</label><p className="hint">При отдалении плана или более чем 500 видимых объектах остаются компактные цветные контуры; подробности и подписи видны у выбранных элементов. При увеличении детали возвращаются.</p><label className="check"><input type="checkbox" checked={showGrid} onChange={event=>setShowGrid(event.target.checked)}/>Фоновая сетка рабочей области</label></section>
-    <section className="settings-backup"><div className="settings-heading"><ActionIcon name="save"/><div><h3>Полная резервная копия</h3><p>Все проекты, каталог, товары с фотографиями, коммерческие предложения и планы — в одном ZIP.</p></div></div>
+    </section><section id="settings-workspace" tabIndex={-1} className="settings-backup"><h3>Рабочая область</h3><label className="check"><input type="checkbox" checked={adaptiveLabels} onChange={event=>setAdaptiveLabels(event.target.checked)}/>Автоматически упрощать большие планы</label><p className="hint">При отдалении плана или более чем 500 видимых объектах остаются компактные цветные контуры; подробности и подписи видны у выбранных элементов. При увеличении детали возвращаются.</p><label className="check"><input type="checkbox" checked={showGrid} onChange={event=>setShowGrid(event.target.checked)}/>Фоновая сетка рабочей области</label></section>
+    <section id="settings-backup" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="save"/><div><h3>Полная резервная копия</h3><p>Все проекты, каталог, товары с фотографиями, коммерческие предложения и планы — в одном ZIP.</p></div></div>
       <button type="button" className="tool-action" disabled={opening||!info?.can_backup_all||backupBlocked} onClick={()=>void(async()=>{
         if(!info)return;setOpening(true);setError('');setMessage('Подготовка полной копии…');
         try{const backup=await api<{url:string;filename:string;size:number}>('/settings/backups','POST',{instance:info.instance});const link=document.createElement('a');link.href=backup.url;link.download=backup.filename;link.click();setMessage('Копия готова: '+(backup.size/1024/1024).toLocaleString('ru-RU',{maximumFractionDigits:1})+' МБ. Дождитесь загрузки ZIP перед закрытием приложения.');}
@@ -456,19 +458,20 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
-    <section className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.53 используйте копию данных до обновления.</p></div></div>
+    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.54 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.53" target="_blank" rel="noreferrer">Открыть релиз v1.0.53</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.54" target="_blank" rel="noreferrer">Открыть релиз v1.0.54</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
-    <div className="transfer-instructions"><h3>Как перенести всё</h3><ol>
+    <div id="settings-transfer" tabIndex={-1} className="transfer-instructions"><h3>Как перенести всё</h3><ol>
       <li>Откройте папку данных кнопкой выше и закройте калькулятор.</li>
       <li>В Проводнике нажмите <strong>Alt + ↑</strong> и скопируйте папку <strong>data целиком</strong>: файл <strong>smart-home-calc.db</strong> и папку <strong>storage</strong> с планами. Каталог и все проекты находятся в базе.</li>
       <li>На другом ПК запустите актуальную версию калькулятора и откройте эту же папку через настройки. Закройте приложение и замените папку <strong>data</strong> своей копией.</li>
       <li>Запустите калькулятор — проекты и планы появятся автоматически.</li>
     </ol><p>Если на другом ПК уже есть нужные проекты, сначала сохраните его папку данных: замена папки переносит всю базу целиком.</p></div>
     <small>Smart Home Calc {info?.version ?? ""}</small>
+    </div></div>
   </AppModal>;
 }
 function NomenclatureEditor({types,categories=[],onChanged,onDirtyChange,onBusyChange}:{types:Kind[];categories?:Category[];onChanged:()=>Promise<void>;onDirtyChange?:(dirty:boolean)=>void;onBusyChange?:(busy:boolean)=>void}) {
@@ -515,14 +518,14 @@ function NomenclatureEditor({types,categories=[],onChanged,onDirtyChange,onBusyC
         <label>Группа<SearchSelect aria-label="Группа номенклатуры" value={groupFilter} onChange={event=>setGroupFilter(event.target.value)}><option value="">Все группы</option>{groups.map(group=><option key={group.label} value={group.label}>{group.label}</option>)}</SearchSelect></label>
         <label>Поиск<input aria-label="Поиск номенклатуры" type="search" value={search} onChange={event=>setSearch(event.target.value)} /></label>
         <label className="check"><input type="checkbox" checked={showDeleted} onChange={event=>setShowDeleted(event.target.checked)} />Показывать удалённые</label>
-        <div className="nomenclature-rows">{groupKinds(visible).map(group=><section className="nomenclature-group" key={group.label} aria-label={`Группа ${group.label}`}><h4>{group.label}<small>{group.items.length}</small></h4>{group.items.map(item=><article key={item.id} className={!item.active ? "inactive" : ""} data-type-id={item.id}>
-          <div><strong><i style={{background:item.color}} />{item.name}</strong><small>{item.category} · {item.unit}{!item.active ? " · удалена из библиотеки" : ""}</small></div>
+        <div className="nomenclature-rows">{groupKinds(visible).map(group=><section className="nomenclature-group" key={group.label} aria-label={`Группа ${group.label}`}><h4>{group.label}<small>{group.items.length}</small></h4>{group.items.map(item=><article key={item.id} className={(!item.active ? "inactive " : "")+(form.id===item.id?"is-editing":"")} data-type-id={item.id}>
+          <KindThumbnail kind={item} parameters={item.defaults} color={item.color}/><div><strong title={item.name}>{item.name}</strong><small>{item.category} · {item.unit}{!item.active ? " · удалена из библиотеки" : ""}</small></div>
           <ToolButton type="button" icon="copy" aria-label={`Создать копию ${item.name}`} onClick={()=>{setForm({id:0,name:item.name+' — копия',category:item.category,unit:item.unit,color:item.color,wet_min_ip:item.wet_min_ip==null?'':String(item.wet_min_ip),defaults:{...item.defaults}});setError('');setMessage('');}}>Копия</ToolButton>
-          <button type="button" disabled={saving} aria-label={`Редактировать ${item.name}`} onClick={()=> {setForm({id:item.id,name:item.name,category:item.category,unit:item.unit,color:item.color,wet_min_ip:item.wet_min_ip==null ? "" : String(item.wet_min_ip),defaults:{...item.defaults}});setError("");setMessage("");}}>Редактировать</button>
-          {item.active ? <button type="button" className="danger" disabled={saving} aria-label={`Удалить ${item.name}`} onClick={()=> {
+          <button type="button" disabled={saving} title={`Редактировать ${item.name}`} aria-label={`Редактировать ${item.name}`} onClick={()=> {setForm({id:item.id,name:item.name,category:item.category,unit:item.unit,color:item.color,wet_min_ip:item.wet_min_ip==null ? "" : String(item.wet_min_ip),defaults:{...item.defaults}});setError("");setMessage("");}}><ActionIcon name="edit"/></button>
+          {item.active ? <button type="button" className="danger" disabled={saving} title={`Удалить ${item.name}`} aria-label={`Удалить ${item.name}`} onClick={()=> {
             if(!confirm(`Удалить «${item.name}» из библиотеки? Уже размещённые объекты и отчёты сохранятся.`)) return;
             void work(async()=> {await api(`/types/${item.id}`,"DELETE");await onChanged();if(form.id===item.id)setForm(empty());setMessage("Позиция удалена из библиотеки");});
-          }}>Удалить</button> : <button type="button" disabled={saving} aria-label={`Восстановить ${item.name}`} onClick={()=>void work(async()=> {await api(`/types/${item.id}`,"PUT",{...item,active:true});await onChanged();setMessage("Позиция восстановлена");})}>Восстановить</button>}
+          }}><ActionIcon name="trash"/></button> : <button type="button" disabled={saving} aria-label={`Восстановить ${item.name}`} onClick={()=>void work(async()=> {await api(`/types/${item.id}`,"PUT",{...item,active:true});await onChanged();setMessage("Позиция восстановлена");})}><ActionIcon name="refresh"/></button>}
         </article>)}</section>)}</div>
         {!visible.length && <p className="hint">Подходящих позиций нет.</p>}
       </div>
@@ -643,26 +646,18 @@ function CatalogManager({
       aria-modal="true"
       aria-label="Каталог оборудования"
     >
-      <section className="catalog-modal">
-        <div className="catalog-title">
-          <div>
-            <div className="eyebrow">СПРАВОЧНИКИ И ЦЕНЫ</div>
-            <h2>Каталог оборудования</h2>
-          </div>
-          <button aria-label="Закрыть каталог" disabled={anyBusy} onClick={closeCatalog}>
-            ×
-          </button>
-        </div>
+      <section className="catalog-modal catalog-manager-dialog">
+        <WorkspaceHeading className="catalog-title" title="Каталог оборудования" eyebrow="ОБЩАЯ БАЗА" icon="catalog" description="Номенклатура, товары и цены для всех проектов" actions={<button aria-label="Закрыть каталог" title="Закрыть каталог" disabled={anyBusy} onClick={closeCatalog}><ActionIcon name="close"/></button>}/>
         {localError && <p className="catalog-error">{localError}</p>}
         {message && <p className="catalog-success">{message}</p>}
-        <nav className="catalog-tabs" aria-label="Раздел каталога">
-          <button className={tab==="types" ? "active" : ""} onClick={()=>setTab("types")}>Номенклатура</button>
-          <button className={tab==="products" ? "active" : ""} onClick={()=>setTab("products")}>Товары и цены</button>
-          <button className={tab==="categories"?"active":""} onClick={()=>setTab('categories')}>Категории</button>
+        <div className="catalog-workspace"><nav className="catalog-tabs" aria-label="Раздел каталога">
+          <button aria-label="Номенклатура" aria-pressed={tab==="types"} className={tab==="types" ? "active" : ""} onClick={()=>setTab("types")}><ActionIcon name="objects"/><span>Номенклатура</span><small aria-hidden="true">{types.filter(t=>t.active).length}</small></button>
+          <button aria-label="Товары и цены" aria-pressed={tab==="products"} className={tab==="products" ? "active" : ""} onClick={()=>setTab("products")}><ActionIcon name="catalog"/><span>Товары и цены</span><small aria-hidden="true">{catalog.products.length}</small></button>
+          <button aria-label="Категории" aria-pressed={tab==="categories"} className={tab==="categories"?"active":""} onClick={()=>setTab('categories')}><ActionIcon name="layers"/><span>Категории</span><small aria-hidden="true">{catalog.categories?.length??0}</small></button>
         </nav>
-        <div hidden={tab!=='categories'}><CategoryEditor categories={catalog.categories??[]} onChanged={onChanged} onDirtyChange={setCategoryDirty} onBusyChange={setCategoryBusy}/></div>
-        <div hidden={tab!=='types'}><NomenclatureEditor types={types} categories={catalog.categories} onChanged={onChanged} onDirtyChange={setTypeDirty} onBusyChange={setTypeBusy}/></div>
-        <div hidden={tab!=='products'}>
+        <div className="catalog-page catalog-page-categories" hidden={tab!=='categories'}><CategoryEditor categories={catalog.categories??[]} onChanged={onChanged} onDirtyChange={setCategoryDirty} onBusyChange={setCategoryBusy}/></div>
+        <div className="catalog-page catalog-page-types" hidden={tab!=='types'}><NomenclatureEditor types={types} categories={catalog.categories} onChanged={onChanged} onDirtyChange={setTypeDirty} onBusyChange={setTypeBusy}/></div>
+        <div className="catalog-page catalog-page-products" hidden={tab!=='products'}>
         <label>Поиск в базе<input type="search" aria-label="Поиск в базе товаров" placeholder="Название, артикул, производитель, категория…" value={databaseSearch} onChange={event=>setDatabaseSearch(event.target.value)}/></label>
         <details className="catalog-admin" open={adminOpen} onToggle={event=>{if(event.currentTarget.open!==adminOpen)setAdminOpen(event.currentTarget.open);}}><summary>Справочники и импорт CSV</summary>
         <div className="catalog-grid">
@@ -938,17 +933,12 @@ function CatalogManager({
               <button
                 type="button"
                 key={item.id}
-                className={!item.active ? "inactive" : ""}
+                className={(!item.active ? "inactive " : "")+(form.id===item.id?"is-editing":"")}
+                aria-pressed={form.id===item.id}
                 onClick={() => edit(item)}
               >
-                <strong><SearchHighlight text={item.name} query={databaseSearch}/></strong>
-                <span>
-                  <SearchHighlight text={item.manufacturer+" · "+(item.sku || "без артикула")} query={databaseSearch}/>
-                </span>
-                <span>
-                  {item.price} {item.currency} / {item.unit}
-                  {!item.active ? " · архив" : ""}
-                </span>
+                {typeof item.parameters.image==='string'&&item.parameters.image?<span className="product-thumbnail"><img src={item.parameters.image} alt=""/></span>:<KindThumbnail kind={types.find(type=>type.id===item.type_id)} color={types.find(type=>type.id===item.type_id)?.color}/>}
+                <span className="product-row-copy"><strong><SearchHighlight text={item.name} query={databaseSearch}/></strong><small><SearchHighlight text={item.manufacturer+" · "+(item.sku || "без артикула")} query={databaseSearch}/></small><span className="product-row-price">{Number(item.price).toLocaleString('ru-RU',{maximumFractionDigits:2})} {item.currency} / {item.unit}{!item.active?" · архив":""}</span></span>
               </button>
             ))}
             {filteredProducts.length>productLimit&&<button type="button" onClick={()=>setProductLimit(value=>value+100)}>Показать ещё · {filteredProducts.length-productLimit}</button>}
@@ -960,7 +950,7 @@ function CatalogManager({
             )}
           </div>
         </div>
-        </div>
+        </div></div>
       </section>
     </div>
   );
@@ -2048,7 +2038,7 @@ export default function App() {
     });
   },[visibleElements,pageMap,symbolScale]);
   return (
-    <div className="app-shell" data-grid={showGrid} onDragEnterCapture={event=> {
+    <div className="app-shell" data-design="workbench-2026" data-grid={showGrid} onDragEnterCapture={event=> {
       if(Array.from(event.dataTransfer.items).some(item=>item.type.startsWith('image/')))return;
       if((event.target as HTMLElement).closest("[data-image-dropzone],[data-image-target]")||!event.dataTransfer.types.includes("Files"))return;
       event.preventDefault();dragDepth.current++;setDraggingPdf(true);
@@ -2070,7 +2060,7 @@ export default function App() {
         <div className="logo">SH</div>
         <div className="brand">
           <h1>Smart Home Calc</h1>
-          <small>Проектирование комплектации · рабочая версия</small>
+          <small>Планы · комплектация · предложения</small>
         </div>
         <nav className="app-tabs" aria-label="Разделы приложения">
           <button
@@ -2078,25 +2068,26 @@ export default function App() {
             onClick={() => changeView("plan")}
             disabled={busy || quoteBusy}
           >
-            План
+            <ActionIcon name="room"/><span>План</span>
           </button>
           <button
             className={view === "report" ? "active" : ""}
             disabled={!project || busy || quoteBusy}
             onClick={() => changeView("report")}
           >
-            Спецификация
+            <ActionIcon name="list"/><span>Спецификация</span>
           </button>
-          <button className={view==="quote" ? "active" : ""} disabled={busy || quoteBusy} onClick={()=>changeView(project ? "quote" : "quotations")}>КП</button>
-          <button className={view==="quotations" ? "active" : ""} disabled={busy || quoteBusy} onClick={()=>changeView("quotations")}>Все КП</button>
+          <button className={view==="quote" ? "active" : ""} disabled={busy || quoteBusy} onClick={()=>changeView(project ? "quote" : "quotations")}><ActionIcon name="pdf"/><span>КП</span></button>
+          <button className={view==="quotations" ? "active" : ""} disabled={busy || quoteBusy} onClick={()=>changeView("quotations")}><ActionIcon name="folder"/><span>Все КП</span></button>
         </nav>
         <div className="header-actions">
-        <button className="icon-button" disabled={busy || quoteBusy} onClick={()=>pdfInput.current?.click()} title="Создать новый проект из PDF"><ToolIcon name="pdf"/>Новый из PDF</button>
-        <button disabled={busy || quoteBusy} onClick={() => openCatalog()}>Каталог и цены</button>
-        <button className="icon-button settings-button" aria-label="Настройки" title="Настройки и папка данных" disabled={busy || quoteBusy} onClick={openSettings}><ToolIcon name="settings"/>Настройки</button>
-        <label className="restore-project">
-          Восстановить ZIP
+        <button className="icon-button header-import" aria-label="Новый из PDF" disabled={busy || quoteBusy} onClick={()=>pdfInput.current?.click()} title="Создать новый проект из PDF"><ToolIcon name="pdf"/><span>Новый из PDF</span></button>
+        <button className="icon-button" aria-label="Каталог и цены" title="Каталог и цены" disabled={busy || quoteBusy} onClick={() => openCatalog()}><ActionIcon name="catalog"/><span>Каталог и цены</span></button>
+        <button className="icon-button settings-button" aria-label="Настройки" title="Настройки и папка данных" disabled={busy || quoteBusy} onClick={openSettings}><ToolIcon name="settings"/><span>Настройки</span></button>
+        <label className="restore-project" title="Восстановить проект из ZIP">
+          <ActionIcon name="import"/><span>Восстановить ZIP</span>
           <input
+            aria-label="Восстановить проект из ZIP"
             type="file"
             accept=".zip,application/zip"
             disabled={busy || quoteBusy}
@@ -2120,7 +2111,7 @@ export default function App() {
           />
         </label>
         </div>
-        <div className="project-controls">
+        <div className="project-controls"><span className="project-context-label"><ActionIcon name="folder"/><span>Проект</span></span>
         <SearchSelect
           aria-label="Проект"
           disabled={busy || quoteBusy}
@@ -2224,12 +2215,9 @@ export default function App() {
             </p>
             <button className="welcome-import icon-button" disabled={busy} onClick={()=>pdfInput.current?.click()}><ToolIcon name="pdf"/><span><strong>Перетащите PDF сюда</strong><small>или нажмите, чтобы выбрать файл · до 500 МБ и 100 страниц</small></span></button>
             <button className="welcome-quote" disabled={busy || quoteBusy} onClick={()=>changeView("quotations")}>КП без проекта — создать или открыть</button>
-            <div className="steps">
-              <span>01 / PDF-план</span>
-              <span>02 / Элементы и слои</span>
-              <span>03 / Ведомость</span>
-            </div>
+            <div className="steps"><span><b>01</b>Загрузите PDF</span><span><b>02</b>Расставьте элементы</span><span><b>03</b>Получите ведомость</span></div>
           </div>
+          <div className="welcome-plan" aria-hidden="true"><div className="welcome-plan-title"><ActionIcon name="room"/><span>План вашего проекта</span><small>01 / Лист</small></div><svg viewBox="0 0 480 360"><path d="M50 55h380v260H50Zm220 0v260M50 230h220M270 180h160" fill="white" stroke="currentColor" strokeWidth="3"/><path d="M270 135v40M180 230h40" stroke="white" strokeWidth="5"/>{[[105,120],[215,120],[350,115],[105,280],[350,255]].map(([x,y],i)=><g key={i} transform={`translate(${x} ${y})`}><circle r="9" fill="white" stroke={i%2?'#147d6d':'#146c9c'} strokeWidth="2"/><path d="M-4 0h8M0-4v8" stroke={i%2?'#147d6d':'#146c9c'} strokeWidth="1.5"/></g>)}</svg><div className="welcome-plan-note"><ActionIcon name="check"/><span>Расчёт связан с расстановкой на плане</span></div></div>
         </main>
       ) : (
         <>
@@ -2252,7 +2240,7 @@ export default function App() {
                   <ToolRail label="Инструменты объектов" active={leftTool} onSelect={selectLeftTool} items={[{id:'objects',label:'Объекты'},{id:'list',label:'Список объектов',icon:'list'},{id:'properties',label:'Свойства',icon:'edit'},{id:'style',label:'Оформление',icon:'palette'},{id:'frames',label:'Рамки',icon:'frame'},{id:'rooms',label:'Помещения',icon:'room'},{id:'catalog',label:'Каталог',icon:'catalog',command:()=>openCatalog()}]}/>
                   <div className="tool-panel-content">
 <PlanObjectList key={project.id} items={visibleElements} types={typeMap} rooms={project.rooms} selected={selectionSet} busy={busy} onReturn={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()} onSelect={item=>void run(async()=>{await saveDraftBeforeNavigation();const target=selected?.id===item.id?selected:item;choose(target,false);focusItem(target);if(window.innerWidth<1100)setRightTool(null);requestAnimationFrame(()=>document.querySelector<HTMLElement>('.objects-panel [data-tool-section="properties"] input:not([disabled]),.objects-panel [data-tool-section="properties"] select:not([disabled])')?.focus());})}/>
-<section data-tool-section="objects"><h3>Библиотека</h3>
+<section data-tool-section="objects"><PanelHeading title="Библиотека" caption="Номенклатура и размещение" icon="objects"/>
                   <label>Группа<SearchSelect aria-label="Группа элементов" value={libraryGroup} onChange={event=> {
                     const group=event.target.value;
                     setLibraryGroup(group);
@@ -2342,7 +2330,7 @@ export default function App() {
                       : "Нажмите на план для размещения. Перетаскивайте объекты левой кнопкой."}{" "}
                     План перемещается средней кнопкой.
                   </p>
-                  </section><section data-tool-section="rooms"><h3>Помещения</h3><div className="room-drawing-tools">                    {page &&
+                  </section><section data-tool-section="rooms"><PanelHeading title="Помещения" caption="Контуры и принадлежность" icon="room"/><div className="room-drawing-tools">                    {page &&
                       (roomMode ? (
                         <>
                           <ToolButton icon="room"
@@ -2415,7 +2403,7 @@ export default function App() {
                       <button disabled={busy}>Добавить</button>
                     </form>
                   </details>}
-                  </section><section data-tool-section="frames"><h3>Выбранные объекты</h3>
+                  </section><section data-tool-section="frames"><PanelHeading title="Выбранные объекты" caption="Рамки и объединение" icon="frame"/>
                   {selectedIds.length > 0 ? (
                     <div className="frame-editor">
                       <strong>Выбрано: {selectedIds.length}</strong>
@@ -2469,7 +2457,7 @@ export default function App() {
                       Выделите объекты рамкой мыши или кликами с зажатым Ctrl.
                     </p>
                   )}
-                  </section><section data-tool-section="properties"><h3>Свойства объекта</h3><ToolButton icon="back" aria-label="Вернуться к плану" onClick={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()}>Вернуться к плану</ToolButton>
+                  </section><section data-tool-section="properties"><PanelHeading title="Свойства объекта" caption="Параметры и оформление" icon="edit"/><ToolButton icon="back" aria-label="Вернуться к плану" onClick={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()}>Вернуться к плану</ToolButton>
                   {selected && selectedIds.length === 1 ? (
                     <fieldset disabled={busy||project.layers.find(layer=>layer.id===selected.layer_id)?.locked} style={{border:0,padding:0}}>
                       <div className="object-title">
@@ -3577,7 +3565,7 @@ export default function App() {
                     ＋ Слой
                   </button>
                   </div>
-                  </section><section data-tool-section="pages"><div className="page-file-tools">                    <label className="upload">
+                  </section><section data-tool-section="pages"><PanelHeading title="Страницы PDF" caption="Листы и совмещение" icon="pages"/><div className="page-file-tools">                    <label className="upload">
                       Загрузить PDF
                       <input
                         type="file"
@@ -3882,10 +3870,10 @@ export default function App() {
                 </div>
                 <div>
                   <a href={`/api/projects/${project.id}/export/xlsx`}>
-                    ↓ Excel
+                    <ActionIcon name="sku"/><span>Excel</span>
                   </a>
-                  <a href={`/api/projects/${project.id}/export/pdf`}>↓ PDF</a>
-                  <button onClick={() => window.print()}>Печать</button>
+                  <a href={`/api/projects/${project.id}/export/pdf`}><ActionIcon name="pdf"/><span>PDF</span></a>
+                  <button onClick={() => window.print()}><ActionIcon name="print"/><span>Печать</span></button>
                 </div>
               </div>
               {report.warnings.map((w) => (
@@ -3985,7 +3973,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.54</span>
+        <span>SMART HOME CALC / 1.0.55</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

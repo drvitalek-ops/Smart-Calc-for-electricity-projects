@@ -70,14 +70,24 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Validate design tokens
+        run: python scripts/build-design-tokens.py --check
+
       - name: Build frontend
         working-directory: frontend
         run: npm run build
 
+      - name: Build offline design system
+        working-directory: frontend
+        run: npm run design-system:preview
+
+      - name: Package offline design system
+        run: python scripts/package-design-system.py --output-dir /tmp/smart-calc-design-system
+
       - name: Install quotation browser test dependencies
         working-directory: frontend
         run: |
-          npm install --no-save --package-lock=false playwright@1.56.1
+          npm install --no-save --package-lock=false playwright@1.56.1 axe-core@4.10.3
           npx playwright install --with-deps chromium
 
       - name: Test quotation editor in browser
@@ -99,6 +109,7 @@ jobs:
               else:
                   raise RuntimeError('Test server did not become ready: '+address)
           PY
+          node frontend/tests/design-system.cjs
           node frontend/tests/standalone-quotations.cjs
           node frontend/tests/quotations.cjs
           node frontend/tests/pdf-quotation-import.cjs
@@ -120,6 +131,7 @@ jobs:
           node frontend/tests/quotation-room-layout.cjs
           node frontend/tests/quotation-export-prices.cjs
           node frontend/tests/popup-drag-scroll.cjs
+          node frontend/tests/audit-fixes.cjs
           node frontend/tests/catalog.cjs
 
       - name: Validate Docker Compose

@@ -10,6 +10,7 @@ RUN --mount=type=secret,id=proxy_ca \
 COPY frontend/index.html frontend/tsconfig.json frontend/vite.config.ts ./
 COPY frontend/src ./src
 COPY backend/app/assets/*.json /app/backend/app/assets/
+COPY design-system/smart-home-calc/tokens.json /app/design-system/smart-home-calc/tokens.json
 RUN npm run build
 
 FROM nginx:1.28-alpine

@@ -1,5 +1,6 @@
 import {memo,useState} from "react";
 import './ToolRail.css';
+import {Button} from './ui/Controls';
 export type ToolItem={id:string;label:string;icon?:string;actionLabel?:string;disabled?:boolean;command?:()=>void};
 const shapes:Record<string,React.ReactNode>={
     cursor:<path d="m5 3 14 9-7 1-3 7Z"/>,objects:<><circle cx="7" cy="7" r="3"/><rect x="14" y="4" width="6" height="6"/><path d="m7 14 4 6H3Z"/><circle cx="17" cy="17" r="3"/></>,
@@ -41,4 +42,4 @@ export default function ToolRail({items,active,onSelect,label,side='left'}:{item
   const [expanded,setExpanded]=useState(false);
   return <div className={'tool-rail-slot tool-rail-'+side}><nav className="tool-rail" data-expanded={expanded} aria-label={label} onPointerEnter={()=>setExpanded(true)} onPointerLeave={()=>setExpanded(false)} onFocus={event=>{if((event.target as HTMLElement).matches(":focus-visible"))setExpanded(true);}} onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node))setExpanded(false);}}>{items.map(item=><button key={item.id} type="button" disabled={item.disabled} className={active===item.id ? 'active' : ''} aria-label={item.actionLabel || 'Инструмент: '+item.label} title={item.label} aria-pressed={item.command ? undefined : active===item.id} onClick={()=>{setExpanded(false);if(item.command)item.command();else onSelect(item.id);}}><ActionIcon name={item.icon || item.id}/><span>{item.label}</span></button>)}</nav></div>;
 }
-export function ToolButton({icon='edit',children,...props}:React.ButtonHTMLAttributes<HTMLButtonElement>&{icon?:string}) {return <button {...props} className={'tool-action '+(props.className??'')}><ActionIcon name={icon}/><span>{children}</span></button>;}
+export function ToolButton({icon='edit',children,...props}:React.ButtonHTMLAttributes<HTMLButtonElement>&{icon?:string}) {return <Button {...props} title={props.title??(typeof children==='string'?children:undefined)} className={'tool-action '+(props.className??'')}><ActionIcon name={icon}/><span>{children}</span></Button>;}

@@ -1,5 +1,6 @@
 import {PLAN_RADIUS} from './planSymbols';
-import {memo} from 'react';
+import {memo,useMemo} from 'react';
+import {visiblePlanLabels,planLabel} from './planLabels';
 import type {Item,Kind,Page,Layer,Point} from './App';
 import {PlanSymbol,PointMarker,GlyphDefinitions} from './PlanAppearance';
 import {isLedStrip,isPowerSupply,isTrack} from './planDomain';
@@ -19,7 +20,7 @@ function angle(points:Point[],index:number,aspect:number){const a=points[index==
 const PlanObject=memo(function PlanObject({item,kind,page,selected,locked,scale,labels,linking,picked,busy,aspect,grip,simplified,onContextMenu,onDoubleClick,onPointerDown,onNodeDrag}:ObjectProps){
   const points=item.geometry?.points??[],transformed=points.map(point=>transformPoint(point,page));
   const opacity=selected?1:page?.opacity??1,color=picked?'#2563eb':String(item.parameters.plan_color??kind?.color??'#64748b');
-  const target=linking&&isLedStrip(kind),label=String(item.parameters.display_name||kind?.name||'')+' #'+item.id+((isPowerSupply(kind)||isLedStrip(kind))&&item.parameters.power_watts?' · '+item.parameters.power_watts+' Вт':'');
+  const target=linking&&isLedStrip(kind),label=planLabel(item,kind,!selected);
   const labelProps={className:'object-label',fontSize:Number(item.parameters.plan_label_size??7)*2,fill:String(item.parameters.plan_label_color??'#0f172a'),stroke:'white',strokeWidth:3,paintOrder:'stroke' as const};
   const showLabel=labels&&item.parameters.plan_label_visible!==false;
   const handlers={onContextMenu:(event:React.MouseEvent<SVGGElement>)=>onContextMenu(item,event),
@@ -44,11 +45,12 @@ const PlanObject=memo(function PlanObject({item,kind,page,selected,locked,scale,
   }
   const marker=transformPoint(item,page);
   return <g data-element-id={item.id} className={(selected?'selected-point-object ':'')+targetClass} opacity={opacity} transform={`translate(${marker.x*1000},${marker.y*1000}) scale(1,${aspect})`} {...handlers}>
-    <title>{label}{locked?' · Слой заблокирован':''}</title>
+    <title>{planLabel(item,kind)}{locked?' · Слой заблокирован':''}</title>
     <PointMarker details={!simplified} shared kind={kind} parameters={item.parameters} scale={scale} powerSupply={isPowerSupply(kind)} color={color} selected={linking?picked:selected} icon={String(item.parameters.plan_icon??'').trim()}/>
     {showLabel&&<text {...labelProps} x={(isPowerSupply(kind)?19:12)*scale*Number(item.parameters.plan_size??1)} y={5}>{label}</text>}
   </g>;
 });
 export default memo(function PlanScene({elements,types,pages,layers,selection,draft,scale,labels,linking,picked,busy,aspect,dense,adaptive,pixelScale,grip,...handlers}:Props){
-  return <><GlyphDefinitions/>{elements.map(original=>{const item=draft?.id===original.id?draft:original;return <PlanObject key={item.id} item={item} kind={types.get(item.type_id)} page={pages.get(item.page_id)} locked={Boolean(layers.get(item.layer_id)?.locked)} selected={selection.has(item.id)} scale={scale} labels={labels&&(!dense||selection.has(item.id))} grip={selection.has(item.id)?grip:0} simplified={!selection.has(item.id)&&(dense||adaptive&&PLAN_RADIUS*scale*Number(item.parameters.plan_size??1)*pixelScale<5)} linking={linking} picked={picked.has(item.id)} busy={busy} aspect={aspect} {...handlers}/>;})}</>;
+  const labelIds=useMemo(()=>adaptive&&labels?visiblePlanLabels(elements.map(item=>draft?.id===item.id?draft:item),types,pages,selection,scale,aspect,pixelScale):null,[elements,draft,types,pages,selection,scale,aspect,pixelScale,adaptive,labels]);
+  return <><GlyphDefinitions/>{elements.map(original=>{const item=draft?.id===original.id?draft:original;return <PlanObject key={item.id} item={item} kind={types.get(item.type_id)} page={pages.get(item.page_id)} locked={Boolean(layers.get(item.layer_id)?.locked)} selected={selection.has(item.id)} scale={scale} labels={labels&&(!dense||selection.has(item.id))&&(!labelIds||labelIds.has(item.id))} grip={selection.has(item.id)?grip:0} simplified={!selection.has(item.id)&&(dense||adaptive&&PLAN_RADIUS*scale*Number(item.parameters.plan_size??1)*pixelScale<5)} linking={linking} picked={picked.has(item.id)} busy={busy} aspect={aspect} {...handlers}/>;})}</>;
 });

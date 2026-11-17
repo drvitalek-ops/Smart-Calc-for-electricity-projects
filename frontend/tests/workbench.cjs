@@ -50,9 +50,17 @@ const frontend=process.env.FRAME_TEST_FRONTEND||'http://127.0.0.1:5174',backend=
   assert.ok(Math.abs(line.parameters.length-4)<.025,'Source geometry and millimetre calibration must agree');
   await svg.focus();await page.keyboard.press('Escape');await page.keyboard.press('Control+z');
   await waitUntil(async()=>!(await checked(await api.get(base+`/projects/${pid}`))).elements.some(item=>item.id===line.id),'Undo line');
-  await page.keyboard.press('Control+Shift+z');await waitUntil(async()=>(await checked(await api.get(base+`/projects/${pid}`))).elements.some(item=>item.id===line.id),'Redo line');
+  // Select another object while redo's report refresh is still in flight.
+  // The late refresh must update that selection rather than erase its properties.
+  await page.waitForFunction(()=>!document.querySelector('header button[aria-label="Настройки"]')?.disabled);
+  let releaseReport,reportIsHeld=false;const reportGate=new Promise(resolve=>releaseReport=resolve);
+  await page.route('**/api/projects/'+pid+'/report',async route=>{const response=await route.fetch({url:base+'/projects/'+pid+'/report'});reportIsHeld=true;await reportGate;await route.fulfill({response});},{times:1});
+  await page.keyboard.press('Control+Shift+z');await waitUntil(async()=>reportIsHeld,'Redo must reach the delayed report refresh',200);
+  await waitUntil(async()=>(await checked(await api.get(base+`/projects/${pid}`))).elements.some(item=>item.id===line.id),'Redo line');
+  await page.locator(`[data-element-id="${original.id}"] .point-symbol`).click();releaseReport();
+  await waitUntil(async()=>await page.getByLabel('Комментарий',{exact:true}).count()===1,'Late redo refresh must preserve the new selection and its properties');
   // A dirty property edit enters the same undo/redo history before autosave.
-  await page.locator(`[data-element-id="${original.id}"] .point-symbol`).click();await tool(page,'Свойства');
+  await tool(page,'Свойства');
   await page.getByLabel('Комментарий',{exact:true}).fill('Quick undo/redo');await svg.focus();await page.keyboard.press('Control+z');
   await waitUntil(async()=>(await checked(await api.get(base+`/projects/${pid}`))).elements.find(item=>item.id===original.id)?.comment!=='Quick undo/redo','Undo pending property');
   await page.waitForTimeout(250);await page.keyboard.press('Control+Shift+z');

@@ -12,3 +12,7 @@
 !backend/app/
 !backend/app/assets/
 !backend/app/assets/plan-symbols.json
+
+!design-system/
+!design-system/smart-home-calc/
+!design-system/smart-home-calc/tokens.json

@@ -45,7 +45,7 @@ const backend=process.env.FRAME_TEST_BACKEND||'http://127.0.0.1:8014';
   await page.getByRole('button',{name:'Все КП',exact:true}).click();const hub=page.getByRole('region',{name:'Все коммерческие предложения',exact:true});await hub.getByLabel('Поиск КП',{exact:true}).fill(number);
   await hub.getByRole('button',{name:'Открыть КП '+number,exact:true}).click();
   const editor=page.getByRole('region',{name:'Редактор коммерческого предложения',exact:true});await editor.waitFor();
-  const dimensions=await editor.locator('.quotation-content').evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight}));assert.ok(dimensions.scroll>dimensions.client&&dimensions.client<768,JSON.stringify(dimensions));
+  const dimensions=await editor.locator('.quotation-content').evaluate(node=>({client:node.clientHeight,scroll:node.scrollHeight}));assert.ok(dimensions.scroll<=dimensions.client+1&&dimensions.client<768,'Positions use one table scroll area: '+JSON.stringify(dimensions));
   const table=editor.locator('.quotation-table-wrap');await table.scrollIntoViewIfNeeded();
   assert.ok(await table.evaluate(node=>node.scrollHeight>node.clientHeight));
   const last=editor.getByLabel('Цена строки 40',{exact:true});await last.scrollIntoViewIfNeeded();await last.fill('125.50');

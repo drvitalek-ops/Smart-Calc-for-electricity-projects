@@ -11,6 +11,7 @@ import {VertexIndex,orthogonal,selectionHits,measuredLength} from "./planGeometr
 import PlanLegend,{type LegendEntry} from "./PlanLegend";
 import {shareProject} from "./projectState";
 import PlanScene from "./PlanScene";
+import PlanObjectList from "./PlanObjectList";
 import useStableCallback from "./useStableCallback";
 import {isElectrical,isPowerSupply,isLedStrip,isTrack} from "./planDomain";
 import CategoryEditor,{type Category} from "./CategoryEditor";
@@ -455,10 +456,10 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
-    <section className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.52 используйте копию данных до обновления.</p></div></div>
+    <section className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.53 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.52" target="_blank" rel="noreferrer">Открыть релиз v1.0.52</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.53" target="_blank" rel="noreferrer">Открыть релиз v1.0.53</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -634,6 +635,7 @@ function CatalogManager({
       parameters:{...product.parameters},
     });
   }
+  const [adminOpen,setAdminOpen]=useState(false);
   return (
     <div
       className="modal-backdrop"
@@ -662,6 +664,7 @@ function CatalogManager({
         <div hidden={tab!=='types'}><NomenclatureEditor types={types} categories={catalog.categories} onChanged={onChanged} onDirtyChange={setTypeDirty} onBusyChange={setTypeBusy}/></div>
         <div hidden={tab!=='products'}>
         <label>Поиск в базе<input type="search" aria-label="Поиск в базе товаров" placeholder="Название, артикул, производитель, категория…" value={databaseSearch} onChange={event=>setDatabaseSearch(event.target.value)}/></label>
+        <details className="catalog-admin" open={adminOpen} onToggle={event=>{if(event.currentTarget.open!==adminOpen)setAdminOpen(event.currentTarget.open);}}><summary>Справочники и импорт CSV</summary>
         <div className="catalog-grid">
           <div>
             <h3>Производители</h3>
@@ -805,6 +808,7 @@ function CatalogManager({
             />
           </label>
         </div>
+        </details>
         <div className="catalog-products">
           <div className="product-editor">
             <h3>{form.id ? "Редактирование товара" : "Новый товар"}</h3>
@@ -976,6 +980,7 @@ export default function App() {
     [roomId, setRoomId] = useState<number | null>(null);
   const pendingActions=useRef(0),elementSaveQueue=useRef<Promise<void>>(Promise.resolve());
   const [leftTool,setLeftTool]=useState<string|null>(null),[rightTool,setRightTool]=useState<string|null>(null);
+  useEffect(()=>{const compact=window.matchMedia('(max-width:1099px)'),adapt=()=>{if(compact.matches&&leftTool&&rightTool)setRightTool(null);};adapt();compact.addEventListener('change',adapt);return()=>compact.removeEventListener('change',adapt);},[leftTool,rightTool]);
   const [batchStyle,setBatchStyle]=useState<Record<string,unknown>>({});
   function selectLeftTool(id:string){if(roomMode&&id!=="rooms"){setError("Сначала завершите или отмените контур помещения");return;}if(placing&&id!=="objects"&&linePoints.length){setError("Сначала завершите или отмените линию");return;}if(id!=="objects")setPlacing(false);setLeftTool(current=>current===id?null:id);if(window.innerWidth<1100)setRightTool(null);}
   function selectRightTool(id:string){setRightTool(current=>current===id?null:id);if(window.innerWidth<1100)setLeftTool(null);if(id==='layers')setElementLayersExpanded(true);}
@@ -1027,6 +1032,8 @@ export default function App() {
     [rightPanelVisible, setRightPanelVisible] = useState(true),
     [elementLayersExpanded, setElementLayersExpanded] = useState(false),
     [checkedPageIds, setCheckedPageIds] = useState<number[]>([]);
+  const previousPanels=useRef({left:true,right:true});
+  function focusPlan(){if(!leftPanelVisible&&!rightPanelVisible){setLeftPanelVisible(previousPanels.current.left);setRightPanelVisible(previousPanels.current.right);}else{previousPanels.current={left:leftPanelVisible,right:rightPanelVisible};setLeftPanelVisible(false);setRightPanelVisible(false);}requestAnimationFrame(()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus());}
   const [supplyLinking,setSupplyLinking]=useState<{body:Record<string,unknown>;editId?:number;stripIds:number[];undo:number[][];redo:number[][];resumePlacing:boolean}|null>(null);
   const [lineRedo, setLineRedo] = useState<Point[]>([]);
   const pendingHistory = useRef<boolean[]>([]);
@@ -1375,13 +1382,11 @@ export default function App() {
       "POST",
     );
     if (!result.undone) return;
-    const selectedId = selected?.id,
-      updated = await refresh(project.id);
-    setSelected(
-      selectedId
-        ? (updated.elements.find((item) => item.id === selectedId) ?? null)
-        : null,
-    );
+    const updated = await refresh(project.id);
+    // Keep a newer selection made while undo/redo was refreshing the project.
+    setSelected(current => current
+      ? (updated.elements.find(item => item.id === current.id) ?? null)
+      : null);
     setSelectedIds((ids) =>
       ids.filter((id) => updated.elements.some((item) => item.id === id)),
     );
@@ -1889,7 +1894,7 @@ export default function App() {
           sheet.offsetTop +
           display.y * sheet.clientHeight -
           viewport.clientHeight / 2,
-        behavior: "smooth",
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches?"auto":"smooth",
       });
     }, 50);
   }
@@ -2244,8 +2249,9 @@ export default function App() {
             >
               {leftPanelVisible && (
                 <aside aria-label="Объекты и рамки" className={"objects-panel tool-panel "+(!leftTool?'tool-closed':'')} data-active-tool={leftTool??''} inert={Boolean(supplyLinking)}>
-                  <ToolRail label="Инструменты объектов" active={leftTool} onSelect={selectLeftTool} items={[{id:'objects',label:'Объекты'},{id:'properties',label:'Свойства',icon:'edit'},{id:'style',label:'Оформление',icon:'palette'},{id:'frames',label:'Рамки',icon:'frame'},{id:'rooms',label:'Помещения',icon:'room'},{id:'catalog',label:'Каталог',icon:'catalog',command:()=>openCatalog()}]}/>
+                  <ToolRail label="Инструменты объектов" active={leftTool} onSelect={selectLeftTool} items={[{id:'objects',label:'Объекты'},{id:'list',label:'Список объектов',icon:'list'},{id:'properties',label:'Свойства',icon:'edit'},{id:'style',label:'Оформление',icon:'palette'},{id:'frames',label:'Рамки',icon:'frame'},{id:'rooms',label:'Помещения',icon:'room'},{id:'catalog',label:'Каталог',icon:'catalog',command:()=>openCatalog()}]}/>
                   <div className="tool-panel-content">
+<PlanObjectList key={project.id} items={visibleElements} types={typeMap} rooms={project.rooms} selected={selectionSet} busy={busy} onReturn={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()} onSelect={item=>void run(async()=>{await saveDraftBeforeNavigation();const target=selected?.id===item.id?selected:item;choose(target,false);focusItem(target);if(window.innerWidth<1100)setRightTool(null);requestAnimationFrame(()=>document.querySelector<HTMLElement>('.objects-panel [data-tool-section="properties"] input:not([disabled]),.objects-panel [data-tool-section="properties"] select:not([disabled])')?.focus());})}/>
 <section data-tool-section="objects"><h3>Библиотека</h3>
                   <label>Группа<SearchSelect aria-label="Группа элементов" value={libraryGroup} onChange={event=> {
                     const group=event.target.value;
@@ -2463,7 +2469,7 @@ export default function App() {
                       Выделите объекты рамкой мыши или кликами с зажатым Ctrl.
                     </p>
                   )}
-                  </section><section data-tool-section="properties"><h3>Свойства объекта</h3>
+                  </section><section data-tool-section="properties"><h3>Свойства объекта</h3><ToolButton icon="back" aria-label="Вернуться к плану" onClick={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()}>Вернуться к плану</ToolButton>
                   {selected && selectedIds.length === 1 ? (
                     <fieldset disabled={busy||project.layers.find(layer=>layer.id===selected.layer_id)?.locked} style={{border:0,padding:0}}>
                       <div className="object-title">
@@ -2694,7 +2700,7 @@ export default function App() {
                       }
                       onClick={() => setLeftPanelVisible((value) => !value)}
                     >
-                      {leftPanelVisible ? "◀ Левая" : "Левая ▶"}
+                      <ActionIcon name="chevronLeft"/><span>Левая</span>
                     </button>
                     <button
                       className="panel-toggle"
@@ -2710,27 +2716,27 @@ export default function App() {
                       }
                       onClick={() => setRightPanelVisible((value) => !value)}
                     >
-                      {rightPanelVisible ? "Правая ▶" : "◀ Правая"}
+                      <ActionIcon name="chevronRight"/><span>Правая</span>
                     </button>
+                    <ToolButton icon="fit" aria-label="Фокус на плане" title="Фокус на плане — скрыть панели / восстановить" aria-pressed={!leftPanelVisible&&!rightPanelVisible} onClick={focusPlan}>Фокус на плане</ToolButton>
                 <button
                   className={
                     "label-toggle " + (labelsVisible ? "" : "inactive")
                   }
                   aria-pressed={labelsVisible}
+                  aria-label={labelsVisible ? "Скрыть надписи" : "Показать надписи"} title="Подписи объектов"
                   onClick={() => setLabelsVisible((value) => !value)}
                 >
-                  {labelsVisible ? denseLabels?"Подписи: авто":"Скрыть надписи" : "Показать надписи"}
+                  <ActionIcon name="eye"/><span>{labelsVisible ? denseLabels?"Подписи: авто":"Скрыть надписи" : "Показать надписи"}</span>
                 </button>
-                    {page && <button aria-pressed={showRoomContours} onClick={() => setShowRoomContours(value => !value)}>Контуры помещений</button>}
+                    {page && <button aria-label="Контуры помещений" title="Контуры помещений" aria-pressed={showRoomContours} onClick={() => setShowRoomContours(value => !value)}><ActionIcon name="room"/><span>Контуры помещений</span></button>}
                     <button
                       className={elementsVisible ? "" : "active clean-plan-toggle"}
                       aria-pressed={!elementsVisible}
-                      title="Скрыть или показать все элементы · F7"
+                      title="Скрыть или показать все элементы · F7" aria-label={elementsVisible?"Скрыть элементы · F7":"Показать элементы · F7"}
                       onClick={() => setElementsVisible((value) => !value)}
                     >
-                      {elementsVisible
-                        ? "Скрыть элементы · F7"
-                        : "Показать элементы · F7"}
+                      <ActionIcon name="eyeOff"/><span>{elementsVisible?"Скрыть элементы · F7":"Показать элементы · F7"}</span>
                     </button>
                     <ToolButton icon="undo" aria-label="Отменить действие на плане" title="Отменить · Ctrl+Z" disabled={busy||!project.history?.undo&&!(selected&&elementMap.get(selected.id)&&!sameItem(selected,elementMap.get(selected.id)!))} onClick={()=>void run(()=>undoLast())}/>
                     <ToolButton icon="redo" aria-label="Повторить действие на плане" title="Повторить · Ctrl+Shift+Z" disabled={busy||!project.history?.redo} onClick={()=>void run(()=>undoLast(true))}/>
@@ -2739,7 +2745,7 @@ export default function App() {
                     </button>
                     <span className="zoom-percentage" aria-label="Масштаб плана">{Math.round(zoom * 100)}%</span>
                     <button aria-label="Увеличить план" title="Увеличить · Ctrl+колесо" disabled={zoom>=16} onClick={() => zoomAt(zoom * 1.25)}>＋</button>
-                    <button title="Масштаб 100%" onClick={() => zoomAt(1)}>Сброс</button>
+                    <button title="Масштаб 100%" aria-label="Сброс" onClick={() => zoomAt(1)}><ActionIcon name="refresh"/><span>Сброс</span></button>
                     <ToolButton icon="fit" aria-label="Вписать план" title="Вписать лист · Ctrl+0" onClick={fitPlan}/>
                     <label className="symbol-scale">
                       Точки{" "}
@@ -2760,7 +2766,7 @@ export default function App() {
                     </label>
                     {page && (
                       <button
-                        className={calibrating ? "active" : ""}
+                        className={calibrating ? "active" : ""} aria-label={calibrating?calibrationStart?"Укажите вторую точку":"Укажите первую точку":"Масштаб, мм"} title="Масштаб в миллиметрах"
                         onClick={() => {
                           setCalibrating(!calibrating);
                           setCalibrationStart(null);
@@ -2770,25 +2776,21 @@ export default function App() {
                           setLineCursor(null);
                         }}
                       >
-                        {calibrating
-                          ? calibrationStart
-                            ? "Укажите вторую точку"
-                            : "Укажите первую точку"
-                          : "Масштаб, мм"}
+                        <ActionIcon name="measure"/><span>{calibrating?calibrationStart?"Укажите вторую точку":"Укажите первую точку":"Масштаб, мм"}</span>
                       </button>
                     )}
                     <a
                       className="tool-link"
-                      href={`/api/projects/${project.id}/backup`}
+                      href={`/api/projects/${project.id}/backup`} aria-label="Резервная копия" title="Резервная копия проекта"
                     >
-                      Резервная копия
+                      <ActionIcon name="save"/><span>Резервная копия</span>
                     </a>
                     {page && (
                       <a
                         className="tool-link"
-                        href={`/api/projects/${project.id}/pages/${page.id}/export.pdf`}
+                        href={`/api/projects/${project.id}/pages/${page.id}/export.pdf`} aria-label="План PDF" title="План PDF"
                       >
-                        План PDF
+                        <ActionIcon name="pdf"/><span>План PDF</span>
                       </a>
                     )}
 
@@ -3983,7 +3985,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.53</span>
+        <span>SMART HOME CALC / 1.0.54</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

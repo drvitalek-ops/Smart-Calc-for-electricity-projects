@@ -1,0 +1,12 @@
+import {build} from 'vite';
+import tailwindcss from '@tailwindcss/vite';
+import {mkdir,writeFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+const root=fileURLToPath(new URL('.',import.meta.url));
+const results=await build({configFile:false,root,plugins:[tailwindcss()],define:{'process.env.NODE_ENV':'"production"'},build:{write:false,cssCodeSplit:false,minify:true,lib:{entry:fileURLToPath(new URL('src/design-system/preview.tsx',import.meta.url)),name:'SmartCalcDesignSystem',formats:['iife']},rollupOptions:{output:{inlineDynamicImports:true}}}});
+const outputs=(Array.isArray(results)?results:[results]).flatMap(result=>result.output);
+const js=outputs.filter(o=>o.type==='chunk').map(o=>o.code).join('\n').replaceAll('</script','<\\/script');
+const css=outputs.filter(o=>o.type==='asset'&&o.fileName.endsWith('.css')).map(o=>String(o.source)).join('\n');
+const directory=fileURLToPath(new URL('../design-system/smart-home-calc/',import.meta.url));
+const html='<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Smart Home Calc — дизайн-система</title><style>'+css+'</style></head><body><div id="root"></div><script>'+js+'</script></body></html>';
+await mkdir(directory,{recursive:true});await writeFile(directory+'preview.html',html);console.log('Offline preview: '+directory+'preview.html');

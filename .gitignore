@@ -15,3 +15,6 @@ packaging/windows-launcher/SmartHomeCalc.Desktop.exe
 packaging/windows-launcher/SmartHomeCalc.Backend.exe
 release/
 *.db
+
+# Reproducible offline component gallery
+design-system/smart-home-calc/preview.html

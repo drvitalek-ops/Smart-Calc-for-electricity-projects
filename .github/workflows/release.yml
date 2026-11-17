@@ -39,6 +39,13 @@ jobs:
         shell: pwsh
         run: ./packaging/build-windows-exe.ps1
 
+      - name: Build and package offline design system
+        shell: pwsh
+        run: |
+          python scripts/build-design-tokens.py --check
+          npm run design-system:preview --prefix frontend
+          python scripts/package-design-system.py
+
       - name: Verify checksum
         working-directory: release
         shell: pwsh
@@ -66,6 +73,8 @@ jobs:
           gh release create $releaseTag `
             release/SmartHomeCalc-Windows-x64.exe `
             release/SmartHomeCalc-Windows-x64.exe.sha256 `
+            release/SmartHomeCalc-Design-System.html `
+            release/SmartHomeCalc-Design-System.zip `
             --repo $env:GITHUB_REPOSITORY `
             --target $env:RELEASE_COMMIT `
             --title "Smart Home Calc $releaseTag" `

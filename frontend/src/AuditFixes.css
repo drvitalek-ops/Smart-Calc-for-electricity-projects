@@ -1,5 +1,5 @@
 /* Desktop audit A01–A10: preserve the compact canvas and the approved PDF. */
-:root{--muted:#526874;--accent:#147d6d;--error:#a52d35;--label:#4c626f}
+:root{--muted:var(--ds-color-muted);--accent:var(--ds-color-brand);--error:var(--ds-color-error);--label:var(--ds-color-label)}
 label{color:var(--label)}
 .decimal-field{display:grid;min-width:0;width:100%;gap:3px}
 .field-error{display:block;color:var(--error)!important;font-size:11px!important;line-height:1.35;overflow-wrap:anywhere}
@@ -66,10 +66,10 @@ input[aria-invalid=true]{border-color:var(--error)!important;background:#fff8f8}
 .quote-workspace .quotation-table td>small,.quote-workspace .quotation-table .manual-quantity+small{margin-top:2px;line-height:14px}
 @media(max-width:1250px){.quote-workspace .quotation-heading p{max-width:170px}.quote-workspace .quote-overview .quotation-export-check{max-width:220px}.quote-workspace .quotation-room-actions button{font-size:0;min-width:30px;gap:0}.quote-workspace .quotation-room-actions button>svg{width:17px;height:17px}.quote-workspace .quotation-position-tools>button{font-size:0;gap:0;min-width:31px}.quote-workspace .quotation-position-tools>button>svg{width:17px;height:17px}}
 
-.quote-workspace .quotation-totals article:nth-child(2)>small{color:#b8d2c5}
+.quote-workspace .quotation-totals article:nth-child(2)>small{color:var(--ds-color-partner-label)}
 
 .quote-workspace .quotation-content[data-tool=positions] .quote-overview{margin:0}
 .quote-workspace .quotation-position-tools{margin:2px 0}
 
 .quote-workspace .quote-overview article>.quote-number-warning{font-size:11px;color:var(--error)}
-.quote-workspace .quote-overview article:last-child>.quote-number-warning{color:#ffc2c2}
+.quote-workspace .quote-overview article:last-child>.quote-number-warning{color:var(--ds-color-error-on-dark)}

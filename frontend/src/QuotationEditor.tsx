@@ -1,3 +1,4 @@
+import {StatusBadge} from "./ui/Controls";
 import QuotePreflight from "./QuotePreflight";
 import {quoteNumberIssues,type QuoteNumberIssue} from "./quotationValidation";
 import {priceIdentity,priceConflicts,exportIssues,exportAlarm} from "./quotationPrices";
@@ -331,7 +332,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   return <section className="quotation-editor quote-workspace" aria-label="Редактор коммерческого предложения">
     <ToolRail label="Инструменты коммерческого предложения" active={quoteTool} onSelect={chooseQuoteTool} items={tools}/>
     <div className="quotation-content" data-tool={quoteTool}>
-    <div className="quotation-heading"><div><div className="eyebrow">КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div><h2>КП № {doc.number}</h2><p>{projectName} · {tools.find(tool=>tool.id===quoteTool)?.label}</p><div className="quotation-status" role="status">{busy ? "Сохранение…" : dirty ? "Есть несохранённые изменения" : "КП сохранено"}{calculating ? " · Пересчёт итогов…" : ""}</div></div><div className="quotation-switch">
+    <div className="quotation-heading"><div><div className="eyebrow">КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div><h2>КП № {doc.number}</h2><p>{projectName} · {tools.find(tool=>tool.id===quoteTool)?.label}</p><div className="quotation-status" role="status"><StatusBadge tone={busy?"info":dirty?"warning":"success"}>{busy ? "Сохранение…" : dirty ? "Есть несохранённые изменения" : "КП сохранено"}{calculating ? " · Пересчёт итогов…" : ""}</StatusBadge></div></div><div className="quotation-switch">
       <label>Цены<SearchSelect aria-label="Цены предпросмотра КП" value={mode} onChange={event=>setMode(event.target.value as "client"|"partner")}><option value="partner">Партнёр — со скидками</option><option value="client">Клиент — без скидок</option></SearchSelect></label>
     <details className="quotation-help"><summary>Справка по КП</summary><div><p>Количество связанных позиций обновляется из плана при открытии, сохранении и экспорте. «Вручную» сохраняет заданное вами количество.</p><p>Пустая скидка строки использует общую. Индивидуальная скидка, включая 0%, заменяет общую. В клиентском PDF скидки отключены.</p><p>Ctrl+Z — отмена правки. Ctrl+↑/↓ на маркере строки — перемещение позиции.</p></div></details>
     </div></div>

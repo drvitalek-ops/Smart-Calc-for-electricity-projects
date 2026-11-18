@@ -152,7 +152,7 @@ def export_quotation(quote,mode,font_path=None):
 
     new_page()
     # Dark masthead with a green edge and the company's editable contact details.
-    page.draw_rect(pymupdf.Rect(0,0,width,114),fill=theme('header',DARK),color=None)
+    page.draw_rect(pymupdf.Rect(0,0,width,114),fill=theme('header',globals()['DARK']),color=None)
     for step in range(18):
         left=width*.62+step*width*.38/18
         shade=theme('header',(.06,.09+.16*step/18,.11+.02*step/18))
@@ -193,7 +193,7 @@ def export_quotation(quote,mode,font_path=None):
     y=max(340,y+15)
     total_row_height=36
     bar_height=70+max(0,len(result['totals'])-1)*total_row_height
-    page.draw_rect(pymupdf.Rect(margin,y,width-margin,y+bar_height),fill=theme('total',DARK),color=None,radius=.16)
+    page.draw_rect(pymupdf.Rect(margin,y,width-margin,y+bar_height),fill=theme('total',globals()['DARK']),color=None,radius=.16)
     text(margin+22,y+bar_height/2+3,'ИТОГО ПО КП',8,theme('total_label',(.7,.73,.75)),True)
     for index,(code,values_for_currency) in enumerate(result['totals'].items()):
         amount=number(values_for_currency['total'])+' '+currency(code)

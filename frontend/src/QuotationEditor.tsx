@@ -7,7 +7,7 @@ import {api,apiFetch,errorMessage} from "./errors";
 import {moveQuoteLine,QUOTE_LINE_DRAG} from "./quotationOrder";
 import ImageField,{imagePaste,prepareImage,imageDrop,imageDragOver} from "./ImageField";
 import SearchInput from "./SearchInput";
-import {quotationColors,type QuoteStyle} from "./quotationTheme";
+import {quotationColors,quotationColor,type QuoteStyle} from "./quotationTheme";
 import QuotationPreview from "./QuotationPreview";
 import ToolRail, {ActionIcon,ToolButton, type ToolItem} from "./ToolRail";
 import SearchSelect,{matchesSearch,type SearchOption} from "./SearchSelect";
@@ -429,7 +429,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
         <label>Шрифт документа<SearchSelect aria-label="Шрифт документа КП" value={doc.style?.font??'Golos'} onChange={e=>change(q=>({...q,style:{...q.style,font:e.target.value as QuoteStyle['font']}}))}><option value="Golos">Golos Text · исходный</option><option value="DejaVuSans">DejaVu Sans</option><option value="DejaVuSerif">DejaVu Serif</option></SearchSelect></label>
         <label>Размер текста таблицы · {Math.round((doc.style?.table_scale??1)*100)}%<input aria-label="Размер текста таблицы КП" type="range" min="80" max="130" step="5" value={(doc.style?.table_scale??1)*100} onChange={e=>change(q=>({...q,style:{...q.style,table_scale:Number(e.target.value)/100}}))}/></label>
         <p className="hint">Цвета и шрифт применяются к предпросмотру и итоговому PDF. Все шрифты работают без интернета.</p>
-        <div className="quote-theme-colors">{quotationColors.map(token=><label key={token.key}><span>{token.label}</span><input type="color" aria-label={'Цвет: '+token.label} value={doc.style?.colors?.[token.key]??token.color} onChange={e=>change(q=>({...q,style:{...q.style,colors:{...q.style?.colors,[token.key]:e.target.value}}}))}/><button type="button" aria-label={'Сбросить цвет: '+token.label} disabled={!doc.style?.colors?.[token.key]} onClick={()=>change(q=>{const colors={...q.style?.colors};delete colors[token.key];return {...q,style:{...q.style,colors}};})}><ActionIcon name="undo"/></button></label>)}</div>
+        <div className="quote-theme-colors">{quotationColors.map(token=><label key={token.key}><span>{token.label}</span><input type="color" aria-label={'Цвет: '+token.label} value={quotationColor(doc.style,token)} onChange={e=>change(q=>({...q,style:{...q.style,colors:{...q.style?.colors,[token.key]:e.target.value}}}))}/><button type="button" aria-label={'Сбросить цвет: '+token.label} disabled={!doc.style?.colors?.[token.key]} onClick={()=>change(q=>{const colors={...q.style?.colors};delete colors[token.key];return {...q,style:{...q.style,colors}};})}><ActionIcon name="undo"/></button></label>)}</div>
         <ToolButton icon="refresh" onClick={()=>{if(confirm('Вернуть исходные цвета и шрифт КП? Реквизиты и позиции сохранятся.'))change(q=>({...q,style:{}}));}}>Исходное оформление</ToolButton>
         {doc.benefits.length<4&&<ToolButton icon="plus" onClick={()=>change(q=>({...q,benefits:[...q.benefits,{title:'ПРЕИМУЩЕСТВО',text:'Описание'}]}))}>Добавить преимущество</ToolButton>}
       </fieldset></div>{quoteTool==='brand'&&<div className="quote-designer-preview"><QuotationPreview base={base} document={doc} mode={mode}/></div>}</div><p className="hint">Примечание о НДС и гарантийные условия укажите в соответствии с вашими ценами и товарами.</p></details>

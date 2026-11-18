@@ -191,3 +191,12 @@ export const quotationColors = [
   }
 ] as const;
 export type QuoteStyle={font?:"Golos"|"DejaVuSans"|"DejaVuSerif";table_scale?:number;colors?:Record<string,string>};
+
+const inheritedColors:Record<string,string[]>={accent:['card_label','total_amount','benefit_icon','header_contact'],text:['title','card_value','customer','table_name','table_quantity','group_text','benefit_title','footer_title'],muted:['total_tax','table_header_text','table_price','table_unit','benefit_text','footer_text']};
+/** Show the effective inherited color, including transparent table rows. */
+export function quotationColor(style:QuoteStyle|undefined,token:{key:string;color:string}){
+  const colors=style?.colors??{};if(colors[token.key])return colors[token.key];
+  if(token.key==='table_row'||token.key==='table_alternate')return colors.table_row??colors.page??token.color;
+  const parent=Object.keys(inheritedColors).find(key=>inheritedColors[key].includes(token.key));
+  return parent&&colors[parent]?colors[parent]:token.color;
+}

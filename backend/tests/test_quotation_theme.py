@@ -34,3 +34,12 @@ def test_theme_saved_and_preview_uses_export_renderer(client):
     assert restored['style']==quote['style']
     response=client.post(f'/api/quotations/{qid}/preview.png?mode=client&page=1',json=restored)
     assert response.status_code==200 and response.content.startswith(b'\x89PNG')
+
+
+def test_primary_text_color_does_not_recolor_dark_backgrounds():
+    with pymupdf.open(stream=export_quotation(document({'colors':{'text':'#654321'}}),'client'),filetype='pdf') as pdf:
+        dark=(14/255,20/255,24/255)
+        fills=[drawing['fill'] for drawing in pdf[0].get_drawings() if drawing.get('fill')]
+        assert sum(all(abs(a-b)<.001 for a,b in zip(fill,dark)) for fill in fills)>=2
+        spans=[span for block in pdf[0].get_text('dict')['blocks'] if 'lines' in block for line in block['lines'] for span in line['spans']]
+        assert any(span['color']==0x654321 for span in spans)

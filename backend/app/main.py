@@ -119,7 +119,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.55'
+APP_VERSION = '1.0.56'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 from .errors import install_error_handlers, exception_message
 install_error_handlers(app)
@@ -1473,7 +1473,7 @@ def frame_elements(db, pid, element_ids):
     if len(elements)!=len(ids):
         raise HTTPException(404,'Один или несколько элементов не найдены')
     types={item.id:require(db,ElementType,item.type_id) for item in elements}
-    if any(types[item.id].category!='Электроустановки' for item in elements):
+    if any((types[item.id].category!='Электроустановки' or types[item.id].unit!='шт') for item in elements):
         raise HTTPException(422,'Рамку можно назначить только электроустановкам')
     if len({item.room_id for item in elements})!=1:
         raise HTTPException(422,'Элементы рамки должны находиться в одном помещении')

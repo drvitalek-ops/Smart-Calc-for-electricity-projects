@@ -1,7 +1,8 @@
 import {api,errorMessage} from './errors';
 import {useCallback,useEffect,useState} from 'react';
 import {matchesSearch} from './SearchSelect';
-import QuotationEditor,{type QuotationKind} from './QuotationEditor';
+import QuotationEditor from './QuotationLoader';
+import type {QuotationKind} from './QuotationEditor';
 import {ActionIcon} from './ToolRail';
 import {WorkspaceHeading,WorkspaceMetric,EmptyState} from './ui/Workspace';
 

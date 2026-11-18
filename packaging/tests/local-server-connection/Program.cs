@@ -44,6 +44,16 @@ Check(!DesktopWorkbenchState.TryRead(backend.Address, backend.Address,
 Check(!DesktopWorkbenchState.TryRead(backend.Address, backend.Address,"not json",out _), "Invalid JSON must not crash the desktop.");
 Console.WriteLine("PASS: native dirty/busy state is accepted only from the application's origin.");
 
+foreach (var action in new[] { "drag", "minimize", "maximize", "close" })
+{
+    var json = "{\"type\":\"window-control\",\"action\":\"" + action + "\"}";
+    Check(DesktopWindowCommand.Read(backend.Address, backend.Address, json) == action, "Accept valid local caption commands.");
+    Check(DesktopWindowCommand.Read(proxy.Address, backend.Address, json) is null, "Reject caption commands from another port.");
+}
+Check(DesktopWindowCommand.Read(backend.Address, backend.Address, "{\"type\":\"window-control\",\"action\":\"execute\"}") is null, "Reject unknown native actions.");
+Check(DesktopWindowCommand.Read(backend.Address, backend.Address, "[]") is null, "Reject malformed native actions.");
+Console.WriteLine("PASS: native caption commands validate origin and action.");
+
 static void Check(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);

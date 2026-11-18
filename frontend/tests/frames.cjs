@@ -19,7 +19,7 @@ const assert=require('node:assert/strict');
  const types=await (await api.get(base+'/types')).json();
  const type=types.find(x=>x.name==='Розетка одинарная');
  for(let i=0;i<2;i++)assert.equal((await api.post(base+`/projects/${pid}/elements`,{data:{page_id:sheets[0].id,layer_id:p.layers[0].id,type_id:type.id,room_id:null,product_id:null,x:.25+i*.15,y:.3,parameters:{quantity:1,ip:20},geometry:{}}})).status(),201);
- async function tool(name){const button=page.getByRole('button',{name:'Инструмент: '+name,exact:true});if(await button.getAttribute('aria-pressed')!=='true')await button.click();}
+ async function tool(name){const button=page.getByRole('button',{name:'Инструмент: '+name,exact:true});if(await button.getAttribute('aria-pressed')!=='true'||await button.locator('xpath=ancestor::aside[contains(@class,"tool-closed")]').count())await button.click();}
  await page.goto(frontend);
  await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));
  await page.locator('.point-symbol').first().waitFor();

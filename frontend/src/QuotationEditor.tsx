@@ -7,6 +7,7 @@ import {api,apiFetch,errorMessage} from "./errors";
 import {moveQuoteLine,QUOTE_LINE_DRAG} from "./quotationOrder";
 import ImageField,{imagePaste,prepareImage,imageDrop,imageDragOver} from "./ImageField";
 import SearchInput from "./SearchInput";
+import {quotationColors,type QuoteStyle} from "./quotationTheme";
 import QuotationPreview from "./QuotationPreview";
 import ToolRail, {ActionIcon,ToolButton, type ToolItem} from "./ToolRail";
 import SearchSelect,{matchesSearch,type SearchOption} from "./SearchSelect";
@@ -26,7 +27,7 @@ type Line = {
 type Prices = {lines:(Line & {total:string;base_total:string;discount_amount:string;effective_discount:string})[];
   totals:Record<string,{base:string;discount:string;total:string}>};
 type Quote = {
-  revision:number; room_layout?:'combined'|'rooms'|'legacy'; number:string; date:string; title:string; seller:string; customer:string;
+  style?:QuoteStyle;revision:number; room_layout?:'combined'|'rooms'|'legacy'; number:string; date:string; title:string; seller:string; customer:string;
   contact:string; terms:string; global_discount:string; lines:Line[];
   city:string;phone:string;email:string;website:string;address:string;slogan:string;valid_days:number;
   tax_note:string;logo:string;benefits:{title:string;text:string}[];
@@ -418,12 +419,20 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
         <p className="hint">Найдено товаров: {filteredProducts.length}</p>
       </section>}
       <fieldset disabled={busy} className="quotation-notes"><label>Условия предложения<textarea aria-label="Условия КП" rows={4} value={doc.terms} onChange={e=>change(q=>({...q,terms:e.target.value}))}/></label></fieldset>
-      <details open className="quotation-brand"><summary>Оформление и реквизиты</summary><fieldset disabled={busy} className="quotation-fields">
+      <details open className="quotation-brand"><summary>Конструктор КП · оформление и реквизиты</summary><div className="quote-designer"><div className="quote-designer-controls"><fieldset disabled={busy} className="quotation-fields">
         {([["title","Заголовок КП"],["seller","Компания"],["city","Город"],["phone","Телефон"],["email","E-mail"],["website","Сайт"],["address","Адрес"],["slogan","Слоган"],["tax_note","Примечание о НДС"]] as const).map(([key,label])=><label key={key}>{label}<input aria-label={label+" КП"} value={doc[key]} onChange={e=>change(q=>({...q,[key]:e.target.value}))}/></label>)}
         <ImageField label="Логотип КП" value={doc.logo} disabled={busy} logo onChange={logo=>change(q=>({...q,logo}))}/>
         {doc.benefits.map((benefit,index)=><label key={index}>Преимущество {index+1}<input aria-label={"Заголовок преимущества "+(index+1)} value={benefit.title} onChange={e=>change(q=>({...q,benefits:q.benefits.map((item,i)=>i===index ? {...item,title:e.target.value} : item)}))}/><input aria-label={"Текст преимущества "+(index+1)} value={benefit.text} onChange={e=>change(q=>({...q,benefits:q.benefits.map((item,i)=>i===index ? {...item,text:e.target.value} : item)}))}/></label>)}
         <button onClick={()=>change(q=>({...q,benefits:[]}))}>Убрать блок преимуществ</button>
-      </fieldset><p className="hint">Примечание о НДС и гарантийные условия укажите в соответствии с вашими ценами и товарами.</p></details>
+      </fieldset>
+      <fieldset disabled={busy} className="quote-theme-controls"><legend>Шрифт и цвета</legend>
+        <label>Шрифт документа<SearchSelect aria-label="Шрифт документа КП" value={doc.style?.font??'Golos'} onChange={e=>change(q=>({...q,style:{...q.style,font:e.target.value as QuoteStyle['font']}}))}><option value="Golos">Golos Text · исходный</option><option value="DejaVuSans">DejaVu Sans</option><option value="DejaVuSerif">DejaVu Serif</option></SearchSelect></label>
+        <label>Размер текста таблицы · {Math.round((doc.style?.table_scale??1)*100)}%<input aria-label="Размер текста таблицы КП" type="range" min="80" max="130" step="5" value={(doc.style?.table_scale??1)*100} onChange={e=>change(q=>({...q,style:{...q.style,table_scale:Number(e.target.value)/100}}))}/></label>
+        <p className="hint">Цвета и шрифт применяются к предпросмотру и итоговому PDF. Все шрифты работают без интернета.</p>
+        <div className="quote-theme-colors">{quotationColors.map(token=><label key={token.key}><span>{token.label}</span><input type="color" aria-label={'Цвет: '+token.label} value={doc.style?.colors?.[token.key]??token.color} onChange={e=>change(q=>({...q,style:{...q.style,colors:{...q.style?.colors,[token.key]:e.target.value}}}))}/><button type="button" aria-label={'Сбросить цвет: '+token.label} disabled={!doc.style?.colors?.[token.key]} onClick={()=>change(q=>{const colors={...q.style?.colors};delete colors[token.key];return {...q,style:{...q.style,colors}};})}><ActionIcon name="undo"/></button></label>)}</div>
+        <ToolButton icon="refresh" onClick={()=>{if(confirm('Вернуть исходные цвета и шрифт КП? Реквизиты и позиции сохранятся.'))change(q=>({...q,style:{}}));}}>Исходное оформление</ToolButton>
+        {doc.benefits.length<4&&<ToolButton icon="plus" onClick={()=>change(q=>({...q,benefits:[...q.benefits,{title:'ПРЕИМУЩЕСТВО',text:'Описание'}]}))}>Добавить преимущество</ToolButton>}
+      </fieldset></div>{quoteTool==='brand'&&<div className="quote-designer-preview"><QuotationPreview base={base} document={doc} mode={mode}/></div>}</div><p className="hint">Примечание о НДС и гарантийные условия укажите в соответствии с вашими ценами и товарами.</p></details>
     </> : <QuotationPreview base={base} document={doc} mode={mode}/>}
     </div>
     <div className="quotation-dock" role="toolbar" aria-label="Действия с позициями КП">

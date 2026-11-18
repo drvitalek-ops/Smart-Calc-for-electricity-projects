@@ -8,5 +8,6 @@
   <ItemGroup>
     <Compile Include="../../windows-desktop/LocalServerConnection.cs" Link="LocalServerConnection.cs" />
     <Compile Include="../../windows-desktop/DesktopWorkbenchState.cs" Link="DesktopWorkbenchState.cs" />
+    <Compile Include="../../windows-desktop/DesktopWindowCommand.cs" Link="DesktopWindowCommand.cs" />
   </ItemGroup>
 </Project>

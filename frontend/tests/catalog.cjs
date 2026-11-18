@@ -22,7 +22,7 @@ const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
   const placed=await (await api.post(base+`/projects/${pid}/elements`,{data:{page_id:sheetId,layer_id:project.layers[0].id,type_id:usb.id,x:.3,y:.3,parameters:{quantity:1,ip:44}}})).json();
   await page.goto(frontend);await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));
   const svg=page.locator('.sheet > svg');await svg.waitFor();
-  async function tool(name){const button=page.getByRole('button',{name:'Инструмент: '+name,exact:true});if(await button.getAttribute('aria-pressed')!=='true')await button.click();}
+  async function tool(name){const button=page.getByRole('button',{name:'Инструмент: '+name,exact:true});if(await button.getAttribute('aria-pressed')!=='true'||await button.locator('xpath=ancestor::aside[contains(@class,"tool-closed")]').count())await button.click();}
   await tool('Объекты');await tool('Слои');
   const left=page.getByRole('complementary',{name:'Объекты и рамки',exact:true}),right=page.getByRole('complementary',{name:'Слои и страницы',exact:true});
   assert.equal(await left.getByRole('heading',{name:'Слои элементов',exact:true}).count(),0);

@@ -1,6 +1,7 @@
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.Sockets;
@@ -25,7 +26,7 @@ internal static class Program
 
 internal sealed class MainWindow : Form
 {
-    private const string ApplicationVersion = "1.0.55";
+    private const string ApplicationVersion = "1.0.56";
     private static readonly string InstallDirectory = Path.GetDirectoryName(Environment.ProcessPath)
         ?? AppContext.BaseDirectory;
     private readonly int backendPort = FindAvailablePort();
@@ -63,6 +64,9 @@ internal sealed class MainWindow : Form
         Width = 1440;
         Height = 900;
         MinimumSize = new Size(1024, 700);
+        FormBorderStyle = FormBorderStyle.None;
+        Padding = new Padding(5);
+        MaximizedBounds = Screen.FromControl(this).WorkingArea;
         WindowState = FormWindowState.Maximized;
         BackColor = Color.FromArgb(15, 23, 42);
         Controls.Add(status);
@@ -93,6 +97,13 @@ internal sealed class MainWindow : Form
             {
                 if (DesktopWorkbenchState.TryRead(eventArgs.Source, ApplicationUrl, eventArgs.WebMessageAsJson, out var state))
                     workbenchState = state;
+                switch (DesktopWindowCommand.Read(eventArgs.Source, ApplicationUrl, eventArgs.WebMessageAsJson))
+                {
+                    case "drag": ReleaseCapture(); SendMessage(Handle, 0xA1, (IntPtr)2, IntPtr.Zero); break;
+                    case "minimize": WindowState = FormWindowState.Minimized; break;
+                    case "maximize": ToggleMaximize(); break;
+                    case "close": Close(); break;
+                }
             };
             webView.CoreWebView2.NewWindowRequested += (_, eventArgs) =>
             {
@@ -153,6 +164,31 @@ internal sealed class MainWindow : Form
                 MessageBoxIcon.Error);
             Close();
         }
+    }
+
+    [DllImport("user32.dll")] private static extern bool ReleaseCapture();
+    [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.Style |= 0x00040000 | 0x00080000 | 0x00010000 | 0x00020000; return cp; }
+    }
+    private void ToggleMaximize()
+    {
+        MaximizedBounds = Screen.FromControl(this).WorkingArea;
+        WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+    }
+    protected override void WndProc(ref Message message)
+    {
+        // Keep native resize edges, Snap and system keyboard commands with an HTML caption.
+        if (message.Msg == 0x83 && message.WParam != IntPtr.Zero) { message.Result = IntPtr.Zero; return; }
+        base.WndProc(ref message);
+        if (message.Msg != 0x84 || WindowState != FormWindowState.Normal) return;
+        var screen = new Point(unchecked((short)message.LParam.ToInt64()), unchecked((short)(message.LParam.ToInt64() >> 16)));
+        var point = PointToClient(screen); var edge = Math.Max(5, DeviceDpi * 5 / 96);
+        bool left = point.X < edge, right = point.X >= ClientSize.Width - edge,
+            top = point.Y < edge, bottom = point.Y >= ClientSize.Height - edge;
+        var hit = top ? (left ? 13 : right ? 14 : 12) : bottom ? (left ? 16 : right ? 17 : 15) : left ? 10 : right ? 11 : 1;
+        message.Result = (IntPtr)hit;
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)

@@ -9,5 +9,6 @@ import './Workbench.css'
 import './QuotationRows.css'
 import './AuditFixes.css'
 import './VisualRefresh.css'
+import './WorkbenchNext.css'
 installRussianValidation(document);
 createRoot(document.getElementById('root')!).render(<React.StrictMode><AppErrorBoundary><App/></AppErrorBoundary></React.StrictMode>)

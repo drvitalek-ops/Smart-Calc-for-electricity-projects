@@ -77,11 +77,11 @@
   --ds-size-icon-small: 14px;
   --ds-size-icon: 16px;
   --ds-size-icon-rail: 20px;
-  --ds-size-rail: 56px;
+  --ds-size-rail: 48px;
   --ds-size-rail-expanded: 190px;
-  --ds-size-rail-item: 42px;
-  --ds-size-panel-left: 310px;
-  --ds-size-panel-right: 325px;
+  --ds-size-rail-item: 39px;
+  --ds-size-panel-left: 298px;
+  --ds-size-panel-right: 304px;
   --ds-motion-fast: 120ms;
   --ds-motion-panel: 180ms;
   --ds-layer-table: 3;

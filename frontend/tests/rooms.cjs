@@ -21,7 +21,7 @@ const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
   const project=await (await api.get(base+`/projects/${pid}`)).json();
   const kind=(await (await api.get(base+'/types')).json()).find(item=>item.name==='Розетка одинарная');
   for(const [x,y] of [[.2,.45],[.25,.5]]) assert.equal((await api.post(base+`/projects/${pid}/elements`,{data:{page_id:sheetId,layer_id:project.layers[0].id,type_id:kind.id,x,y,parameters:{quantity:1}}})).status(),201);
-  async function tool(name){const button=page.getByRole('button',{name:'Инструмент: '+name,exact:true});if(await button.getAttribute('aria-pressed')!=='true')await button.click();}
+  async function tool(name){const button=page.getByRole('button',{name:'Инструмент: '+name,exact:true});if(await button.getAttribute('aria-pressed')!=='true'||await button.locator('xpath=ancestor::aside[contains(@class,"tool-closed")]').count())await button.click();}
  await page.goto(frontend);
   await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));
   const svg=page.locator('.sheet > svg');await svg.waitFor();

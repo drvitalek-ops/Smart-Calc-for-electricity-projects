@@ -1,0 +1,47 @@
+{
+  "project": 1,
+  "objects": 601,
+  "pointerMovesPerRun": 60,
+  "runs": [
+    {
+      "counts": {
+        "PlanObject": 60
+      },
+      "labelMs": 0,
+      "taskMs": 459.353,
+      "wallMs": 2033.283042
+    },
+    {
+      "counts": {
+        "PlanObject": 60
+      },
+      "labelMs": 0,
+      "taskMs": 322.805,
+      "wallMs": 2049.8683770000007
+    },
+    {
+      "counts": {
+        "PlanObject": 60
+      },
+      "labelMs": 0,
+      "taskMs": 340.40999999999985,
+      "wallMs": 2050.6143820000016
+    },
+    {
+      "counts": {
+        "PlanObject": 60
+      },
+      "labelMs": 0,
+      "taskMs": 309.871,
+      "wallMs": 2035.2864840000002
+    },
+    {
+      "counts": {
+        "PlanObject": 60
+      },
+      "labelMs": 0,
+      "taskMs": 356.8920000000002,
+      "wallMs": 2050.1911280000004
+    }
+  ]
+}

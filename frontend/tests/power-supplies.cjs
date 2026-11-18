@@ -21,7 +21,7 @@ const backend = process.env.FRAME_TEST_BACKEND || 'http://127.0.0.1:8014';
   assert.equal((await api.post(base+`/pages/${sheetId}/calibrate`,{data:{x1:0,y1:0,x2:1,y2:0,real_length_mm:5000}})).status(),200);
   let wattsAnswer='120';
   page.on('dialog',dialog=>dialog.accept(wattsAnswer));
-  async function tool(name){const button=page.getByRole('button',{name:'Инструмент: '+name,exact:true});if(await button.getAttribute('aria-pressed')!=='true')await button.click();}
+  async function tool(name){const button=page.getByRole('button',{name:'Инструмент: '+name,exact:true});if(await button.getAttribute('aria-pressed')!=='true'||await button.locator('xpath=ancestor::aside[contains(@class,"tool-closed")]').count())await button.click();}
  await page.goto(frontend);await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));
   const svg=page.locator('.sheet > svg');await svg.waitFor();
   const click=async(x,y,options={})=>{const rect=await svg.boundingBox();await svg.click({position:{x:rect.width*x,y:rect.height*y},...options})};

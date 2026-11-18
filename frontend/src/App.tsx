@@ -4,6 +4,9 @@ import LayerTree from "./LayerTree";
 import {planGroup,layerGroups,displayedElement} from "./planGroups";
 import {useDesktopState} from "./desktopBridge";
 import usePlanWindow from "./usePlanWindow";
+import RoomLabels from "./RoomLabels";
+import useProjectView,{readProjectView} from "./useProjectView";
+import DesktopCaption,{isDesktop,captionPointer,captionDoubleClick} from "./DesktopCaption";
 import usePlanCamera from "./usePlanCamera";
 import PlanStatusBar,{type PlanStatusHandle} from "./PlanStatusBar";
 import useRafState from "./useRafState";
@@ -11,7 +14,7 @@ import usePreference from "./usePreference";
 import {VertexIndex,orthogonal,selectionHits,measuredLength} from "./planGeometry";
 import PlanLegend,{type LegendEntry} from "./PlanLegend";
 import {shareProject} from "./projectState";
-import PlanScene from "./PlanScene";
+import PlanScene,{type PlanPreviewHandle} from "./PlanScene";
 import PlanObjectList from "./PlanObjectList";
 import useStableCallback from "./useStableCallback";
 import {isElectrical,isPowerSupply,isLedStrip,isTrack} from "./planDomain";
@@ -22,7 +25,7 @@ import ToolRail, {ToolButton,ActionIcon} from "./ToolRail";
 import {AppearanceEditor,CustomFieldsEditor,CoordinateEditor,PlanSymbol,PointMarker,appearanceKeys} from "./PlanAppearance";
 import SearchSelect, {matchesSearch,SearchHighlight} from "./SearchSelect";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import QuotationEditor from "./QuotationEditor";
+import QuotationEditor from "./QuotationLoader";
 import QuotationHub from "./QuotationHub";
 export type Point = { x: number; y: number };
 export type Page = {
@@ -458,10 +461,10 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
-    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.54 используйте копию данных до обновления.</p></div></div>
+    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.55 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.54" target="_blank" rel="noreferrer">Открыть релиз v1.0.54</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.55" target="_blank" rel="noreferrer">Открыть релиз v1.0.55</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div id="settings-transfer" tabIndex={-1} className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -969,14 +972,29 @@ export default function App() {
     [typeId, setTypeId] = useState<number | null>(null),
     [roomId, setRoomId] = useState<number | null>(null);
   const pendingActions=useRef(0),elementSaveQueue=useRef<Promise<void>>(Promise.resolve());
-  const [leftTool,setLeftTool]=useState<string|null>(null),[rightTool,setRightTool]=useState<string|null>(null);
-  useEffect(()=>{const compact=window.matchMedia('(max-width:1099px)'),adapt=()=>{if(compact.matches&&leftTool&&rightTool)setRightTool(null);};adapt();compact.addEventListener('change',adapt);return()=>compact.removeEventListener('change',adapt);},[leftTool,rightTool]);
+  const [leftTool,setLeftTool]=useState<string|null>("objects"),[rightTool,setRightTool]=useState<string|null>("layers");
+  const [leftExpanded,setLeftExpanded]=useState(false),[rightExpanded,setRightExpanded]=useState(false),[highlightUnframed,setHighlightUnframed]=useState(false),[roomLabelsVisible,setRoomLabelsVisible]=useState(true);
+  useEffect(()=>{const compact=window.matchMedia('(max-width:1099px)'),adapt=()=>{if(compact.matches&&leftExpanded&&rightExpanded)setRightExpanded(false);};adapt();compact.addEventListener('change',adapt);return()=>compact.removeEventListener('change',adapt);},[leftExpanded,rightExpanded]);
   const [batchStyle,setBatchStyle]=useState<Record<string,unknown>>({});
-  function selectLeftTool(id:string){if(roomMode&&id!=="rooms"){setError("Сначала завершите или отмените контур помещения");return;}if(placing&&id!=="objects"&&linePoints.length){setError("Сначала завершите или отмените линию");return;}if(id!=="objects")setPlacing(false);setLeftTool(current=>current===id?null:id);if(window.innerWidth<1100)setRightTool(null);}
-  function selectRightTool(id:string){setRightTool(current=>current===id?null:id);if(window.innerWidth<1100)setLeftTool(null);if(id==='layers')setElementLayersExpanded(true);}
+  function selectLeftTool(id:string){
+    if(roomMode&&id!=="rooms"){setError("Сначала завершите или отмените контур помещения");return;}
+    if(placing&&id!=="objects"&&linePoints.length){setError("Сначала завершите или отмените линию");return;}
+    const activate=()=>{
+      if(id!=="objects")setPlacing(false);setLeftTool(id);setLeftExpanded(true);
+      if(id==='frames'){
+        const ids=selectedIds.filter(id=>{const item=project?.elements.find(item=>item.id===id);return item&&isElectrical(types.find(type=>type.id===item.type_id));});
+        setSelectedIds(ids);setSelected(current=>current&&ids.includes(current.id)?current:project?.elements.find(item=>item.id===ids.at(-1))??null);
+      }
+      if(window.innerWidth<1100)setRightExpanded(false);
+    };
+    // Filtering a fixture out of frame selection must not discard its property draft.
+    if(id==='frames'&&selected&&!isElectrical(types.find(type=>type.id===selected.type_id))){void run(async()=>{await saveDraftBeforeNavigation();activate();});}
+    else activate();
+  }
+  function selectRightTool(id:string){setRightTool(id);setRightExpanded(true);if(window.innerWidth<1100)setLeftExpanded(false);if(id==='layers')setElementLayersExpanded(true);}
   const groupDrafts=useRef(new Map<number,string[]>()),groupPending=useRef(new Map<number,string[]>()),groupSaving=useRef(false);
   const [savingGroups,setSavingGroups]=useState(false);
-  const [adaptiveLabels]=usePreference<boolean>('adaptive-labels',true),[showGrid]=usePreference<boolean>('canvas-grid',true);
+  const [adaptiveLabels,setAdaptiveLabels]=usePreference<boolean>('adaptive-labels',true),[showGrid,setShowGrid]=usePreference<boolean>('canvas-grid',true);
   const [objectSnap,setObjectSnap]=usePreference<boolean>('object-snap',false),[ortho,setOrtho]=usePreference<boolean>('ortho',false);
   const [snapTarget,setSnapTarget]=useRafState<Point|null>(null);
   const planStatus=useRef<PlanStatusHandle>(null);
@@ -1062,6 +1080,8 @@ export default function App() {
   const [name, setName] = useState(""),
     [roomName, setRoomName] = useState(""),
     [wet, setWet] = useState(false);
+  const planPreview=useRef<PlanPreviewHandle>(null),dragPreview=useRef<Item|null>(null);
+  const [objectDragging,setObjectDragging]=useState(false);
   const drag = useRef<{ x: number; y: number } | null>(null);
   const nodeDrag = useRef<{ index: number; point: Point } | null>(null);
   const pan = useRef<{
@@ -1142,13 +1162,13 @@ export default function App() {
   const elementMap=useMemo(()=>new Map(project?.elements.map(item=>[item.id,item])??[]),[project?.elements]);
   useEffect(()=>{
     if(busy)return;
-    const shown=selectedIds.filter(id=>{const item=elementMap.get(id);return item&&displayedElement(item,layerMap,typeGroups,hiddenLayerGroups);});
+    const shown=selectedIds.filter(id=>{const item=elementMap.get(id);return item&&(leftTool!=='frames'||isElectrical(typeMap.get(item.type_id)))&&displayedElement(item,layerMap,typeGroups,hiddenLayerGroups);});
     if(shown.length!==selectedIds.length){setSelectedIds(shown);setSelected(current=>current&&shown.includes(current.id)?current:shown.length?elementMap.get(shown[0])??null:null);}
-  },[busy,selectedIds,elementMap,layerMap,typeGroups,hiddenLayerGroups]);
+  },[busy,selectedIds,elementMap,layerMap,typeGroups,hiddenLayerGroups,leftTool,typeMap]);
   const selectionSet=useMemo(()=>new Set(selectedIds),[selectedIds]);
   const linkedStripSet=useMemo(()=>new Set(supplyLinking?.stripIds??[]),[supplyLinking?.stripIds]);
   const pendingDraft=Boolean(view==='plan'&&selected&&elementMap.get(selected.id)&&!sameItem(selected,elementMap.get(selected.id)!));
-  const unsavedWorkbench=quoteDirty||catalogDirty||pendingDraft||Boolean(roomMode&&roomPoints.length||placing&&linePoints.length||supplyLinking);
+  const unsavedWorkbench=quoteDirty||catalogDirty||pendingDraft||objectDragging||Boolean(roomMode&&roomPoints.length||placing&&linePoints.length||supplyLinking);
   useDesktopState(unsavedWorkbench,busy||quoteBusy||settingsBusy||catalogBusy);
   const availableTypes=useMemo(()=>types.filter(item=>item.active),[types]);
   const libraryTypes=useMemo(()=>availableTypes.filter(item=>!libraryGroup || (item.group ?? item.category)===libraryGroup),[availableTypes,libraryGroup]);
@@ -1176,10 +1196,21 @@ export default function App() {
   function canLeaveQuote() {
     return !["quote","quotations"].includes(view) || !quoteDirty || confirm("В КП есть несохранённые изменения. Выйти без сохранения?");
   }
+  function clearObjectPreview(){
+    dragPreview.current=null;planPreview.current?.clear();drag.current=null;nodeDrag.current=null;setObjectDragging(false);
+  }
+  function takeObjectPreview(){
+    const item=dragPreview.current??selected;clearObjectPreview();if(item&&item!==selected)setSelected(item);return item;
+  }
+  function updateObjectPreview(item:Item){
+    dragPreview.current=item;
+    if(planPreview.current)planPreview.current.update(item);else setSelected(item);
+  }
   async function saveDraftBeforeNavigation(){
     if(view!=="plan"||!selected||selectedIds.length!==1)return;
-    const stored=project?.elements.find(item=>item.id===selected.id);
-    if(stored&&!sameItem(selected,stored))await save({...selected});
+    const item=(drag.current||nodeDrag.current)?takeObjectPreview():selected;
+    const stored=project?.elements.find(current=>current.id===item?.id);
+    if(item&&stored&&!sameItem(item,stored))await save({...item});
   }
   function changeView(next:"plan"|"report"|"quote"|"quotations") {
     if(busy||quoteBusy||next===view||!canLeaveQuote())return;
@@ -1226,9 +1257,10 @@ export default function App() {
     setProject(previous=>shareProject(previous,value));setReport(nextReport);return value;
   }
   async function open(id: number) {
+    clearObjectPreview();
     const p = await refresh(id);
     setSymbolScale(savedSymbolScale(id));
-    setPageId(p.pages[0]?.id ?? null);
+    setPageId(p.pages.some(page=>page.id===readProjectView(id).lastPage)?readProjectView(id).lastPage!:p.pages[0]?.id ?? null);
     setLayerId(p.layers[0]?.id ?? null);
     setRoomId(null);
     setLibraryGroup("");
@@ -1252,9 +1284,9 @@ export default function App() {
     setLineCursor(null);
     setCalibrationStart(null);
     setElementsVisible(true);
-    setZoom(1);
   }
   function clearProject() {
+    clearObjectPreview();
     setProject(null);setPageId(null);setLayerId(null);setRoomId(null);
     setSelected(null);setSelectedIds([]);setTypeEditorOpen(false);
     setReport({rows:[],warnings:[],summary:{categories:[],rooms:[]}});
@@ -1309,6 +1341,7 @@ export default function App() {
     return `LED-линия №${item.id} · ${room?.name ?? "Без помещения"} · ${Number(item.parameters.length ?? 0).toLocaleString("ru-RU")} м · ${sheet?.name || `Лист ${sheet?.number}`}`;
   }
   async function removeSelected() {
+    clearObjectPreview();
     const ids = selectedIds.length ? selectedIds : selected ? [selected.id] : [];
     // Remove dependent supplies before their strips when both are selected.
     for (const id of [...ids].sort((a,b) => Number(isPowerSupply(types.find(type=>type.id===project?.elements.find(item=>item.id===b)?.type_id))) - Number(isPowerSupply(types.find(type=>type.id===project?.elements.find(item=>item.id===a)?.type_id)))))
@@ -1362,11 +1395,9 @@ export default function App() {
   }
   async function undoLast(redo = false) {
     if (!project) return;
-    const stored =
-      selected && project.elements.find((item) => item.id === selected.id);
-    if (!redo && selected && stored && !sameItem(selected, stored)) {
-      await save(selected);
-    }
+    const current=(drag.current||nodeDrag.current)?takeObjectPreview():selected;
+    const stored=current&&project.elements.find(item=>item.id===current.id);
+    if(!redo&&current&&stored&&!sameItem(current,stored))await save(current);
     const result = await api<{ undone: boolean }>(
       `/projects/${project.id}/elements/${redo ? "redo" : "undo"}`,
       "POST",
@@ -1382,7 +1413,7 @@ export default function App() {
     );
   }
   useEffect(() => {
-    if (!selected || selectedIds.length!==1 || !project || busy || ["quote","quotations"].includes(view) || deletingProject || drag.current || nodeDrag.current)
+    if (!selected || objectDragging || selectedIds.length!==1 || !project || busy || ["quote","quotations"].includes(view) || deletingProject || drag.current || nodeDrag.current)
       return;
     const stored = project.elements.find((item) => item.id === selected.id);
     if (!stored || sameItem(selected, stored)) return;
@@ -1391,7 +1422,7 @@ export default function App() {
       600,
     );
     return () => window.clearTimeout(timeout);
-  }, [selected, selectedIds.length, project, busy, deletingProject, view]);
+  }, [selected, selectedIds.length, project, busy, deletingProject, view, objectDragging]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
       if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject || catalogOpen || (event.target as HTMLElement|null)?.closest('[role="dialog"],[data-search-popup]')) return;
@@ -1406,6 +1437,7 @@ export default function App() {
         }
         return;
       }
+      if (event.key === "F6" && !(event.target as HTMLElement|null)?.closest('input,textarea,[contenteditable="true"]')) {event.preventDefault();setRoomLabelsVisible(value=>!value);return;}
       if (event.key === "F7") {
         event.preventDefault();
         setElementsVisible((value) => !value);
@@ -1421,7 +1453,7 @@ export default function App() {
         if(event.key==='F3'){event.preventDefault();if(roomMode)setRoomSnap(value=>!value);else setObjectSnap(value=>!value);return;}
         if(event.key==='F8'){event.preventDefault();setOrtho(value=>!value);return;}
         if(event.key==='Enter'&&placing&&kind?.unit==='м'&&linePoints.length>=2&&!busy){event.preventDefault();finishLine();return;}
-        if((event.ctrlKey||event.metaKey)&&['a','ф'].includes(event.key.toLowerCase())&&!roomMode&&!placing){event.preventDefault();const ids=visibleElements.map(item=>item.id);setSelectedIds(ids);setSelected(ids.length?elementMap.get(ids[0])??null:null);return;}
+        if((event.ctrlKey||event.metaKey)&&['a','ф'].includes(event.key.toLowerCase())&&!roomMode&&!placing){event.preventDefault();void run(async()=>{await saveDraftBeforeNavigation();const ids=visibleElements.filter(item=>leftTool!=='frames'||isElectrical(typeMap.get(item.type_id))).map(item=>item.id);setSelectedIds(ids);setSelected(ids.length?elementMap.get(ids[0])??null:null);});return;}
         if(event.key==='Escape'&&!roomMode&&!busy){
           event.preventDefault();setObjectMenu(null);setRoomMenu(null);setRoomPointMenu(null);setSnapTarget(null);
           if(calibrating){setCalibrating(false);setCalibrationStart(null);setLineCursor(null);return;}
@@ -1839,6 +1871,7 @@ export default function App() {
     setRoomPointMenu(null);
   }
   function choose(item: Item, additive: boolean) {
+    if(leftTool==="frames"&&!isElectrical(typeMap.get(item.type_id)))return;
     const stored=selected&&project?.elements.find(current=>current.id===selected.id);
     if(selected&&stored&&selected.id!==item.id&&!sameItem(selected,stored))void run(()=>save({...selected}));
     setLeftPanelVisible(true);
@@ -1859,6 +1892,11 @@ export default function App() {
     setLinePoints([]);
     setLineRedo([]);
     setLineCursor(null);
+  }
+  async function focusUnframed(item:Item){
+    const layer=layerMap.get(item.layer_id);if(layer&&!layer.visible)await patch(layer,'visible');
+    const group=typeGroups.get(item.type_id);if(layer&&group&&(layer.hidden_groups??[]).includes(group.key))changeLayerGroups(layer,(layer.hidden_groups??[]).filter(key=>key!==group.key));
+    choose(item,false);focusItem(item);
   }
   function focusItem(item: Item) {
     setElementsVisible(true);
@@ -1896,7 +1934,7 @@ export default function App() {
       .map((candidate) => candidate.id);
     setSelectedIds(ids);
     setSelected(item);
-    setLeftTool("frames");
+    setLeftTool(isElectrical(types.find(type=>type.id===item.type_id))?"frames":"style");setLeftExpanded(true);
     setFramePosts(Math.min(6, Math.max(1, ids.length)));
     focusItem(item);
   }
@@ -1951,7 +1989,7 @@ export default function App() {
       selected && project.elements.find((item) => item.id === selected.id);
     if (selected && stored && !sameItem(selected, stored)) await save(selected);
     await api(`/projects/${project.id}/frames${path}`, "POST", {
-      element_ids: selectedIds,
+      element_ids: selectedIds.filter(id=>{const item=elementMap.get(id);return item&&isElectrical(typeMap.get(item.type_id));}),
       ...(posts === undefined ? {} : { posts }),
     });
     const updated = await refresh(project.id);
@@ -1969,19 +2007,20 @@ export default function App() {
   async function removeFrame() {
     await changeFrame("/remove");
   }
-  const sceneContextMenu=useStableCallback((item:Item,event:React.MouseEvent<SVGGElement>)=>showObjectMenu(item,event));
-  const sceneDoubleClick=useStableCallback((item:Item)=>{if(!supplyLinking)selectSameType(item);});
+  const sceneContextMenu=useStableCallback((item:Item,event:React.MouseEvent<SVGGElement>)=>{if(leftTool==='frames'&&!isElectrical(typeMap.get(item.type_id))){event.preventDefault();event.stopPropagation();return;}showObjectMenu(item,event);});
+  const sceneDoubleClick=useStableCallback((item:Item)=>{if(!supplyLinking&&(leftTool!=="frames"||isElectrical(typeMap.get(item.type_id))))selectSameType(item);});
   const scenePointerDown=useStableCallback((item:Item,event:React.PointerEvent<SVGGElement>)=>{
     if(supplyLinking){if(isLedStrip(typeMap.get(item.type_id)))toggleSupplyStrip(item.id);return;}
+    if(leftTool==="frames"&&!isElectrical(typeMap.get(item.type_id)))return;
     if(objectDoubleClick(item))return;
     choose(item,event.ctrlKey||event.metaKey);
     if(!item.geometry?.points?.length&&!event.ctrlKey&&!event.metaKey&&!layerMap.get(item.layer_id)?.locked&&!busy){
       event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
-      drag.current={x:item.x,y:item.y};
+      dragPreview.current=null;drag.current={x:item.x,y:item.y};setObjectDragging(true);
     }
   });
   const sceneNodeDrag=useStableCallback((item:Item,index:number,point:Point,event:React.PointerEvent<SVGElement>)=>{
-    if(busy)return;choose(item,false);event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);nodeDrag.current={index,point};
+    if(busy)return;choose(item,false);event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);dragPreview.current=null;nodeDrag.current={index,point};setObjectDragging(true);
   });
   const previewPoints =
       (lineCursor && linePoints.length ? [...linePoints,lineCursor]:linePoints).map(point=>page?pagePoint(point,page.id):point),
@@ -1998,6 +2037,11 @@ export default function App() {
   }),[visibleElements,planWindow,pageMap,selectionSet]);
   const denseLabels=adaptiveLabels&&(zoom<.8||renderedElements.length>500);
   const pageRooms=useMemo(()=>project?.rooms.filter(room=>room.page_id===pageId&&room.polygon&&room.polygon.length>=3)??[],[project?.rooms,pageId]);
+  const unframedItems=useMemo(()=>project?.elements.filter(item=>isElectrical(typeMap.get(item.type_id))&&!item.parameters.frame_group)??[],[project?.elements,typeMap]);
+  const unframedSet=useMemo(()=>new Set(highlightUnframed?unframedItems.map(item=>item.id):[]),[highlightUnframed,unframedItems]);
+  useProjectView({projectId:project?.id??null,pageId,active:view==='plan',zoom,setZoom,viewport:viewportRef,sheet:sheetRef,
+    settings:{symbolScale,labelsVisible,roomLabelsVisible,showRoomContours,elementsVisible,objectSnap,ortho,adaptiveLabels,showGrid,roomSnap,elementLayersExpanded,highlightUnframed,leftExpanded,rightExpanded,leftTool,rightTool},
+    restore:value=>{if(typeof value.symbolScale==='number'&&Number.isFinite(value.symbolScale)&&value.symbolScale>=.1&&value.symbolScale<=2)setSymbolScale(value.symbolScale);for(const [key,set] of [['labelsVisible',setLabelsVisible],['roomLabelsVisible',setRoomLabelsVisible],['showRoomContours',setShowRoomContours],['elementsVisible',setElementsVisible],['objectSnap',setObjectSnap],['ortho',setOrtho],['adaptiveLabels',setAdaptiveLabels],['showGrid',setShowGrid],['roomSnap',setRoomSnap],['elementLayersExpanded',setElementLayersExpanded],['highlightUnframed',setHighlightUnframed],['leftExpanded',setLeftExpanded],['rightExpanded',setRightExpanded]] as const)if(typeof value[key]==='boolean')set(value[key] as boolean);if(['objects','list','properties','style','frames','rooms'].includes(String(value.leftTool)))setLeftTool(String(value.leftTool));if(['layers','pages'].includes(String(value.rightTool)))setRightTool(String(value.rightTool));}});
   const protectedPageIds = useMemo(()=>new Set(
     project?.elements
       .filter((item) => {
@@ -2056,7 +2100,8 @@ export default function App() {
     }}>
       {draggingPdf && <div className="pdf-drop-overlay" role="status"><div><ToolIcon name="pdf"/><h2>Отпустите PDF здесь</h2><p>Создадим новый проект и предложим задать имя</p></div></div>}
       <input ref={pdfInput} hidden type="file" aria-label="PDF для нового проекта" accept=".pdf,application/pdf" disabled={busy} onChange={event=> {requestPdfImport([...event.target.files ?? []]);event.target.value="";}} />
-      <header className="app-header">
+      <header className="app-header" data-desktop={isDesktop()} onPointerDown={captionPointer} onDoubleClick={captionDoubleClick}>
+        <DesktopCaption/>
         <div className="logo">SH</div>
         <div className="brand">
           <h1>Smart Home Calc</h1>
@@ -2233,11 +2278,11 @@ export default function App() {
           ) : view === "plan" ? (
             <main
               className={`workspace ${leftPanelVisible ? "" : "left-collapsed"} ${rightPanelVisible ? "" : "right-collapsed"}`}
-              style={{gridTemplateColumns:[...(leftPanelVisible?[leftTool?"310px":"56px"]:[]),"minmax(0,1fr)",...(rightPanelVisible?[rightTool?"325px":"56px"]:[])].join(" ")}}
+              style={{gridTemplateColumns:[...(leftPanelVisible?[leftExpanded?"298px":"48px"]:[]),"minmax(0,1fr)",...(rightPanelVisible?[rightExpanded?"304px":"48px"]:[])].join(" ")}}
             >
               {leftPanelVisible && (
-                <aside aria-label="Объекты и рамки" className={"objects-panel tool-panel "+(!leftTool?'tool-closed':'')} data-active-tool={leftTool??''} inert={Boolean(supplyLinking)}>
-                  <ToolRail label="Инструменты объектов" active={leftTool} onSelect={selectLeftTool} items={[{id:'objects',label:'Объекты'},{id:'list',label:'Список объектов',icon:'list'},{id:'properties',label:'Свойства',icon:'edit'},{id:'style',label:'Оформление',icon:'palette'},{id:'frames',label:'Рамки',icon:'frame'},{id:'rooms',label:'Помещения',icon:'room'},{id:'catalog',label:'Каталог',icon:'catalog',command:()=>openCatalog()}]}/>
+                <aside aria-label="Объекты и рамки" className={"objects-panel tool-panel "+(!leftExpanded?'tool-closed':'')} data-active-tool={leftTool??''} inert={Boolean(supplyLinking)}>
+                  <ToolRail label="Инструменты объектов" panelExpanded={leftExpanded} onTogglePanel={()=>{setLeftExpanded(value=>!value);if(window.innerWidth<1100)setRightExpanded(false);}} active={leftTool} onSelect={selectLeftTool} items={[{id:'objects',label:'Объекты'},{id:'list',label:'Список объектов',icon:'list'},{id:'properties',label:'Свойства',icon:'edit'},{id:'style',label:'Оформление',icon:'palette'},{id:'frames',label:'Рамки',icon:'frame'},{id:'rooms',label:'Помещения',icon:'room'},{id:'catalog',label:'Каталог',icon:'catalog',command:()=>openCatalog()}]}/>
                   <div className="tool-panel-content">
 <PlanObjectList key={project.id} items={visibleElements} types={typeMap} rooms={project.rooms} selected={selectionSet} busy={busy} onReturn={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()} onSelect={item=>void run(async()=>{await saveDraftBeforeNavigation();const target=selected?.id===item.id?selected:item;choose(target,false);focusItem(target);if(window.innerWidth<1100)setRightTool(null);requestAnimationFrame(()=>document.querySelector<HTMLElement>('.objects-panel [data-tool-section="properties"] input:not([disabled]),.objects-panel [data-tool-section="properties"] select:not([disabled])')?.focus());})}/>
 <section data-tool-section="objects"><PanelHeading title="Библиотека" caption="Номенклатура и размещение" icon="objects"/>
@@ -2403,7 +2448,9 @@ export default function App() {
                       <button disabled={busy}>Добавить</button>
                     </form>
                   </details>}
-                  </section><section data-tool-section="frames"><PanelHeading title="Выбранные объекты" caption="Рамки и объединение" icon="frame"/>
+                  </section><section data-tool-section="frames"><PanelHeading title="Рамки ЭУИ" caption="Выбор только электроустановок" icon="frame"/>
+                  <label className="check"><input type="checkbox" checked={highlightUnframed} onChange={event=>setHighlightUnframed(event.target.checked)}/>Подсветить ЭУИ без рамок</label>
+                  {highlightUnframed&&<div className="unframed-audit" role="region" aria-label="Электроустановки без рамок"><strong>Без рамки: {unframedItems.length}</strong><p className="hint">Двойной щелчок — перейти к объекту на плане.</p><ul>{unframedItems.map(item=><li key={item.id}><button type="button" onDoubleClick={()=>void run(()=>focusUnframed(item))} onKeyDown={event=>{if(event.key==='Enter')void run(()=>focusUnframed(item));}}>{typeMap.get(item.type_id)?.name} · {project.rooms.find(room=>room.id===item.room_id)?.name??'Без помещения'} · #{item.id}</button></li>)}</ul></div>}
                   {selectedIds.length > 0 ? (
                     <div className="frame-editor">
                       <strong>Выбрано: {selectedIds.length}</strong>
@@ -2674,38 +2721,6 @@ export default function App() {
                     </small>
                   </strong>
                   <div>
-                    <button
-                      className="panel-toggle"
-                      aria-label={
-                        leftPanelVisible
-                          ? "Скрыть левую панель"
-                          : "Показать левую панель"
-                      }
-                      title={
-                        leftPanelVisible
-                          ? "Скрыть левую панель"
-                          : "Показать левую панель"
-                      }
-                      onClick={() => setLeftPanelVisible((value) => !value)}
-                    >
-                      <ActionIcon name="chevronLeft"/><span>Левая</span>
-                    </button>
-                    <button
-                      className="panel-toggle"
-                      aria-label={
-                        rightPanelVisible
-                          ? "Скрыть правую панель"
-                          : "Показать правую панель"
-                      }
-                      title={
-                        rightPanelVisible
-                          ? "Скрыть правую панель"
-                          : "Показать правую панель"
-                      }
-                      onClick={() => setRightPanelVisible((value) => !value)}
-                    >
-                      <ActionIcon name="chevronRight"/><span>Правая</span>
-                    </button>
                     <ToolButton icon="fit" aria-label="Фокус на плане" title="Фокус на плане — скрыть панели / восстановить" aria-pressed={!leftPanelVisible&&!rightPanelVisible} onClick={focusPlan}>Фокус на плане</ToolButton>
                 <button
                   className={
@@ -2717,6 +2732,7 @@ export default function App() {
                 >
                   <ActionIcon name="eye"/><span>{labelsVisible ? denseLabels?"Подписи: авто":"Скрыть надписи" : "Показать надписи"}</span>
                 </button>
+                    {page && <button aria-label="Названия помещений · F6" title="Названия помещений · F6" aria-pressed={roomLabelsVisible} onClick={()=>setRoomLabelsVisible(value=>!value)}><ActionIcon name="list"/><span>Названия · F6</span></button>}
                     {page && <button aria-label="Контуры помещений" title="Контуры помещений" aria-pressed={showRoomContours} onClick={() => setShowRoomContours(value => !value)}><ActionIcon name="room"/><span>Контуры помещений</span></button>}
                     <button
                       className={elementsVisible ? "" : "active clean-plan-toggle"}
@@ -3192,29 +3208,20 @@ export default function App() {
                           )
                             setLineCursor(drawingCandidate(pos,e.shiftKey,e.altKey));
                           if (nodeDrag.current && selected?.geometry?.points) {
-                            const points = selected.geometry.points.map(
+                            const draft=dragPreview.current??selected;
+                            const points = draft.geometry!.points!.map(
                               (point, index) =>
                                 index === nodeDrag.current?.index
                                   ? sourcePoint(pos, selected.page_id)
                                   : point,
                             );
-                            setSelected({
-                              ...selected,
-                              x:
-                                nodeDrag.current.index === 0
-                                  ? points[0].x
-                                  : selected.x,
-                              y:
-                                nodeDrag.current.index === 0
-                                  ? points[0].y
-                                  : selected.y,
-                              geometry: { ...selected.geometry, points },
+                            updateObjectPreview({...draft,
+                              x:nodeDrag.current.index===0?points[0].x:draft.x,
+                              y:nodeDrag.current.index===0?points[0].y:draft.y,
+                              geometry:{...draft.geometry,points},
                             });
                           } else if (drag.current && selected)
-                            setSelected({
-                              ...selected,
-                              ...sourcePoint(pos, selected.page_id),
-                            });
+                            updateObjectPreview({...selected,...sourcePoint(pos,selected.page_id)});
                         }}
                         onPointerLeave={() => {
                           setLineCursor(null);
@@ -3248,7 +3255,7 @@ export default function App() {
                                 selectionBox.start.y,
                                 selectionBox.current.y,
                               ),
-                              inside = visibleElements.filter(item=>selectionHits((item.geometry?.points?.length?item.geometry.points:[item]).map(point=>pagePoint(point,item.page_id)),{x1,y1,x2,y2},selectionBox.current.x<selectionBox.start.x))
+                              inside = visibleElements.filter(item=>(leftTool!=="frames"||isElectrical(typeMap.get(item.type_id)))&&selectionHits((item.geometry?.points?.length?item.geometry.points:[item]).map(point=>pagePoint(point,item.page_id)),{x1,y1,x2,y2},selectionBox.current.x<selectionBox.start.x))
                                 .map((item) => item.id),
                               ids = selectionBox.additive
                                 ? [...new Set([...selectedIds, ...inside])]
@@ -3263,22 +3270,18 @@ export default function App() {
                             setSelectionBox(null);
                             return;
                           }
-                          if (nodeDrag.current && selected) {
-                            nodeDrag.current = null;
-                            void run(() => save(selected));
-                            return;
+                          if(nodeDrag.current&&selected){
+                            const item=takeObjectPreview();if(item)void run(()=>save(item));return;
                           }
-                          if (drag.current && selected) {
-                            const start = drag.current;
-                            drag.current = null;
-                            if (
-                              start.x !== selected.x ||
-                              start.y !== selected.y
-                            )
-                              void run(() => save(selected));
+                          if(drag.current&&selected){
+                            const start=drag.current,item=takeObjectPreview();
+                            if(item&&(start.x!==item.x||start.y!==item.y))void run(()=>save(item));
                           }
+                          if(drag.current||nodeDrag.current)clearObjectPreview();
                         }}
+                        onLostPointerCapture={() => {if(drag.current||nodeDrag.current)takeObjectPreview();}}
                         onPointerCancel={() => {
+                          if(drag.current||nodeDrag.current)takeObjectPreview();
                           drag.current = null;
                           nodeDrag.current = null;
                           roomNodeDrag.current = null;
@@ -3295,10 +3298,10 @@ export default function App() {
                               const display = pagePoint(point, room.page_id!);
                               return `${display.x * 1000},${display.y * 1000}`;
                             }).join(" ")} />
-                            <text x={pagePoint(room.polygon![0], room.page_id!).x * 1000 + 7}
-                              y={pagePoint(room.polygon![0], room.page_id!).y * 1000 - 8}>{room.name}</text>
+
                           </g>
                         ))}
+                        {roomLabelsVisible&&<RoomLabels rooms={pageRooms} page={page} editing={editingRoomId}/>}
                         {roomMode && roomPoints.length > 0 && (
                           <g className="room-polygon-editor">
                             <polygon
@@ -3425,8 +3428,8 @@ export default function App() {
                           return <g className="power-supply-preview" transform={`translate(${point.x*1000},${point.y*1000})`} pointerEvents="none"><PointMarker scale={symbolScale} color="#dc2626" selected={true} icon="" powerSupply={true}/><text x={29*symbolScale} y="5" fontSize="14" fill="#b91c1c" stroke="white" strokeWidth="3" paintOrder="stroke">Блок питания · выберите ленты</text></g>;
                         })()}
                         <g className="plan-elements" style={{ pointerEvents: roomMode||calibrating||placing&&kind?.unit==='м'&&!supplyLinking ? "none" : undefined }}>
-                        <PlanScene elements={renderedElements} types={typeMap} pages={pageMap} layers={layerMap}
-                          selection={selectionSet} draft={selected} scale={symbolScale} labels={labelsVisible} dense={denseLabels} adaptive={adaptiveLabels} pixelScale={850*zoom/1000} grip={8*1000/(850*zoom)}
+                        <PlanScene previewRef={planPreview} elements={renderedElements} types={typeMap} pages={pageMap} layers={layerMap}
+                          unframed={unframedSet} selection={selectionSet} draft={selected} scale={symbolScale} labels={labelsVisible} dense={denseLabels} adaptive={adaptiveLabels} pixelScale={850*zoom/1000} grip={8*1000/(850*zoom)}
                           linking={Boolean(supplyLinking)} picked={linkedStripSet} busy={busy} aspect={page.width/page.height}
                           onContextMenu={sceneContextMenu} onDoubleClick={sceneDoubleClick} onPointerDown={scenePointerDown} onNodeDrag={sceneNodeDrag}/>
 
@@ -3537,7 +3540,7 @@ export default function App() {
                   length={page&&linePoints.length?measuredLength(lineCursor?[...linePoints,lineCursor]:linePoints,page):null}/>
               </section>
               {rightPanelVisible && (
-                <aside className={"right layers-panel tool-panel "+(!rightTool?'tool-closed':'')} aria-label="Слои и страницы" data-active-tool={rightTool??''}><div className="tool-panel-content"><section data-tool-section="layers"><h3 className="element-layers-heading">
+                <aside className={"right layers-panel tool-panel "+(!rightExpanded?'tool-closed':'')} aria-label="Слои и страницы" data-active-tool={rightTool??''}><div className="tool-panel-content"><section data-tool-section="layers"><h3 className="element-layers-heading">
                     <button type="button" aria-expanded={elementLayersExpanded} aria-controls="element-layers-list" onClick={()=>setElementLayersExpanded(expanded=>!expanded)} title={elementLayersExpanded ? "Свернуть список слоёв" : "Развернуть список слоёв"}>
                       <span>Слои элементов</span>
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
@@ -3855,7 +3858,7 @@ export default function App() {
                       </div>
                     ))}
                   </div>
-                </section></div><ToolRail label="Инструменты слоёв и страниц" side="right" active={rightTool} onSelect={selectRightTool} items={[{id:'layers',label:'Слои',icon:'layers'},{id:'pages',label:'Страницы PDF',icon:'pages'},{id:'settings',label:'Настройки',icon:'settings',command:openSettings}]}/></aside>
+                </section></div><ToolRail label="Инструменты слоёв и страниц" panelExpanded={rightExpanded} onTogglePanel={()=>{setRightExpanded(value=>!value);if(window.innerWidth<1100)setLeftExpanded(false);}} side="right" active={rightTool} onSelect={selectRightTool} items={[{id:'layers',label:'Слои',icon:'layers'},{id:'pages',label:'Страницы PDF',icon:'pages'},{id:'settings',label:'Настройки',icon:'settings',command:openSettings}]}/></aside>
               )}
             </main>
           ) : (
@@ -3973,7 +3976,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.55</span>
+        <span>SMART HOME CALC / 1.0.56</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

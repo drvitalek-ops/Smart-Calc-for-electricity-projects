@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import uuid
+from pathlib import Path
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
@@ -132,8 +133,24 @@ def validate_image(value):
     _VALID_IMAGES.get_or_create(digest,check)
 
 
+class QuoteStyle(BaseModel):
+    font:Literal['Golos','DejaVuSans','DejaVuSerif']='Golos'
+    table_scale:float=Field(default=1,ge=.8,le=1.3,allow_inf_nan=False)
+    colors:dict[str,str]=Field(default_factory=dict,max_length=50)
+
+    @field_validator('colors')
+    @classmethod
+    def validate_colors(cls,value):
+        import re
+        allowed={entry['key'] for entry in json.loads((Path(__file__).parent/'assets/quotation-theme.json').read_text(encoding='utf-8'))}
+        if any(key not in allowed or not re.fullmatch(r'#[0-9a-fA-F]{6}',color) for key,color in value.items()):
+            raise ValueError('Выберите допустимый элемент оформления и цвет в формате #RRGGBB')
+        return value
+
+
 class QuoteInput(BaseModel):
     model_config=ConfigDict(validate_default=True)
+    style:QuoteStyle=Field(default_factory=QuoteStyle)
     revision: int = Field(default=0,ge=0)
     room_layout:Literal['combined','rooms','legacy']='combined'
     number: str = Field(default='',max_length=100)

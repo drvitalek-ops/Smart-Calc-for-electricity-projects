@@ -9,7 +9,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:17-alpine
@@ -120,6 +120,8 @@ jobs:
           node frontend/tests/rooms.cjs
           node frontend/tests/pdf-import-settings.cjs
           node frontend/tests/workbench.cjs
+          node frontend/tests/plan-drag.cjs
+          node frontend/tests/workbench-next.cjs
           node frontend/tests/large-quotation.cjs
           node frontend/tests/quotation-workbench.cjs
           node frontend/tests/quotation-fields.cjs

@@ -976,7 +976,21 @@ export default function App() {
   const [leftExpanded,setLeftExpanded]=useState(false),[rightExpanded,setRightExpanded]=useState(false),[highlightUnframed,setHighlightUnframed]=useState(false),[roomLabelsVisible,setRoomLabelsVisible]=useState(true);
   useEffect(()=>{const compact=window.matchMedia('(max-width:1099px)'),adapt=()=>{if(compact.matches&&leftExpanded&&rightExpanded)setRightExpanded(false);};adapt();compact.addEventListener('change',adapt);return()=>compact.removeEventListener('change',adapt);},[leftExpanded,rightExpanded]);
   const [batchStyle,setBatchStyle]=useState<Record<string,unknown>>({});
-  function selectLeftTool(id:string){if(roomMode&&id!=="rooms"){setError("Сначала завершите или отмените контур помещения");return;}if(placing&&id!=="objects"&&linePoints.length){setError("Сначала завершите или отмените линию");return;}if(id!=="objects")setPlacing(false);setLeftTool(id);setLeftExpanded(true);if(id==='frames'){const ids=selectedIds.filter(id=>{const item=project?.elements.find(item=>item.id===id);return item&&isElectrical(types.find(type=>type.id===item.type_id));});setSelectedIds(ids);setSelected(current=>current&&ids.includes(current.id)?current:project?.elements.find(item=>item.id===ids.at(-1))??null);}if(window.innerWidth<1100)setRightExpanded(false);}
+  function selectLeftTool(id:string){
+    if(roomMode&&id!=="rooms"){setError("Сначала завершите или отмените контур помещения");return;}
+    if(placing&&id!=="objects"&&linePoints.length){setError("Сначала завершите или отмените линию");return;}
+    const activate=()=>{
+      if(id!=="objects")setPlacing(false);setLeftTool(id);setLeftExpanded(true);
+      if(id==='frames'){
+        const ids=selectedIds.filter(id=>{const item=project?.elements.find(item=>item.id===id);return item&&isElectrical(types.find(type=>type.id===item.type_id));});
+        setSelectedIds(ids);setSelected(current=>current&&ids.includes(current.id)?current:project?.elements.find(item=>item.id===ids.at(-1))??null);
+      }
+      if(window.innerWidth<1100)setRightExpanded(false);
+    };
+    // Filtering a fixture out of frame selection must not discard its property draft.
+    if(id==='frames'&&selected&&!isElectrical(types.find(type=>type.id===selected.type_id))){void run(async()=>{await saveDraftBeforeNavigation();activate();});}
+    else activate();
+  }
   function selectRightTool(id:string){setRightTool(id);setRightExpanded(true);if(window.innerWidth<1100)setLeftExpanded(false);if(id==='layers')setElementLayersExpanded(true);}
   const groupDrafts=useRef(new Map<number,string[]>()),groupPending=useRef(new Map<number,string[]>()),groupSaving=useRef(false);
   const [savingGroups,setSavingGroups]=useState(false);
@@ -1148,9 +1162,9 @@ export default function App() {
   const elementMap=useMemo(()=>new Map(project?.elements.map(item=>[item.id,item])??[]),[project?.elements]);
   useEffect(()=>{
     if(busy)return;
-    const shown=selectedIds.filter(id=>{const item=elementMap.get(id);return item&&displayedElement(item,layerMap,typeGroups,hiddenLayerGroups);});
+    const shown=selectedIds.filter(id=>{const item=elementMap.get(id);return item&&(leftTool!=='frames'||isElectrical(typeMap.get(item.type_id)))&&displayedElement(item,layerMap,typeGroups,hiddenLayerGroups);});
     if(shown.length!==selectedIds.length){setSelectedIds(shown);setSelected(current=>current&&shown.includes(current.id)?current:shown.length?elementMap.get(shown[0])??null:null);}
-  },[busy,selectedIds,elementMap,layerMap,typeGroups,hiddenLayerGroups]);
+  },[busy,selectedIds,elementMap,layerMap,typeGroups,hiddenLayerGroups,leftTool,typeMap]);
   const selectionSet=useMemo(()=>new Set(selectedIds),[selectedIds]);
   const linkedStripSet=useMemo(()=>new Set(supplyLinking?.stripIds??[]),[supplyLinking?.stripIds]);
   const pendingDraft=Boolean(view==='plan'&&selected&&elementMap.get(selected.id)&&!sameItem(selected,elementMap.get(selected.id)!));
@@ -1439,7 +1453,7 @@ export default function App() {
         if(event.key==='F3'){event.preventDefault();if(roomMode)setRoomSnap(value=>!value);else setObjectSnap(value=>!value);return;}
         if(event.key==='F8'){event.preventDefault();setOrtho(value=>!value);return;}
         if(event.key==='Enter'&&placing&&kind?.unit==='м'&&linePoints.length>=2&&!busy){event.preventDefault();finishLine();return;}
-        if((event.ctrlKey||event.metaKey)&&['a','ф'].includes(event.key.toLowerCase())&&!roomMode&&!placing){event.preventDefault();const ids=visibleElements.map(item=>item.id);setSelectedIds(ids);setSelected(ids.length?elementMap.get(ids[0])??null:null);return;}
+        if((event.ctrlKey||event.metaKey)&&['a','ф'].includes(event.key.toLowerCase())&&!roomMode&&!placing){event.preventDefault();void run(async()=>{await saveDraftBeforeNavigation();const ids=visibleElements.filter(item=>leftTool!=='frames'||isElectrical(typeMap.get(item.type_id))).map(item=>item.id);setSelectedIds(ids);setSelected(ids.length?elementMap.get(ids[0])??null:null);});return;}
         if(event.key==='Escape'&&!roomMode&&!busy){
           event.preventDefault();setObjectMenu(null);setRoomMenu(null);setRoomPointMenu(null);setSnapTarget(null);
           if(calibrating){setCalibrating(false);setCalibrationStart(null);setLineCursor(null);return;}
@@ -1920,7 +1934,7 @@ export default function App() {
       .map((candidate) => candidate.id);
     setSelectedIds(ids);
     setSelected(item);
-    setLeftTool("frames");
+    setLeftTool(isElectrical(types.find(type=>type.id===item.type_id))?"frames":"style");setLeftExpanded(true);
     setFramePosts(Math.min(6, Math.max(1, ids.length)));
     focusItem(item);
   }
@@ -1993,7 +2007,7 @@ export default function App() {
   async function removeFrame() {
     await changeFrame("/remove");
   }
-  const sceneContextMenu=useStableCallback((item:Item,event:React.MouseEvent<SVGGElement>)=>showObjectMenu(item,event));
+  const sceneContextMenu=useStableCallback((item:Item,event:React.MouseEvent<SVGGElement>)=>{if(leftTool==='frames'&&!isElectrical(typeMap.get(item.type_id))){event.preventDefault();event.stopPropagation();return;}showObjectMenu(item,event);});
   const sceneDoubleClick=useStableCallback((item:Item)=>{if(!supplyLinking&&(leftTool!=="frames"||isElectrical(typeMap.get(item.type_id))))selectSameType(item);});
   const scenePointerDown=useStableCallback((item:Item,event:React.PointerEvent<SVGGElement>)=>{
     if(supplyLinking){if(isLedStrip(typeMap.get(item.type_id)))toggleSupplyStrip(item.id);return;}

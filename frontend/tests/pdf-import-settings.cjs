@@ -67,7 +67,7 @@ const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKM
   // Exercise settings in a desktop-shaped environment without opening a host file manager in the test.
   let available=true,failOpen=false;const opened=[];
   const directory='C:\\Users\\Тест\\AppData\\Local\\SmartHomeCalc\\data';
-  await page.route('**/api/settings',route=>route.fulfill({json:{version:'1.0.57',can_open_data_folder:available,data_directory:available?directory:null,instance:available?'desktop-test-instance':''}}));
+  await page.route('**/api/settings',route=>route.fulfill({json:{version:'1.0.58',can_open_data_folder:available,data_directory:available?directory:null,instance:available?'desktop-test-instance':''}}));
   await page.route('**/api/settings/open-data-folder',route=> {opened.push(route.request().postDataJSON());return route.fulfill({status:failOpen?500:200,json:failOpen?{detail:'Не удалось открыть Проводник'}:{opened:true}});});
   const kinds=await (await api.get(base+'/types')).json(),kind=kinds.find(kind=>kind.name==='Розетка одинарная');
   const element=await api.post(base+`/projects/${created.id}/elements`,{data:{page_id:current.pages[0].id,layer_id:current.layers[0].id,type_id:kind.id,x:.4,y:.4,parameters:{quantity:1}}});assert.equal(element.status(),201);

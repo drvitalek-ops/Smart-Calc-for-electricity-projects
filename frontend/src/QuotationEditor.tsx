@@ -1,3 +1,5 @@
+import BulkEditor,{type BulkField} from "./BulkEditor";
+import IssueBar,{type WorkIssue} from "./IssueBar";
 import {rebaseCatalogue} from './catalogueRebase';
 import useCatalogue,{refreshCatalogue,type CatalogueSnapshot} from './catalogueStore';
 import {ManufacturerField,DuplicateProducts,duplicateProducts,type DuplicateProduct} from './CatalogueFields';
@@ -59,6 +61,10 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const [productDuplicates,setProductDuplicates]=useState<DuplicateProduct[]|null>(null);
   const [busy,setBusy]=useState(false),[dirty,setDirty]=useState(false),[calculating,setCalculating]=useState(false);
   const [error,setError]=useState(""),[message,setMessage]=useState(""),[mode,setMode]=useState<"client"|"partner">("partner");
+  const [quoteBulkDirty,setQuoteBulkDirty]=useState(false);
+  const [quoteBulkIssues,setQuoteBulkIssues]=useState<WorkIssue[]>([]);
+  const [selectedLineIds,setSelectedLineIds]=useState<ReadonlySet<string>>(new Set());
+  useEffect(()=>setSelectedLineIds(new Set()),[projectId,quotationId]);
   const [linePage,setLinePage]=useState(0),[lineQuery,setLineQuery]=useState(''),[catalogLimit,setCatalogLimit]=useState(100);
   const [linePageSize,setLinePageSize]=usePreference<number>('quote-page-size',100,(value):value is number=>typeof value==='number'&&[25,50,100,200,500].includes(value));
   const [preview,setPreview]=useState(false),[quoteTool,setQuoteTool]=useState("positions"),[productSearch,setProductSearch]=useState("");
@@ -124,6 +130,27 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const insertionAnchor=visibleLines.find(item=>item.line.id===activeLineId)??visibleLines.at(-1);
   const filteredProducts=useMemo(()=>catalogue.products.filter(product=>product.active&&matchesSearch([product.name,product.sku,product.manufacturer].join(' '),productSearch)),[catalogue.products,productSearch]);
   const docRef=useRef<Quote|null>(doc),dirtyRef=useRef(dirty);docRef.current=doc;dirtyRef.current=dirty;
+  const bulkLines=useMemo(()=>doc?.lines.filter(line=>selectedLineIds.has(line.id))??[],[doc?.lines,selectedLineIds]);
+  const bulkMixed=new Set(bulkLines.map(line=>types.find(type=>type.id===line.type_id)?.category??'Без категории')).size>1;
+  const bulkFields=useMemo(()=>{
+    const field=(key:keyof Line,label:string,extra:Partial<BulkField>={}):BulkField=>({key,label,values:bulkLines.map(line=>String(line[key]??'')),...extra});
+    const fields=[field('manufacturer','Бренд',{maxLength:500}),field('room','Помещение',{maxLength:500}),field('comment','Комментарий'),field('ip','IP',{maxLength:16}),field('description','Описание'),field('unit_price','Цена',{type:'decimal'}),field('currency','Валюта',{maxLength:3}),field('discount','Скидка, %',{type:'decimal',max:100,allowEmpty:true})];
+    if(bulkLines.length&&bulkLines.every(line=>line.unit===bulkLines[0].unit))fields.push(field('quantity','Количество, '+bulkLines[0].unit,{type:'decimal',min:.001,max:1e6,places:3}));
+    return fields;
+  },[bulkLines]);
+  function toggleQuoteLine(id:string){setSelectedLineIds(current=>{const next=new Set(current);if(next.has(id))next.delete(id);else next.add(id);return next;});}
+  async function applyQuoteProperties(values:Record<string,string>){
+    if(!docRef.current)return;setError('');
+    if(values.currency!==undefined&&!/^[A-Z]{3}$/.test(values.currency.toUpperCase())){const message='Валюта должна состоять из трёх латинских букв';setError(message);throw Error(message);}
+    const patch={...values,...(values.currency!==undefined?{currency:values.currency.toUpperCase()}:{}),...(values.discount===''?{discount:null}:{})} as Partial<Line>;
+    const current=docRef.current,general=current.room_layout==='combined'||current.room_layout==='legacy'&&!current.lines.some(line=>normalizeRoom(line.room));
+    const priceKeys=new Set(bulkLines.map(priceIdentity)),allowed=['name','sku','manufacturer','room','description','ip','unit_price','currency','image'];
+    change(quote=>({...quote,lines:quote.lines.map(line=>{
+      const changes=selectedLineIds.has(line.id)?patch:general&&Object.hasOwn(patch,'unit_price')&&priceKeys.has(priceIdentity(line))?{unit_price:patch.unit_price}:null;
+      if(!changes)return line;
+      return {...line,...changes,...(line.source_key&&Object.hasOwn(changes,'quantity')?{quantity_override:changes.quantity,calculated_quantity:line.calculated_quantity??line.quantity}:{}),overrides:line.source_key||line.product_id?[...new Set([...(line.overrides??[]),...Object.keys(changes).filter(key=>allowed.includes(key))])]:line.overrides};
+    })}),true);setMessage('Изменены выбранные позиции: '+bulkLines.length+'. Ctrl+Z — отменить.');
+  }
   const numericError=useMemo(()=>numberError(doc),[doc]),validationIssues=useMemo(()=>quoteNumberIssues(doc),[doc]);
   const errorSummary=useRef<HTMLDivElement>(null),focusError=useRef(false);
   const productInitial=useRef('');
@@ -143,13 +170,13 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     apply(value);lastCatalogue.current=products;
   }
   useEffect(()=>{void work(load);},[base]);
-  useEffect(()=>{onDirtyChange(dirty||Boolean(newProduct)||Boolean(imported));},[dirty,newProduct,imported,onDirtyChange]);
+  useEffect(()=>{onDirtyChange(dirty||quoteBulkDirty||Boolean(newProduct)||Boolean(imported));},[dirty,quoteBulkDirty,newProduct,imported,onDirtyChange]);
   useEffect(()=>{onBusyChange(busy);},[busy,onBusyChange]);
   useEffect(()=>()=>{onDirtyChange(false);onBusyChange(false);},[onDirtyChange,onBusyChange]);
   useEffect(()=>{
-    const unload=(event:BeforeUnloadEvent)=>{if(dirty){event.preventDefault();event.returnValue="";}};
+    const unload=(event:BeforeUnloadEvent)=>{if(dirty||quoteBulkDirty){event.preventDefault();event.returnValue="";}};
     window.addEventListener("beforeunload",unload);return()=>window.removeEventListener("beforeunload",unload);
-  },[dirty]);
+  },[dirty,quoteBulkDirty]);
   useEffect(()=>{
     if(!doc || !dirty || calculatedKey.current===calculationBody){setCalculating(false);return;}
     const cancellation=new AbortController();
@@ -359,6 +386,12 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const visiblePrices=calculated[mode];
   const rowPrices=new Map(visiblePrices.lines.map(line=>[line.id,line]));
   const issues=exportIssues(doc.lines),conflicts=priceConflicts(doc.lines);
+  const bulkNotices:WorkIssue[]=validationIssues.map((issue,index)=>({id:'number'+index,group:'Числовые поля',title:issue.label,detail:issue.message,severity:'error',action:()=>jumpToError(issue)}));
+  bulkNotices.push(...quoteBulkIssues);
+  if(error)bulkNotices.unshift({id:'runtime',group:'Ошибка',title:'Не удалось завершить действие',detail:error,severity:'error'});
+  if(bulkMixed)bulkNotices.unshift({id:'mixed',group:'Выбраны разные объекты',title:'Общие свойства позиций КП',detail:'Выбраны разные категории. Индивидуальные номенклатуры и единицы сохранятся. Количество доступно только при одинаковых единицах.',severity:'info'});
+  if(conflicts.length)bulkNotices.push({id:'prices',group:'Разные цены',title:'Есть одинаковые позиции с разными ценами',detail:'Проверьте цены одинакового товара в общем КП. Изменение цены применяется ко всем одинаковым позициям.',severity:'warning'});
+
 
   const productOptions=(line:Line)=>{
     const options=(line.source_ids.length&&line.type_id!==null?productPickers.byType.get(line.unit+':'+line.type_id):productPickers.byUnit.get(line.unit))??[{value:'',label:'Без привязки к товару'}];
@@ -404,6 +437,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       </article>)}
     </div>
     <QuotePreflight issues={issues} onSelect={item=>jumpToLine(item.id,item.index)}/>
+    <IssueBar label="Проверка КП" issues={bulkNotices}/>
     </div>
 
     {!preview ? <>
@@ -424,14 +458,15 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
         {quoteTool==='positions'&&!standalone&&<div className="quotation-room-actions"><ToolButton icon="room" disabled={busy} onClick={()=>void setRoomLayout('rooms')}>Распределить по помещениям</ToolButton>{doc.room_layout!=='combined'&&<ToolButton icon="layers" disabled={busy} onClick={()=>void setRoomLayout('combined')}>Объединить помещения</ToolButton>}<small>{doc.room_layout==='combined'?'Общее КП':doc.room_layout==='rooms'?'По помещениям плана':'Сохранённая разбивка по помещениям'}</small></div>}
         <label>Строк на странице<SearchSelect aria-label="Строк на странице КП" value={linePageSize} onChange={event=>{setLinePageSize(Number(event.target.value));setLinePage(0);}}>{[25,50,100,200,500].map(size=><option key={size} value={size}>{size}</option>)}</SearchSelect></label>
       </div>}
+      {quoteTool==='positions'&&<>{bulkLines.length>0&&<div className="bulk-selection-tools"><span className="bulk-selection-count">Выбрано: {bulkLines.length}</span>{bulkLines.length>0&&<button type="button" onClick={()=>setSelectedLineIds(new Set())}>Снять выделение позиций КП</button>}</div>}{bulkLines.length>0&&<BulkEditor key={base} count={bulkLines.length} fields={bulkFields} mixed={bulkMixed} busy={busy} onApply={applyQuoteProperties} onIssuesChange={setQuoteBulkIssues} onDirtyChange={setQuoteBulkDirty}/>}</>}
       {quoteTool==='positions'&&<div className="quotation-positions-body">
-      <div ref={tableWrap} className="quotation-table-wrap"><table className="quotation-table"><thead><tr><th>Позиция / товар</th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Валюта</th><th>Скидка, %</th><th>Сумма</th><th></th></tr></thead>
+      <div ref={tableWrap} className="quotation-table-wrap"><table className="quotation-table"><thead><tr><th><label className="quote-select-all" title={"Выбрать все найденные позиции · "+filteredLines.length}><input type="checkbox" aria-label="Выбрать все найденные позиции КП" checked={Boolean(filteredLines.length)&&filteredLines.every(({line})=>selectedLineIds.has(line.id))} disabled={busy} onChange={event=>{const checked=event.target.checked;setSelectedLineIds(current=>{const next=new Set(current);for(const {line} of filteredLines)if(checked)next.add(line.id);else next.delete(line.id);return next;});}}/>Позиция / товар</label></th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Валюта</th><th>Скидка, %</th><th>Сумма</th><th></th></tr></thead>
         <tbody>{visibleLines.map(({line,index},visibleIndex)=>{
           const group=normalizeRoom(line.room),showGroup=grouped&&(visibleIndex===0||normalizeRoom(visibleLines[visibleIndex-1].line.room)!==group);
           return <Fragment key={line.id}>{showGroup&&<tr data-quote-group={group}><th colSpan={8}><span>{group||'Без помещения'}</span></th></tr>}
-        <tr data-quote-line={line.id} className={(activeLineId===line.id?'quote-row-active ':'')+(draggedId===line.id?'quote-row-dragging ':'')+(dropTarget?.id===line.id?(dropTarget.after?'quote-drop-after':'quote-drop-before'):'')}
+        <tr data-quote-line={line.id} data-bulk-selected={selectedLineIds.has(line.id)} className={(activeLineId===line.id?'quote-row-active ':'')+(draggedId===line.id?'quote-row-dragging ':'')+(dropTarget?.id===line.id?(dropTarget.after?'quote-drop-after':'quote-drop-before'):'')}
           onFocusCapture={()=>{setActiveLineId(line.id);setEditingLineId(line.id);}} onBlurCapture={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node|null))setEditingLineId(null);}} data-image-target onDragOver={event=>rowDragOver(event,line.id)} onDrop={event=>rowDrop(event,line.id)} onPasteCapture={event=>imagePaste(event,file=>void upload(file,image=>editLine(line.id,{image})))}>
-          <td><div className="quotation-line-name"><button type="button" className="quote-drag-handle" draggable={!busy} disabled={busy} aria-label={'Перетащить строку '+(index+1)} title="Перетащите для перемещения. Ctrl+↑ / Ctrl+↓ — на одну позицию."
+          <td><div className="quotation-line-name"><input className="quote-row-check" type="checkbox" aria-label={"Выбрать строку КП "+(index+1)} disabled={busy} checked={selectedLineIds.has(line.id)} onChange={()=>toggleQuoteLine(line.id)}/><button type="button" className="quote-drag-handle" draggable={!busy} disabled={busy} aria-label={'Перетащить строку '+(index+1)} title="Перетащите для перемещения. Ctrl+↑ / Ctrl+↓ — на одну позицию."
             onDragStart={event=>{if(busy){event.preventDefault();return;}event.stopPropagation();dragSource.current=line.id;dragY.current=event.clientY;setDraggedId(line.id);setActiveLineId(line.id);event.dataTransfer.effectAllowed='move';event.dataTransfer.setData(QUOTE_LINE_DRAG,JSON.stringify({base,id:line.id}));}}
             onDragEnd={endDrag} onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&['ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();const target=doc.lines[index+(event.key==='ArrowUp'?-1:1)];if(target){moveLine(line.id,target.id,event.key==='ArrowDown');setLinePage(Math.floor((index+(event.key==='ArrowUp'?-1:1))/linePageSize));requestAnimationFrame(()=>document.querySelector<HTMLButtonElement>(`[data-quote-line="${CSS.escape(line.id)}"] .quote-drag-handle`)?.focus());}}}}><ActionIcon name="grip"/><small>{index+1}</small></button>
             {line.image&&<img src={line.image} alt=""/>}<div><input className="quotation-name-input" title={[line.name,line.sku].filter(Boolean).join(" · ")} aria-label={"Наименование строки "+(index+1)} value={line.name} disabled={busy} onChange={e=>editLine(line.id,{name:e.target.value})}/></div></div>

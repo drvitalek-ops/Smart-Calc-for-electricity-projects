@@ -76,7 +76,7 @@ const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKM
   const maker=await(await api.post(base+'/manufacturers',{data:{name:'Производитель фото '+pid}})).json();
   const product=await(await api.post(base+'/products',{data:{name:'Фото-товар '+pid,sku:'PHOTO-'+pid,manufacturer_id:maker.id,type_id:sensor.id,unit:'шт',price:100,parameters:{image,description:'Сохранить фото'}}})).json();
   await page.getByRole('button',{name:'Каталог и цены',exact:true}).click();const catalog=page.getByRole('dialog',{name:'Каталог оборудования',exact:true});await catalog.getByRole('button',{name:'Товары и цены',exact:true}).click();
-  await catalog.getByLabel('Поиск в базе товаров',{exact:true}).fill('PHOTO-'+pid);await catalog.locator('.product-list>button').click();
+  await catalog.getByLabel('Поиск в базе товаров',{exact:true}).fill('PHOTO-'+pid);await catalog.locator('.product-list button[data-product-id]').click();
   await catalog.getByLabel('Описание товара в каталоге',{exact:true}).fill('Описание изменено вручную');
   const updatedProduct=page.waitForResponse(r=>r.url().endsWith('/products/'+product.id)&&r.request().method()==='PUT');await catalog.getByRole('button',{name:'Сохранить изменения',exact:true}).click();assert.equal((await updatedProduct).status(),200);
   assert.equal((await(await api.get(base+'/catalog')).json()).products.find(p=>p.id===product.id).parameters.image,image);

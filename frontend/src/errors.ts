@@ -28,10 +28,13 @@ export function responseError(data:unknown,status:number):string{
  }).join('; ')||fallbackFor(status);
  return fallbackFor(status);
 }
+export class ApiError extends Error{constructor(message:string,public status:number,public data:unknown){super(message);this.name='ApiError';}}
 export async function apiFetch(url:string,init:RequestInit={}):Promise<Response>{
  let response:Response;
  try{response=await fetch(url,init);}catch(error){if(init.signal?.aborted)throw error;throw Error(errorMessage(error,'Не удалось связаться с приложением. Повторите действие.'));}
- if(!response.ok){let data:unknown;try{data=await response.json();}catch{}throw Error(responseError(data,response.status));}
+ if(!response.ok){let data:unknown;try{data=await response.json();}catch{}throw new ApiError(responseError(data,response.status),response.status,data);}
+ const method=(init.method??'GET').toUpperCase();
+ if(['POST','PUT','PATCH','DELETE'].includes(method)&&/^\/api\/(?:manufacturers(?:\/|$)|suppliers(?:\/|$)|products(?:\/|$)|types(?:\/|$)|categories(?:\/|$)|catalog\/import(?:$|\?)|quotations\/\d+\/product(?:$|\?)|projects\/\d+\/quotation\/product(?:$|\?))/.test(url))window.dispatchEvent(new Event('smart-calc:catalog-mutated'));
  return response;
 }
 export async function api<T>(path:string,method='GET',body?:unknown,signal?:AbortSignal):Promise<T>{

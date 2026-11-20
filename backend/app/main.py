@@ -29,6 +29,7 @@ from .models import (
     Project, Page, Room, Layer, Element, ElementType, Manufacturer, Supplier,
     Product, Report, Quotation, CatalogCategory,
 )
+from .shared_catalog import catalogue_write_guard, identity, manufacturer_index, manufacturer_named, resolve_manufacturer, guard_product_duplicate, product_is_used, metadata, propagate_metadata
 from .catalog import LAYERS, seed
 from .nomenclature import nomenclature_key, nomenclature_group, nomenclature_group_order
 from .polygons import polygon_error
@@ -95,6 +96,9 @@ async def lifespan(app):
             for column,definition in page_upgrades.items():
                 if column not in page_columns:
                     connection.execute(text(f'ALTER TABLE pages ADD COLUMN {column} {definition}'))
+        if 'active' not in {column['name'] for column in inspect(engine).get_columns('manufacturers')}:
+            with engine.begin() as connection:
+                connection.execute(text('ALTER TABLE manufacturers ADD COLUMN active BOOLEAN NOT NULL DEFAULT TRUE'))
         type_columns={column['name'] for column in inspect(engine).get_columns('element_types')}
         with engine.begin() as connection:
             if 'active' not in type_columns:
@@ -119,7 +123,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.56'
+APP_VERSION = '1.0.57'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 from .errors import install_error_handlers, exception_message
 install_error_handlers(app)
@@ -262,13 +266,17 @@ class ElementInput(BaseModel):
     comment: str = Field(default='', max_length=2000)
 
 class ManufacturerInput(NameInput):
-    pass
+    name:str=Field(min_length=1,max_length=500)
+    active: bool | None = None
 
 class SupplierInput(NameInput):
     contact: str = Field(default='', max_length=500)
 
 class ProductInput(NameInput):
-    manufacturer_id: int
+    name:str=Field(min_length=1,max_length=500)
+    allow_duplicate: bool = False
+    manufacturer_name:str=Field(default='',max_length=500)
+    manufacturer_id: int | None = None
     supplier_id: int | None = None
     type_id: int
     sku: str = Field(default='', max_length=200)
@@ -776,12 +784,30 @@ def catalog(db: DbSession = Depends(session)):
     return {'manufacturers':manufacturers,'suppliers':suppliers,'products':products,'categories':category_rows(db)}
 
 @app.post('/api/manufacturers',status_code=201)
-def add_manufacturer(body: ManufacturerInput, db: DbSession = Depends(session)):
-    item=Manufacturer(name=body.name); db.add(item); db.commit(); return data(item)
+def add_manufacturer(body: ManufacturerInput, db: DbSession = Depends(session), _catalogue=Depends(catalogue_write_guard)):
+    item=resolve_manufacturer(db,body.name);db.commit();return data(item)
 
 @app.put('/api/manufacturers/{item_id}')
-def edit_manufacturer(item_id: int, body: ManufacturerInput, db: DbSession = Depends(session)):
-    item=require(db,Manufacturer,item_id); item.name=body.name; db.commit(); return data(item)
+def edit_manufacturer(item_id: int, body: ManufacturerInput, db: DbSession = Depends(session), _catalogue=Depends(catalogue_write_guard)):
+    item=require(db,Manufacturer,item_id);name=' '.join(body.name.split())
+    if not name:raise HTTPException(422,'Укажите название производителя')
+    duplicate=manufacturer_named(db,name)
+    if duplicate is not None and duplicate.id!=item.id:raise HTTPException(409,'Такой производитель уже есть в каталоге. Выберите его из списка.')
+    products=list(db.scalars(select(Product).where(Product.manufacturer_id==item.id)))
+    before={product.id:{'manufacturer':item.name} for product in products}
+    item.name=name
+    if body.active is not None:item.active=body.active
+    if not item.active:
+        for product in products:product.active=False
+    propagate_metadata(db,{product.id:(before[product.id],{'manufacturer':item.name}) for product in products})
+    db.commit();return data(item)
+
+@app.delete('/api/manufacturers/{item_id}')
+def remove_manufacturer(item_id:int,db:DbSession=Depends(session), _catalogue=Depends(catalogue_write_guard)):
+    item=require(db,Manufacturer,item_id);item.active=False
+    products=list(db.scalars(select(Product).where(Product.manufacturer_id==item_id)))
+    for product in products:product.active=False
+    db.commit();return {**data(item),'archived_products':len(products)}
 
 @app.post('/api/suppliers',status_code=201)
 def add_supplier(body: SupplierInput, db: DbSession = Depends(session)):
@@ -794,29 +820,39 @@ def edit_supplier(item_id: int, body: SupplierInput, db: DbSession = Depends(ses
     db.commit(); return data(item)
 
 @app.post('/api/products',status_code=201)
-def add_product(body: ProductInput, db: DbSession = Depends(session)):
-    require(db,Manufacturer,body.manufacturer_id)
+def add_product(body: ProductInput, db: DbSession = Depends(session), _catalogue=Depends(catalogue_write_guard)):
+    maker=require(db,Manufacturer,body.manufacturer_id) if body.manufacturer_id else resolve_manufacturer(db,body.manufacturer_name)
+    if not maker.active:raise HTTPException(409,'Сначала восстановите производителя в каталоге')
     typ=require(db,ElementType,body.type_id)
     if not typ.active: raise HTTPException(409,'Сначала восстановите позицию в библиотеке')
     if body.unit != typ.unit: raise HTTPException(422,'Единица товара должна совпадать с типом элемента')
     if body.supplier_id is not None: require(db,Supplier,body.supplier_id)
-    item=Product(**body.model_dump()); db.add(item); db.commit(); return catalog_product(db,item)
+    values=body.model_dump(exclude={'allow_duplicate','manufacturer_name'});values['manufacturer_id']=maker.id;values['name']=' '.join(body.name.split());values['sku']=body.sku.strip()
+    if not values['name']:raise HTTPException(422,'Укажите название товара')
+    guard_product_duplicate(db,values,allow_duplicate=body.allow_duplicate)
+    item=Product(**values); db.add(item); db.commit(); return catalog_product(db,item)
 
 @app.put('/api/products/{product_id}')
-def edit_product(product_id: int, body: ProductInput, db: DbSession = Depends(session)):
+def edit_product(product_id: int, body: ProductInput, db: DbSession = Depends(session), _catalogue=Depends(catalogue_write_guard)):
     item=require(db,Product,product_id)
-    if (body.type_id!=item.type_id or body.unit!=item.unit) and db.scalar(select(Element.id).where(Element.product_id==product_id).limit(1)):
+    if (body.type_id!=item.type_id or body.unit!=item.unit) and product_is_used(db,product_id):
         raise HTTPException(409,'Тип и единица измерения используемого товара защищены')
-    require(db,Manufacturer,body.manufacturer_id)
+    maker=require(db,Manufacturer,body.manufacturer_id) if body.manufacturer_id else resolve_manufacturer(db,body.manufacturer_name)
+    if not maker.active:raise HTTPException(409,'Сначала восстановите производителя в каталоге')
     typ=require(db,ElementType,body.type_id)
     if not typ.active and body.type_id!=item.type_id: raise HTTPException(409,'Сначала восстановите позицию в библиотеке')
     if body.unit != typ.unit: raise HTTPException(422,'Единица товара должна совпадать с типом элемента')
     if body.supplier_id is not None: require(db,Supplier,body.supplier_id)
-    for key,value in body.model_dump().items(): setattr(item,key,value)
+    values=body.model_dump(exclude={'allow_duplicate','manufacturer_name'});values['manufacturer_id']=maker.id;values['name']=' '.join(body.name.split());values['sku']=body.sku.strip()
+    if not values['name']:raise HTTPException(422,'Укажите название товара')
+    guard_product_duplicate(db,values,item,body.allow_duplicate)
+    before=metadata(db,item)
+    for key,value in values.items(): setattr(item,key,value)
+    propagate_metadata(db,{item.id:(before,metadata(db,item))})
     db.commit(); return catalog_product(db,item)
 
 @app.delete('/api/products/{product_id}')
-def remove_product(product_id: int, db: DbSession = Depends(session)):
+def remove_product(product_id: int, db: DbSession = Depends(session), _catalogue=Depends(catalogue_write_guard)):
     item=require(db,Product,product_id)
     item.active=False
     db.commit()
@@ -834,7 +870,7 @@ def catalog_import_template():
     )
 
 @app.post('/api/catalog/import',status_code=201)
-async def import_catalog(file: UploadFile, db: DbSession = Depends(session)):
+async def import_catalog(file: UploadFile, db: DbSession = Depends(session), _catalogue=Depends(catalogue_write_guard)):
     raw=await file.read(2_000_001)
     if len(raw)>2_000_000:
         raise HTTPException(413,'Прайс-лист больше 2 МБ')
@@ -854,8 +890,16 @@ async def import_catalog(file: UploadFile, db: DbSession = Depends(session)):
     if not required.issubset(headers):
         raise HTTPException(422,'В прайс-листе не хватает обязательных столбцов. Используйте шаблон и заполните название, тип, производителя и цену.')
     types_by_name={item.name.strip().casefold():item for item in db.scalars(select(ElementType).where(ElementType.active.is_(True)))}
-    manufacturers={item.name.strip().casefold():item for item in db.scalars(select(Manufacturer))}
+    manufacturers=manufacturer_index(db)
     suppliers={item.name.strip().casefold():item for item in db.scalars(select(Supplier))}
+    changes={}
+    def product_key(maker_name,type_id,name,sku):
+        return (identity(maker_name),'sku',identity(sku)) if sku else (identity(maker_name),'name',type_id,identity(name))
+    products={}
+    for item in db.scalars(select(Product).order_by(Product.id)):
+        maker=db.get(Manufacturer,item.manufacturer_id)
+        key=product_key(maker.name,item.type_id,item.name,item.sku)
+        products.setdefault(key,[]).append(item)
     created=updated=0
     try:
         for index,source in enumerate(rows,2):
@@ -863,13 +907,11 @@ async def import_catalog(file: UploadFile, db: DbSession = Depends(session)):
             name=row.get('name',''); type_name=row.get('type',''); manufacturer_name=row.get('manufacturer','')
             if not name or not type_name or not manufacturer_name:
                 raise ValueError(f'строка {index}: пустое обязательное поле')
+            if len(name)>500 or len(manufacturer_name)>500:raise ValueError(f'строка {index}: название товара или производителя длиннее 500 символов')
             typ=types_by_name.get(type_name.casefold())
             if typ is None:
                 raise ValueError(f'строка {index}: неизвестный тип «{type_name}»')
-            manufacturer=manufacturers.get(manufacturer_name.casefold())
-            if manufacturer is None:
-                manufacturer=Manufacturer(name=manufacturer_name); db.add(manufacturer); db.flush()
-                manufacturers[manufacturer_name.casefold()]=manufacturer
+            manufacturer=resolve_manufacturer(db,manufacturer_name,manufacturers)
             supplier=None; supplier_name=row.get('supplier','')
             if supplier_name:
                 supplier=suppliers.get(supplier_name.casefold())
@@ -883,26 +925,31 @@ async def import_catalog(file: UploadFile, db: DbSession = Depends(session)):
             if not 0<=price<=1_000_000_000:
                 raise ValueError(f'строка {index}: цена вне допустимого диапазона')
             currency=(row.get('currency') or 'RUB').upper()
-            if len(currency)!=3 or not currency.isalpha():
+            if not re.fullmatch('[A-Z]{3}',currency):
                 raise ValueError(f'строка {index}: валюта должна состоять из трёх букв')
             active_value=(row.get('active') or 'true').casefold()
             if active_value not in {'true','false','1','0','да','нет','yes','no'}:
                 raise ValueError(f'строка {index}: поле активности заполнено неверно. Используйте значения из шаблона')
             active=active_value in {'true','1','да','yes'}
             sku=row.get('sku','')
-            query=select(Product).where(Product.manufacturer_id==manufacturer.id)
-            query=query.where(Product.sku==sku) if sku else query.where(Product.type_id==typ.id,Product.name==name)
-            product=db.scalar(query)
+            key=product_key(manufacturer.name,typ.id,name,sku)
+            matches=products.get(key,[])
+            if len(matches)>1:raise ValueError(f'строка {index}: в базе несколько товаров с таким артикулом или названием. Сначала отредактируйте дубликаты в каталоге')
+            product=matches[0] if matches else None
             values=dict(
                 name=name,sku=sku,type_id=typ.id,manufacturer_id=manufacturer.id,
                 supplier_id=supplier.id if supplier else None,unit=typ.unit,price=price,
                 currency=currency,active=active,
             )
             if product:
+                if (product.type_id!=typ.id or product.unit!=typ.unit) and product_is_used(db,product.id):raise ValueError(f'строка {index}: тип и единица используемого товара защищены')
+                before=metadata(db,product)
                 for key,value in values.items(): setattr(product,key,value)
+                changes[product.id]=(changes.get(product.id,(before,None))[0],metadata(db,product))
                 updated+=1
             else:
-                db.add(Product(**values,parameters={})); created+=1
+                product=Product(**values,parameters={});db.add(product);db.flush();products[key]=[product];created+=1
+        propagate_metadata(db,changes)
         db.commit()
     except ValueError as exc:
         db.rollback(); raise HTTPException(422,str(exc))

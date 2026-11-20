@@ -1,4 +1,8 @@
 import {WorkspaceHeading,KindThumbnail,PanelHeading} from "./ui/Workspace";
+import {rebaseCatalogue} from "./catalogueRebase";
+import useCatalogue,{refreshCatalogue} from "./catalogueStore";
+import {ManufacturerField,DuplicateProducts,duplicateProducts,type DuplicateProduct} from "./CatalogueFields";
+import "./CatalogueFields.css";
 import {api,errorMessage} from "./errors";
 import LayerTree from "./LayerTree";
 import {planGroup,layerGroups,displayedElement} from "./planGroups";
@@ -142,7 +146,7 @@ export type Project = {
   layers: Layer[];
   elements: Item[];
 };
-type Product = {
+export type Product = {
   id: number;
   type_id: number;
   manufacturer_id: number;
@@ -157,9 +161,9 @@ type Product = {
   active: boolean;
   parameters: Record<string, unknown>;
 };
-type Catalog = {
+export type Catalog = {
   categories?:Category[];
-  manufacturers: { id: number; name: string }[];
+  manufacturers: { id: number; name: string; active?:boolean }[];
   suppliers: { id: number; name: string; contact: string }[];
   products: Product[];
 };
@@ -461,10 +465,10 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
-    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.55 используйте копию данных до обновления.</p></div></div>
+    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.56 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.55" target="_blank" rel="noreferrer">Открыть релиз v1.0.55</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.56" target="_blank" rel="noreferrer">Открыть релиз v1.0.56</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div id="settings-transfer" tabIndex={-1} className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -555,7 +559,7 @@ function CatalogManager({
     id: 0,
     name: "",
     sku: "",
-    manufacturer_id: catalog.manufacturers[0]?.id ?? 0,
+    manufacturer_id: catalog.manufacturers.find(item=>item.active!==false)?.id ?? 0,
     supplier_id: 0,
     type_id: types.find(item=>item.active)?.id ?? 0,
     price: 0,
@@ -572,15 +576,28 @@ function CatalogManager({
     [message, setMessage] = useState(""),
     [localError, setLocalError] = useState(""),
     [saving, setSaving] = useState(false);
+  const [productManufacturer,setProductManufacturer]=useState(catalog.manufacturers.find(item=>item.id===blank.manufacturer_id)?.name??''),[duplicates,setDuplicates]=useState<DuplicateProduct[]|null>(null),[showArchived,setShowArchived]=useState(false);
+  const previousCatalogue=useRef(catalog);
+  useEffect(()=>{
+    const previous=previousCatalogue.current;previousCatalogue.current=catalog;
+    const before=previous.products.find(item=>item.id===form.id),after=catalog.products.find(item=>item.id===form.id);
+    if(before&&after){
+      const fields=(product:Product)=>({id:product.id,name:product.name,sku:product.sku,manufacturer_id:product.manufacturer_id,supplier_id:product.supplier_id??0,type_id:product.type_id,price:product.price,currency:product.currency,active:product.active,parameters:product.parameters});
+      setForm(current=>current.id===after.id?rebaseCatalogue(current,fields(before),fields(after)):current);
+      setProductManufacturer(current=>rebaseCatalogue(current,before.manufacturer,after.manufacturer));
+    }
+    const oldMaker=previous.manufacturers.find(item=>item.id===manufacturerId),newMaker=catalog.manufacturers.find(item=>item.id===manufacturerId);
+    if(oldMaker&&newMaker)setManufacturer(current=>rebaseCatalogue(current,oldMaker.name,newMaker.name));
+  },[catalog]);
   const originalProduct=catalog.products.find(item=>item.id===form.id),originalMaker=catalog.manufacturers.find(item=>item.id===manufacturerId),originalSupplier=catalog.suppliers.find(item=>item.id===supplierId);
   const productDirty=originalProduct?['name','sku','manufacturer_id','type_id','price','currency','active'].some(key=>form[key as keyof typeof form]!==originalProduct[key as keyof Product])||form.supplier_id!==(originalProduct.supplier_id??0)||JSON.stringify(form.parameters)!==JSON.stringify(originalProduct.parameters):Boolean(form.name||form.sku||form.price||Object.keys(form.parameters).length);
-  const dirty=typeDirty||categoryDirty||productDirty||manufacturer!==(originalMaker?.name??'')||supplier!==(originalSupplier?.name??'')||contact!==(originalSupplier?.contact??'');
+  const dirty=typeDirty||categoryDirty||productDirty||Boolean(productManufacturer&&!form.manufacturer_id)||manufacturer!==(originalMaker?.name??'')||supplier!==(originalSupplier?.name??'')||contact!==(originalSupplier?.contact??'');
   const anyBusy=saving||typeBusy||categoryBusy;
   useEffect(()=>{onBusyChange(anyBusy);return()=>onBusyChange(false);},[anyBusy,onBusyChange]);
   useEffect(()=>{onDirtyChange(dirty);return()=>onDirtyChange(false);},[dirty,onDirtyChange]);
   useEffect(()=>setProductLimit(100),[databaseSearch]);
   const kindLookup=useMemo(()=>new Map(types.map(kind=>[kind.id,kind])),[types]);
-  const filteredProducts=useMemo(()=>catalog.products.filter(item=>{const kind=kindLookup.get(item.type_id);return matchesSearch([item.name,item.sku,item.manufacturer,item.supplier,kind?.name,kind?.category].join(' '),databaseSearch);}),[catalog.products,kindLookup,databaseSearch]);
+  const filteredProducts=useMemo(()=>catalog.products.filter(item=>{if(!showArchived&&!item.active)return false;const kind=kindLookup.get(item.type_id);return matchesSearch([item.name,item.sku,item.manufacturer,item.supplier,kind?.name,kind?.category].join(' '),databaseSearch);}),[catalog.products,kindLookup,databaseSearch,showArchived]);
   function closeCatalog(){if(anyBusy)return;if(!dirty||confirm('В каталоге есть несохранённые изменения. Закрыть без сохранения?'))onClose();}
 
   async function work(action: () => Promise<void>) {
@@ -595,39 +612,24 @@ function CatalogManager({
       setSaving(false);
     }
   }
-  async function saveProduct(e: React.FormEvent) {
-    e.preventDefault();
+  async function saveProduct(e?: React.FormEvent,allowDuplicate=false) {
+    e?.preventDefault();
     await work(async () => {
       const kind = types.find((item) => item.id === form.type_id);
       if (!kind) throw Error("Выберите тип оборудования");
-      if (!form.manufacturer_id) throw Error("Добавьте производителя");
-      const body = {
-        name: form.name,
-        sku: form.sku,
-        manufacturer_id: form.manufacturer_id,
-        supplier_id: form.supplier_id || null,
-        type_id: form.type_id,
-        unit: kind.unit,
-        price: Number(form.price),
-        currency: form.currency.toUpperCase(),
-        active: form.active,
-        parameters: form.parameters,
-      };
-      await api(
-        form.id ? `/products/${form.id}` : "/products",
-        form.id ? "PUT" : "POST",
-        body,
-      );
-      await onChanged();
-      setForm({
-        ...blank,
-        manufacturer_id: form.manufacturer_id,
-        type_id: form.type_id,
-      });
+      if (!productManufacturer.trim()) throw Error("Добавьте производителя");
+      const body = {name:form.name,sku:form.sku,manufacturer_id:form.manufacturer_id||null,manufacturer_name:productManufacturer,
+        supplier_id:form.supplier_id||null,type_id:form.type_id,unit:kind.unit,price:Number(form.price),currency:form.currency.toUpperCase(),active:form.active,parameters:form.parameters,allow_duplicate:allowDuplicate};
+      let saved:Product;
+      try{saved=await api<Product>(form.id?`/products/${form.id}`:'/products',form.id?'PUT':'POST',body);}
+      catch(error){const matches=duplicateProducts(error);if(matches){setDuplicates(matches);return;}throw error;}
+      await onChanged();setDuplicates(null);
+      setForm({...blank,manufacturer_id:saved.manufacturer_id,type_id:form.type_id});setProductManufacturer(saved.manufacturer);
       setMessage(form.id ? "Товар обновлён" : "Товар добавлен");
     });
   }
   function edit(product: Product) {
+    setDuplicates(null);setProductManufacturer(product.manufacturer);
     setForm({
       id: product.id,
       name: product.name,
@@ -676,7 +678,7 @@ function CatalogManager({
                       ? `/manufacturers/${manufacturerId}`
                       : "/manufacturers",
                     manufacturerId ? "PUT" : "POST",
-                    { name: manufacturer },
+                    { name: manufacturer,...(manufacturerId?{active:originalMaker?.active!==false}:{}) },
                   );
                   setManufacturer("");
                   setManufacturerId(0);
@@ -699,19 +701,11 @@ function CatalogManager({
                 {manufacturerId ? "Сохранить" : "Добавить"}
               </button>
             </form>
-            <div className="tag-list">
-              {catalog.manufacturers.filter(item=>matchesSearch(item.name,databaseSearch)).map((item) => (
-                <button
-                  type="button"
-                  key={item.id}
-                  onClick={() => {
-                    setManufacturerId(item.id);
-                    setManufacturer(item.name);
-                  }}
-                >
-                  {item.name}
-                </button>
-              ))}
+            <div className="catalogue-maker-list">
+              {catalog.manufacturers.filter(item=>(showArchived||item.active!==false)&&matchesSearch(item.name,databaseSearch)).map(item=><div key={item.id} className={'catalogue-maker-row '+(item.active===false?'inactive':'')}>
+                <button type="button" onClick={()=>{setManufacturerId(item.id);setManufacturer(item.name);}}>{item.name}{item.active===false?' · архив':''}</button>
+                {item.active===false?<button type="button" disabled={saving} aria-label={'Восстановить производителя '+item.name} onClick={()=>void work(async()=>{await api('/manufacturers/'+item.id,'PUT',{name:item.name,active:true});await onChanged();setMessage('Производитель восстановлен. Товары можно восстановить отдельно.');})}>Восстановить</button>:<button type="button" className="danger" disabled={saving} aria-label={'Удалить производителя '+item.name} onClick={()=>{const count=catalog.products.filter(product=>product.manufacturer_id===item.id&&product.active).length;if(!confirm('Удалить производителя «'+item.name+'» из выбора'+(count?' и его товары ('+count+')':'')+'? Позиции в планах и КП сохранятся.'))return;void work(async()=>{await api('/manufacturers/'+item.id,'DELETE');await onChanged();if(manufacturerId===item.id){setManufacturer('');setManufacturerId(0);}setMessage('Производитель удалён из выбора');});}}>Удалить</button>}
+              </div>)}
             </div>
           </div>
           <div>
@@ -838,25 +832,7 @@ function CatalogManager({
                   <KindOptions types={types.filter(item=>item.active || item.id===form.type_id)} showUnits />
                 </SearchSelect>
               </label>
-              <label>
-                Производитель
-                <SearchSelect
-                  required
-                  value={form.manufacturer_id || ""}
-                  onChange={(e) =>
-                    setForm({ ...form, manufacturer_id: +e.target.value })
-                  }
-                >
-                  <option value="" disabled>
-                    Выберите
-                  </option>
-                  {catalog.manufacturers.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
-                </SearchSelect>
-              </label>
+              <ManufacturerField value={productManufacturer} makers={catalog.manufacturers} disabled={saving} onChange={(name,id)=>{setProductManufacturer(name);setForm(current=>({...current,manufacturer_id:id??0}));setDuplicates(null);}}/>
               <label>
                 Поставщик
                 <SearchSelect
@@ -915,23 +891,24 @@ function CatalogManager({
               <CustomFieldsEditor value={form.parameters} onChange={parameters=>setForm({...form,parameters})}/>
               <button
                 className="primary"
-                disabled={saving || !catalog.manufacturers.length}
+                disabled={saving}
               >
                 {form.id ? "Сохранить изменения" : "Добавить товар"}
               </button>
               {form.id > 0 && (
-                <button type="button" onClick={() => setForm(blank)}>
+                <button type="button" onClick={() => {setForm(blank);setProductManufacturer(catalog.manufacturers.find(item=>item.id===blank.manufacturer_id)?.name??'');setDuplicates(null);}}>
                   Отменить редактирование
                 </button>
               )}
               {form.id>0 && <button type="button" className="danger" disabled={saving} onClick={()=> {
                 if(!confirm("Удалить товар из выбора? Его данные и стоимость в проектах сохранятся."))return;
-                void work(async()=>{await api(`/products/${form.id}`,"DELETE");await onChanged();setForm(blank);setMessage("Товар удалён из выбора");});
+                void work(async()=>{await api(`/products/${form.id}`,"DELETE");await onChanged();setForm(blank);setProductManufacturer(catalog.manufacturers.find(item=>item.id===blank.manufacturer_id)?.name??'');setDuplicates(null);setMessage("Товар удалён из выбора");});
               }}>Удалить товар</button>}
+              {duplicates&&<DuplicateProducts matches={duplicates} disabled={saving} onEdit={id=>{const product=catalog.products.find(product=>product.id===id);if(product){if(!product.active)setShowArchived(true);edit(product);}}} onSeparate={()=>void saveProduct(undefined,true)} onCancel={()=>setDuplicates(null)}/>}
             </form>
           </div>
           <div className="product-list">
-            <h3>Товары · {catalog.products.length}</h3>
+            <div className="product-list-heading"><h3>Товары · {catalog.products.filter(item=>showArchived||item.active).length}</h3><label className="catalog-archive-toggle"><input type="checkbox" checked={showArchived} onChange={event=>setShowArchived(event.target.checked)}/>Показывать удалённые товары и производителей</label></div>
             {filteredProducts.slice(0,productLimit).map((item) => (
               <button
                 type="button"
@@ -960,13 +937,8 @@ function CatalogManager({
 }
 export default function App() {
   const [projects, setProjects] = useState<{ id: number; name: string }[]>([]),
-    [project, setProject] = useState<Project | null>(null),
-    [types, setTypes] = useState<Kind[]>([]),
-    [catalog, setCatalog] = useState<Catalog>({
-      manufacturers: [],
-      suppliers: [],
-      products: [],
-    });
+    [project, setProject] = useState<Project | null>(null);
+  const catalog=useCatalogue(),types=catalog.types;
   const [pageId, setPageId] = useState<number | null>(null),
     [layerId, setLayerId] = useState<number | null>(null),
     [typeId, setTypeId] = useState<number | null>(null),
@@ -1154,6 +1126,8 @@ export default function App() {
     };
   }, [alignPageId]);
   const typeMap=useMemo(()=>new Map(types.map(item=>[item.id,item])),[types]);
+  useEffect(()=>{const showError=(event:Event)=>setError(String((event as CustomEvent).detail));window.addEventListener('smart-calc:catalog-error',showError);return()=>window.removeEventListener('smart-calc:catalog-error',showError);},[]);
+  useEffect(()=>{if(!project)return;const controller=new AbortController();api<Report>(`/projects/${project.id}/report`,'GET',undefined,controller.signal).then(value=>{if(!controller.signal.aborted)setReport(value);}).catch(error=>{if(!controller.signal.aborted)setError(errorMessage(error,'Не удалось обновить расчёт'));});return()=>controller.abort();},[catalog,project?.id]);
   const pageMap=useMemo(()=>new Map(project?.pages.map(item=>[item.id,item])??[]),[project?.pages]);
   const layerMap=useMemo(()=>new Map(project?.layers.map(item=>[item.id,item])??[]),[project?.layers]);
   const typeGroups=useMemo(()=>new Map(types.map(type=>[type.id,planGroup(type)])),[types]);
@@ -1190,7 +1164,7 @@ export default function App() {
     }
   }
   function openCatalog(){
-    void run(async()=>{const [nextCatalog,nextTypes]=await Promise.all([api<Catalog>('/catalog'),api<Kind[]>('/types?include_inactive=true')]);setCatalog(nextCatalog);setTypes(nextTypes);setCatalogOpen(true);});
+    void run(async()=>{await saveDraftBeforeNavigation();await refreshCatalogue();setCatalogOpen(true);});
   }
   function openSettings(){settingsTrigger.current=document.activeElement as HTMLElement|null;void run(async()=>{await saveDraftBeforeNavigation();setSettingsOpen(true);});}
   function canLeaveQuote() {
@@ -1318,10 +1292,8 @@ export default function App() {
   useEffect(() => {
     void run(async () => {
       setProjects(await api("/projects"));
-      const ts = await api<Kind[]>("/types?include_inactive=true");
-      setTypes(ts);
-      setTypeId(ts.find(item=>item.active)?.id ?? null);
-      setCatalog(await api("/catalog"));
+      const snapshot=await refreshCatalogue();
+      setTypeId(snapshot.types.find(item=>item.active)?.id ?? null);
     });
   }, []);
   async function save(item: Item) {
@@ -2228,8 +2200,7 @@ export default function App() {
           types={types}
           onClose={() => setCatalogOpen(false)}
           onChanged={async () => {
-            const updatedTypes=await api<Kind[]>("/types?include_inactive=true");
-            setTypes(updatedTypes);setCatalog(await api("/catalog"));
+            const updatedTypes=(await refreshCatalogue()).types;
             if(!updatedTypes.find(item=>item.id===typeId)?.active) {
               setTypeId(updatedTypes.find(item=>item.active)?.id ?? null);setPlacing(false);setLinePoints([]);setLineRedo([]);setLineCursor(null);
             }
@@ -2244,7 +2215,7 @@ export default function App() {
         </div>
       )}
       {view==="quotations" ? <QuotationHub types={types} onDirtyChange={setQuoteDirty} onBusyChange={setQuoteBusy}
-        onChanged={async()=>{setCatalog(await api("/catalog"));setTypes(await api<Kind[]>("/types?include_inactive=true"));}}
+        onChanged={async()=>{await refreshCatalogue();}}
         onOpenProject={async(id)=>{await open(id);setView("quote");}}/> : !project ? (
         <main className="welcome">
           <div className="welcome-content">
@@ -2270,8 +2241,7 @@ export default function App() {
             <QuotationEditor key={project.id} projectId={project.id} projectName={project.name} rooms={project.rooms} types={types}
               onBrowse={()=>changeView("quotations")}
               onDirtyChange={setQuoteDirty} onBusyChange={setQuoteBusy} onChanged={async()=>{
-                setCatalog(await api("/catalog"));
-                setTypes(await api<Kind[]>("/types?include_inactive=true"));
+                await refreshCatalogue();
                 const updated=await refresh(project.id);
                 setSelected(current=>current ? updated.elements.find(item=>item.id===current.id) ?? null : null);
               }}/>
@@ -3976,7 +3946,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.56</span>
+        <span>SMART HOME CALC / 1.0.57</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

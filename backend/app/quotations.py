@@ -18,6 +18,7 @@ from .db import session
 from .models import Project, Quotation, StandaloneQuotation, Element, ElementType, Product, Manufacturer, Layer
 
 router=APIRouter()
+from .shared_catalog import catalogue_write_guard, resolve_manufacturer, guard_product_duplicate, metadata, propagate_metadata, product_is_used, synchronize_quote_metadata
 from .numbers import RussianDecimal
 from .errors import exception_message
 
@@ -75,7 +76,8 @@ class QuoteLine(BaseModel):
     def manual_quantity(self):
         if self.source_key and self.quantity_override is not None: self.quantity=self.quantity_override
         if not self.source_key:
-            self.quantity_override=None;self.calculated_quantity=None;self.overrides=[]
+            self.quantity_override=None;self.calculated_quantity=None
+            if self.product_id is None:self.overrides=[]
         return self
 
 
@@ -206,6 +208,8 @@ class QuoteBinding(QuoteRevision):
 
 
 class QuoteProduct(QuoteRevision):
+    existing_product_id:int|None=Field(default=None,gt=0)
+    allow_duplicate:bool=False
     line_id: str
     type_id: int | None = Field(default=None,gt=0)
     image: str = Field(default='',max_length=300000)
@@ -652,7 +656,7 @@ def bind_quote(body:QuoteBinding,db:DbSession=Depends(session),scope:tuple=Depen
 
 @router.post('/api/quotations/{qid}/product',status_code=201)
 @router.post('/api/projects/{pid}/quotation/product',status_code=201)
-def create_quote_product(body:QuoteProduct,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+def create_quote_product(body:QuoteProduct,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope), _catalogue=Depends(catalogue_write_guard)):
     pid,standalone=scope
     quote=check_revision(db,pid,body.revision,standalone)
     line=next((line for line in quote.lines if line.id==body.line_id),None)
@@ -666,15 +670,28 @@ def create_quote_product(body:QuoteProduct,db:DbSession=Depends(session),scope:t
     if typ is None or not typ.active: raise HTTPException(422,'Выберите действующую номенклатуру')
     name=body.name.strip();manufacturer_name=body.manufacturer.strip()
     if not name or not manufacturer_name: raise HTTPException(422,'Укажите название и производителя')
-    manufacturer=db.scalar(select(Manufacturer).where(Manufacturer.name==manufacturer_name).limit(1))
-    if manufacturer is None:
-        manufacturer=Manufacturer(name=manufacturer_name);db.add(manufacturer);db.flush()
+    manufacturer=resolve_manufacturer(db,manufacturer_name)
     try: validate_image(body.image)
     except ValueError as exc: raise HTTPException(422,exception_message(exc,'Не удалось прочитать данные файла. Проверьте его формат.')) from exc
-    product=Product(type_id=typ.id,manufacturer_id=manufacturer.id,name=name,sku=body.sku,
-        unit=typ.unit,price=float(body.unit_price),currency=body.currency,active=True,parameters={'image':body.image} if body.image else {})
-    db.add(product);db.flush()
-    bind_product(db,pid,quote,body.line_id,product)
+    values=dict(type_id=typ.id,manufacturer_id=manufacturer.id,name=name,sku=body.sku.strip(),
+        unit=typ.unit,price=float(body.unit_price),currency=body.currency,active=True)
+    product=db.get(Product,body.existing_product_id) if body.existing_product_id else None
+    if body.existing_product_id and product is None:raise HTTPException(404,'Товар не найден')
+    if product is not None and (product.type_id!=typ.id or product.unit!=typ.unit) and product_is_used(db,product.id):
+        raise HTTPException(409,'Тип и единица измерения используемого товара защищены')
+    guard_product_duplicate(db,values,product,body.allow_duplicate)
+    if product is None:
+        product=Product(**values,parameters={'image':body.image} if body.image else {});db.add(product);db.flush()
+    else:
+        before=metadata(db,product)
+        for key,value in values.items():setattr(product,key,value)
+        product.parameters={**product.parameters,'image':body.image}
+        # Persist this quote below using its existing revision; update other quotes separately.
+        changes={product.id:(before,metadata(db,product))}
+        synchronize_quote_metadata(quote,changes)
+        propagate_metadata(db,changes,exclude=(pid,standalone))
+    if line.product_id!=product.id:
+        bind_product(db,pid,quote,body.line_id,product)
     persist_quote(db,pid,quote,standalone);db.commit()
     return present(quote)
 

@@ -44,6 +44,17 @@ def test_mixed_plan_categories_allow_only_shared_properties(client):
     assert elements[0]['parameters']['length']==3.5
 
 
+def test_mixed_point_categories_share_quantity_but_keep_individual_parameters(client):
+    pid,body=setup(client)
+    fixture=kind(client);socket=next(t for t in client.get('/api/types').json() if t['name']=='Розетка одинарная')
+    objects=[client.post(f'/api/projects/{pid}/elements',json={**body,'type_id':typ['id'],'parameters':{'quantity':1,'custom:Свой параметр':typ['name']}}).json() for typ in [fixture,socket]]
+    saved=client.patch(f'/api/projects/{pid}/elements/properties',json={'element_ids':[item['id'] for item in objects],'changes':{'parameters':{'quantity':4}}})
+    assert saved.status_code==200,saved.text
+    elements=client.get(f'/api/projects/{pid}').json()['elements']
+    assert all(item['parameters']['quantity']==4 for item in elements)
+    assert [item['parameters']['custom:Свой параметр'] for item in elements]==[fixture['name'],socket['name']]
+
+
 def test_product_bulk_edit_preserves_quote_prices_and_rolls_back(client):
     maker=client.post('/api/manufacturers',json={'name':'Массовые товары'}).json()
     first=client.post('/api/products',json=product_body(client,maker['id'])).json()

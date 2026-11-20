@@ -1511,7 +1511,9 @@ def edit_element_properties(pid:int,body:AppearanceBatch,db:DbSession=Depends(se
     shared=set.intersection(*(set(kinds[item.type_id].defaults)|set(item.parameters) for item in elements))
     protected={'frame_group','frame_posts','led_strip_id','led_strip_ids','measured_length'}
     if set(params)&protected or any(key not in APPEARANCE_KEYS and key not in specific and key not in shared and not key.startswith('custom:') for key in params):raise HTTPException(422,'Это свойство нельзя менять совместно. Рамки и привязки LED-лент редактируются отдельными инструментами.')
-    if mixed and set(params)-APPEARANCE_KEYS:raise HTTPException(422,'Выбраны разные категории. Доступны только общие свойства и оформление.')
+    common=set(shared)
+    if all(kind.unit=='м' for kind in kinds.values()):common.update({'manual_length','length'})
+    if mixed and set(params)-APPEARANCE_KEYS-common:raise HTTPException(422,'Выбраны разные категории. Доступны только общие свойства и оформление.')
     if 'product_id' in body.changes and body.changes['product_id'] is not None and len(kinds)>1:raise HTTPException(422,'Один товар можно назначить только объектам одной номенклатуры')
     if 'quantity' in params and any(kind.unit!='шт' for kind in kinds.values()):raise HTTPException(422,'Количество в штуках нельзя назначить линиям в метрах')
     if {'length','manual_length'}&set(params) and any(kind.unit!='м' for kind in kinds.values()):raise HTTPException(422,'Длину в метрах можно менять только у линий')

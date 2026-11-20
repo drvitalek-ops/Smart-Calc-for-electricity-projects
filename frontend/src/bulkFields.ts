@@ -10,12 +10,12 @@ export function productBulkFields(items:Product[],catalog:Catalog):BulkField[]{
 export function planBulkFields(items:Item[],project:Project,types:Kind[],catalog:Catalog):BulkField[]{
  if(!items.length)return [];
  const fields:BulkField[]=[{key:'comment',label:'Комментарий',values:items.map(i=>i.comment)},{key:'room_id',label:'Помещение',values:items.map(i=>i.room_id?String(i.room_id):''),type:'select',emptyLabel:'Без помещения',options:project.rooms.filter(r=>r.page_id===null||items.every(i=>i.page_id===r.page_id)).map(r=>({value:String(r.id),label:r.name}))},{key:'layer_id',label:'Слой',values:items.map(i=>String(i.layer_id)),type:'select',options:project.layers.filter(l=>!l.locked).map(l=>({value:String(l.id),label:l.name}))}];
- const kinds=items.map(i=>types.find(t=>t.id===i.type_id)),mixed=categoriesMixed(items.map(i=>i.type_id),types);
+ const kinds=items.map(i=>types.find(t=>t.id===i.type_id));
  if(items.every(i=>i.type_id===items[0].type_id))fields.push({key:'product_id',label:'Товар',values:items.map(i=>i.product_id?String(i.product_id):''),type:'select',emptyLabel:'Без привязки к товару',options:catalog.products.filter(p=>p.active&&p.type_id===items[0].type_id).map(p=>({value:String(p.id),label:p.manufacturer+' · '+p.name}))});
- if(!mixed){
+ {
   const omit=new Set([...appearanceKeys,'frame_group','frame_posts','led_strip_id','led_strip_ids','length','manual_length','measured_length']);
   const records=items.map((item,index)=>({...kinds[index]?.defaults,...item.parameters}));
-  const common=Object.keys(records[0]??{}).filter(key=>!omit.has(key)&&records.every(record=>Object.hasOwn(record,key)&&['number','string','boolean'].includes(typeof record[key])));
+  const common=Object.keys(records[0]??{}).filter(key=>!omit.has(key)&&records.every(record=>Object.hasOwn(record,key)&&typeof record[key]===typeof records[0][key]&&['number','string','boolean'].includes(typeof record[key])));
   for(const key of common){const values=records.map(record=>String(record[key])),numeric=records.every(record=>typeof record[key]==='number');fields.push({key:'parameters.'+key,label:({quantity:'Количество, шт',ip:'IP',power_watts:'Мощность, Вт',connectors:'Коннекторы',end_caps:'Заглушки'} as Record<string,string>)[key]??key.replace(/^custom:/,''),values,type:numeric?'decimal':records.every(record=>typeof record[key]==='boolean')?'select':'text',options:records.every(record=>typeof record[key]==='boolean')?[{value:'true',label:'Да'},{value:'false',label:'Нет'}]:undefined,min:key==='power_watts'?.001:0,max:key==='ip'?69:1e6,places:['quantity','ip','connectors','end_caps'].includes(key)?0:3});}
   if(kinds.every(kind=>isPowerSupply(kind)||isLedStrip(kind))&&!common.includes('power_watts'))fields.push({key:'parameters.power_watts',label:'Мощность, Вт',values:items.map(item=>String(item.parameters.power_watts??'')),type:'decimal',min:.001,max:1e6,places:3});
   if(kinds.every(kind=>kind?.unit==='м'))fields.push({key:'parameters.manual_length',label:'Длина вручную, м',values:items.map(item=>String(item.parameters.manual_length??item.parameters.length??'')),type:'decimal',min:0,max:1e6,places:3});

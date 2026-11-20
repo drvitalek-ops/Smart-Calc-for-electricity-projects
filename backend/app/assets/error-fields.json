@@ -128,5 +128,7 @@
   "colors": "Цвета элементов",
   "manufacturer_name": "Производитель",
   "allow_duplicate": "Подтверждение отдельной позиции",
-  "existing_product_id": "Товар в общей базе"
+  "existing_product_id": "Товар в общей базе",
+  "product_ids": "Выбранные товары",
+  "changes": "Изменяемые свойства"
 }

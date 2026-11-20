@@ -1,3 +1,7 @@
+import BulkEditor from "./BulkEditor";
+import IssueBar,{type WorkIssue} from "./IssueBar";
+import {planBulkFields,productBulkFields,categoriesMixed,nestedBulkPatch} from "./bulkFields";
+import {planIssues,productIssues} from "./workIssues";
 import {WorkspaceHeading,KindThumbnail,PanelHeading} from "./ui/Workspace";
 import {rebaseCatalogue} from "./catalogueRebase";
 import useCatalogue,{refreshCatalogue} from "./catalogueStore";
@@ -465,10 +469,10 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
-    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.56 используйте копию данных до обновления.</p></div></div>
+    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.57 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.56" target="_blank" rel="noreferrer">Открыть релиз v1.0.56</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.57" target="_blank" rel="noreferrer">Открыть релиз v1.0.57</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div id="settings-transfer" tabIndex={-1} className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -554,6 +558,8 @@ function CatalogManager({
 }) {
   const [tab,setTab]=useState<"types"|"products"|"categories">("types");
   const [databaseSearch,setDatabaseSearch]=useState(""),[productLimit,setProductLimit]=useState(100);
+  const [productBulkIssues,setProductBulkIssues]=useState<WorkIssue[]>([]);
+  const [productSelection,setProductSelection]=useState<ReadonlySet<number>>(new Set()),[bulkProductDirty,setBulkProductDirty]=useState(false);
   const [typeDirty,setTypeDirty]=useState(false),[categoryDirty,setCategoryDirty]=useState(false),[typeBusy,setTypeBusy]=useState(false),[categoryBusy,setCategoryBusy]=useState(false);
   const blank = {
     id: 0,
@@ -591,13 +597,23 @@ function CatalogManager({
   },[catalog]);
   const originalProduct=catalog.products.find(item=>item.id===form.id),originalMaker=catalog.manufacturers.find(item=>item.id===manufacturerId),originalSupplier=catalog.suppliers.find(item=>item.id===supplierId);
   const productDirty=originalProduct?['name','sku','manufacturer_id','type_id','price','currency','active'].some(key=>form[key as keyof typeof form]!==originalProduct[key as keyof Product])||form.supplier_id!==(originalProduct.supplier_id??0)||JSON.stringify(form.parameters)!==JSON.stringify(originalProduct.parameters):Boolean(form.name||form.sku||form.price||Object.keys(form.parameters).length);
-  const dirty=typeDirty||categoryDirty||productDirty||Boolean(productManufacturer&&!form.manufacturer_id)||manufacturer!==(originalMaker?.name??'')||supplier!==(originalSupplier?.name??'')||contact!==(originalSupplier?.contact??'');
+  const dirty=typeDirty||categoryDirty||bulkProductDirty||productDirty||Boolean(productManufacturer&&!form.manufacturer_id)||manufacturer!==(originalMaker?.name??'')||supplier!==(originalSupplier?.name??'')||contact!==(originalSupplier?.contact??'');
   const anyBusy=saving||typeBusy||categoryBusy;
   useEffect(()=>{onBusyChange(anyBusy);return()=>onBusyChange(false);},[anyBusy,onBusyChange]);
   useEffect(()=>{onDirtyChange(dirty);return()=>onDirtyChange(false);},[dirty,onDirtyChange]);
   useEffect(()=>setProductLimit(100),[databaseSearch]);
   const kindLookup=useMemo(()=>new Map(types.map(kind=>[kind.id,kind])),[types]);
   const filteredProducts=useMemo(()=>catalog.products.filter(item=>{if(!showArchived&&!item.active)return false;const kind=kindLookup.get(item.type_id);return matchesSearch([item.name,item.sku,item.manufacturer,item.supplier,kind?.name,kind?.category].join(' '),databaseSearch);}),[catalog.products,kindLookup,databaseSearch,showArchived]);
+  const selectedProducts=useMemo(()=>catalog.products.filter(item=>productSelection.has(item.id)),[catalog.products,productSelection]);
+  const productFields=useMemo(()=>productBulkFields(selectedProducts,catalog),[selectedProducts,catalog]);
+  const mixedProducts=categoriesMixed(selectedProducts.map(item=>item.type_id),types);
+  const catalogueFindings=useMemo(()=>productIssues(catalog),[catalog]);
+  const catalogueNotices:WorkIssue[]=catalogueFindings.map(issue=>({...issue,action:()=>{const item=catalog.products.find(p=>p.id===issue.targetId);if(item)edit(item);}}));
+  catalogueNotices.push(...productBulkIssues);
+  if(localError)catalogueNotices.unshift({id:'runtime',group:'Ошибка',title:'Не удалось завершить действие',detail:localError,severity:'error'});
+  if(mixedProducts)catalogueNotices.unshift({id:'mixed',group:'Выбраны разные объекты',title:'Общие свойства товаров',detail:'Выбраны товары из разных категорий. Номенклатура и единицы каждого товара сохранятся.',severity:'info'});
+  function toggleProduct(id:number){setProductSelection(current=>{const next=new Set(current);if(next.has(id))next.delete(id);else next.add(id);return next;});}
+  async function applyProducts(values:Record<string,string>){let failure:unknown;await work(async()=>{try{const changes=nestedBulkPatch(values,new Set(['manufacturer_id','supplier_id','price']),new Set(['supplier_id']));await api('/products/batch','PATCH',{product_ids:selectedProducts.map(p=>p.id),changes});await onChanged();setMessage('Изменены товары: '+selectedProducts.length+'. Цены существующих КП сохранены.');}catch(error){failure=error;throw error;}});if(failure)throw failure;}
   function closeCatalog(){if(anyBusy)return;if(!dirty||confirm('В каталоге есть несохранённые изменения. Закрыть без сохранения?'))onClose();}
 
   async function work(action: () => Promise<void>) {
@@ -801,10 +817,13 @@ function CatalogManager({
           </label>
         </div>
         </details>
+        <IssueBar label="Проверка товаров" issues={catalogueNotices}/>
+        <div className="bulk-selection-tools"><label><input type="checkbox" aria-label="Выбрать все найденные товары" disabled={anyBusy} checked={Boolean(filteredProducts.length)&&filteredProducts.every(item=>productSelection.has(item.id))} onChange={event=>{const checked=event.target.checked;setProductSelection(current=>{const next=new Set(current);for(const item of filteredProducts)if(checked)next.add(item.id);else next.delete(item.id);return next;});}}/>Все найденные · {filteredProducts.length}</label><span className="bulk-selection-count">Выбрано: {selectedProducts.length}</span>{selectedProducts.length>0&&<button type="button" onClick={()=>setProductSelection(new Set())}>Снять выделение товаров</button>}</div>
+        {selectedProducts.length>0&&<BulkEditor count={selectedProducts.length} fields={productFields} mixed={mixedProducts} busy={anyBusy} onApply={applyProducts} onDirtyChange={setBulkProductDirty} onIssuesChange={setProductBulkIssues}/>}
         <div className="catalog-products">
           <div className="product-editor">
             <h3>{form.id ? "Редактирование товара" : "Новый товар"}</h3>
-            <form data-image-target onDragOver={imageDragOver} onDrop={event=>imageDrop(event,file=>{void prepareImage(file).then(image=>setForm(current=>current.id===form.id?({...current,parameters:{...current.parameters,image}}):current)).catch(error=>setLocalError(errorMessage(error,'Ошибка изображения')));})} onPasteCapture={event=>imagePaste(event,file=>{void prepareImage(file).then(image=>setForm(current=>current.id===form.id?({...current,parameters:{...current.parameters,image}}):current)).catch(error=>setLocalError(errorMessage(error,'Ошибка изображения')));})} onSubmit={(e) => void saveProduct(e)}>
+            <form onInvalidCapture={event=>{const input=event.target as HTMLInputElement;setLocalError('Проверьте поле «'+(input.getAttribute('aria-label')||input.labels?.[0]?.textContent?.trim()||'Товар').slice(0,100)+'»: '+input.validationMessage);}} data-image-target onDragOver={imageDragOver} onDrop={event=>imageDrop(event,file=>{void prepareImage(file).then(image=>setForm(current=>current.id===form.id?({...current,parameters:{...current.parameters,image}}):current)).catch(error=>setLocalError(errorMessage(error,'Ошибка изображения')));})} onPasteCapture={event=>imagePaste(event,file=>{void prepareImage(file).then(image=>setForm(current=>current.id===form.id?({...current,parameters:{...current.parameters,image}}):current)).catch(error=>setLocalError(errorMessage(error,'Ошибка изображения')));})} onSubmit={(e) => void saveProduct(e)}>
               <label>
                 Название
                 <input
@@ -910,16 +929,17 @@ function CatalogManager({
           <div className="product-list">
             <div className="product-list-heading"><h3>Товары · {catalog.products.filter(item=>showArchived||item.active).length}</h3><label className="catalog-archive-toggle"><input type="checkbox" checked={showArchived} onChange={event=>setShowArchived(event.target.checked)}/>Показывать удалённые товары и производителей</label></div>
             {filteredProducts.slice(0,productLimit).map((item) => (
-              <button
+              <div key={item.id} className="product-select-row"><input type="checkbox" aria-label={'Выбрать товар '+item.name} checked={productSelection.has(item.id)} disabled={saving} onChange={()=>toggleProduct(item.id)}/><button
                 type="button"
                 key={item.id}
                 className={(!item.active ? "inactive " : "")+(form.id===item.id?"is-editing":"")}
                 aria-pressed={form.id===item.id}
-                onClick={() => edit(item)}
+                data-product-id={item.id}
+                onClick={event=>{if(event.ctrlKey||event.metaKey||event.shiftKey)toggleProduct(item.id);else edit(item);}}
               >
                 {typeof item.parameters.image==='string'&&item.parameters.image?<span className="product-thumbnail"><img src={item.parameters.image} alt=""/></span>:<KindThumbnail kind={types.find(type=>type.id===item.type_id)} color={types.find(type=>type.id===item.type_id)?.color}/>}
                 <span className="product-row-copy"><strong><SearchHighlight text={item.name} query={databaseSearch}/></strong><small><SearchHighlight text={item.manufacturer+" · "+(item.sku || "без артикула")} query={databaseSearch}/></small><span className="product-row-price">{Number(item.price).toLocaleString('ru-RU',{maximumFractionDigits:2})} {item.currency} / {item.unit}{!item.active?" · архив":""}</span></span>
-              </button>
+              </button></div>
             ))}
             {filteredProducts.length>productLimit&&<button type="button" onClick={()=>setProductLimit(value=>value+100)}>Показать ещё · {filteredProducts.length-productLimit}</button>}
             {!filteredProducts.length&&catalog.products.length>0&&<p className="hint">По запросу ничего не найдено.</p>}
@@ -947,6 +967,7 @@ export default function App() {
   const [leftTool,setLeftTool]=useState<string|null>("objects"),[rightTool,setRightTool]=useState<string|null>("layers");
   const [leftExpanded,setLeftExpanded]=useState(false),[rightExpanded,setRightExpanded]=useState(false),[highlightUnframed,setHighlightUnframed]=useState(false),[roomLabelsVisible,setRoomLabelsVisible]=useState(true);
   useEffect(()=>{const compact=window.matchMedia('(max-width:1099px)'),adapt=()=>{if(compact.matches&&leftExpanded&&rightExpanded)setRightExpanded(false);};adapt();compact.addEventListener('change',adapt);return()=>compact.removeEventListener('change',adapt);},[leftExpanded,rightExpanded]);
+  const [planBulkIssues,setPlanBulkIssues]=useState<WorkIssue[]>([]);
   const [batchStyle,setBatchStyle]=useState<Record<string,unknown>>({});
   function selectLeftTool(id:string){
     if(roomMode&&id!=="rooms"){setError("Сначала завершите или отмените контур помещения");return;}
@@ -1140,6 +1161,18 @@ export default function App() {
     if(shown.length!==selectedIds.length){setSelectedIds(shown);setSelected(current=>current&&shown.includes(current.id)?current:shown.length?elementMap.get(shown[0])??null:null);}
   },[busy,selectedIds,elementMap,layerMap,typeGroups,hiddenLayerGroups,leftTool,typeMap]);
   const selectionSet=useMemo(()=>new Set(selectedIds),[selectedIds]);
+  const bulkPlanItems=useMemo(()=>project?.elements.filter(item=>selectionSet.has(item.id))??[],[project?.elements,selectionSet]);
+  const bulkPlanFields=useMemo(()=>project?planBulkFields(bulkPlanItems,project,types,catalog):[],[bulkPlanItems,project,types,catalog]);
+  const mixedPlan=categoriesMixed(bulkPlanItems.map(item=>item.type_id),types);
+  const planFindings=useMemo(()=>planIssues(project,types,catalog),[project,types,catalog]);
+  const planNotices:WorkIssue[]=planFindings.map(issue=>({...issue,action:()=>void run(async()=>{await saveDraftBeforeNavigation();const item=project?.elements.find(item=>item.id===issue.targetId);if(item){await focusUnframed(item);setLeftTool('properties');setLeftExpanded(true);}else if(issue.pageId)setPageId(issue.pageId);})}));
+  planNotices.push(...planBulkIssues);
+  if(error)planNotices.unshift({id:'runtime',group:'Ошибка',title:'Не удалось завершить действие',detail:error,severity:'error'});
+  if(mixedPlan)planNotices.unshift({id:'mixed',group:'Выбраны разные объекты',title:'Общие свойства объектов',detail:'Выбраны разные категории. Доступны комментарий, помещение, слой и общее оформление. Специфические параметры сохранены.',severity:'info'});
+  if(bulkPlanItems.some(item=>layerMap.get(item.layer_id)?.locked))planNotices.unshift({id:'locked',group:'Слой заблокирован',title:'Изменение выбранных объектов недоступно',detail:'Разблокируйте слои всех выбранных объектов. Массовое изменение не будет применено частично.',severity:'error'});
+  for(const [index,warning] of report.warnings.entries())planNotices.push({id:'report'+index,group:'Замечания расчёта',title:'Проверка спецификации',detail:warning});
+  async function applyPlanProperties(values:Record<string,string>){if(!project)return;let failure:unknown;await run(async()=>{try{const numeric=new Set(bulkPlanFields.filter(field=>field.type==='decimal').map(field=>field.key));for(const key of ['room_id','layer_id','product_id'])numeric.add(key);const booleans=new Set(bulkPlanFields.filter(field=>field.options?.some(option=>option.value==='true')).map(field=>field.key));const changes=nestedBulkPatch(values,numeric,new Set(['room_id','product_id']),booleans);await api(`/projects/${project.id}/elements/properties`,'PATCH',{element_ids:bulkPlanItems.map(item=>item.id),changes});const next=await refresh(project.id);setSelected(current=>next.elements.find(item=>item.id===current?.id)??null);}catch(error){failure=error;throw error;}});if(failure)throw failure;}
+
   const linkedStripSet=useMemo(()=>new Set(supplyLinking?.stripIds??[]),[supplyLinking?.stripIds]);
   const pendingDraft=Boolean(view==='plan'&&selected&&elementMap.get(selected.id)&&!sameItem(selected,elementMap.get(selected.id)!));
   const unsavedWorkbench=quoteDirty||catalogDirty||pendingDraft||objectDragging||Boolean(roomMode&&roomPoints.length||placing&&linePoints.length||supplyLinking);
@@ -2254,7 +2287,7 @@ export default function App() {
                 <aside aria-label="Объекты и рамки" className={"objects-panel tool-panel "+(!leftExpanded?'tool-closed':'')} data-active-tool={leftTool??''} inert={Boolean(supplyLinking)}>
                   <ToolRail label="Инструменты объектов" panelExpanded={leftExpanded} onTogglePanel={()=>{setLeftExpanded(value=>!value);if(window.innerWidth<1100)setRightExpanded(false);}} active={leftTool} onSelect={selectLeftTool} items={[{id:'objects',label:'Объекты'},{id:'list',label:'Список объектов',icon:'list'},{id:'properties',label:'Свойства',icon:'edit'},{id:'style',label:'Оформление',icon:'palette'},{id:'frames',label:'Рамки',icon:'frame'},{id:'rooms',label:'Помещения',icon:'room'},{id:'catalog',label:'Каталог',icon:'catalog',command:()=>openCatalog()}]}/>
                   <div className="tool-panel-content">
-<PlanObjectList key={project.id} items={visibleElements} types={typeMap} rooms={project.rooms} selected={selectionSet} busy={busy} onReturn={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()} onSelect={item=>void run(async()=>{await saveDraftBeforeNavigation();const target=selected?.id===item.id?selected:item;choose(target,false);focusItem(target);if(window.innerWidth<1100)setRightTool(null);requestAnimationFrame(()=>document.querySelector<HTMLElement>('.objects-panel [data-tool-section="properties"] input:not([disabled]),.objects-panel [data-tool-section="properties"] select:not([disabled])')?.focus());})}/>
+<PlanObjectList key={project.id} items={visibleElements} types={typeMap} rooms={project.rooms} selected={selectionSet} busy={busy} onReturn={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()} onEditSelected={()=>{setLeftTool('properties');setLeftExpanded(true);}} onSelect={(item,additive)=>void run(async()=>{await saveDraftBeforeNavigation();const target=selected?.id===item.id?selected:item;choose(target,Boolean(additive));if(additive)setLeftTool('list');else{focusItem(target);if(window.innerWidth<1100)setRightTool(null);requestAnimationFrame(()=>document.querySelector<HTMLElement>('.objects-panel [data-tool-section="properties"] input:not([disabled]),.objects-panel [data-tool-section="properties"] select:not([disabled])')?.focus());}})}/>
 <section data-tool-section="objects"><PanelHeading title="Библиотека" caption="Номенклатура и размещение" icon="objects"/>
                   <label>Группа<SearchSelect aria-label="Группа элементов" value={libraryGroup} onChange={event=> {
                     const group=event.target.value;
@@ -2658,10 +2691,7 @@ export default function App() {
                       </p>
                     </fieldset>
                   ) : selectedIds.length > 1 ? (
-                    <p className="hint">
-                      Для нескольких объектов доступны рамки, оформление и
-                      удаление.
-                    </p>
+                    <BulkEditor count={bulkPlanItems.length} fields={bulkPlanFields} mixed={mixedPlan} busy={busy||bulkPlanItems.some(item=>layerMap.get(item.layer_id)?.locked)} onApply={applyPlanProperties} onIssuesChange={setPlanBulkIssues}/>
                   ) : (
                     <p className="hint">
                       Выберите объект на плане, чтобы изменить параметры.
@@ -2675,6 +2705,7 @@ export default function App() {
 </section></div></aside>
               )}
               <section className="plan-area">
+                <IssueBar label="Проверка плана" issues={planNotices}/>
                 {supplyLinking && <div className="supply-link-toolbar" role="region" aria-label="Привязка LED-лент">
                   <div><strong>{supplyLinking.editId ? "Изменение привязки блока питания" : "Блок размещён — выберите LED-ленты на плане"}</strong><small>Щёлкайте по лентам: повторный щелчок снимает выбор. Выбрано: {supplyLinking.stripIds.length}</small></div>
                   <button className="primary" disabled={busy || !supplyLinking.stripIds.length} onClick={()=>void run(finishSupplyLinking)}>Готово · Enter</button>
@@ -3946,7 +3977,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.57</span>
+        <span>SMART HOME CALC / 1.0.58</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

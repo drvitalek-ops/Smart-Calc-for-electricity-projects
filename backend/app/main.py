@@ -21,7 +21,7 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, Query, Form, Re
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, model_validator, ValidationError
 from sqlalchemy import delete, inspect, select, text
 from sqlalchemy.orm import Session as DbSession
 from .db import Base, engine, session, Session
@@ -123,7 +123,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.57'
+APP_VERSION = '1.0.58'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 from .errors import install_error_handlers, exception_message
 install_error_handlers(app)
@@ -858,6 +858,49 @@ def remove_product(product_id: int, db: DbSession = Depends(session), _catalogue
     db.commit()
     return catalog_product(db,item)
 
+class ProductBatch(BaseModel):
+    product_ids:list[int]=Field(min_length=1,max_length=5000)
+    changes:dict
+
+@app.patch('/api/products/batch')
+def edit_product_batch(body:ProductBatch,db:DbSession=Depends(session),_catalogue=Depends(catalogue_write_guard)):
+    allowed={'manufacturer_id','supplier_id','price','currency','active','parameters'}
+    if not body.changes or set(body.changes)-allowed:raise HTTPException(422,'Выберите поддерживаемые свойства товаров')
+    products=[require(db,Product,pid) for pid in dict.fromkeys(body.product_ids)]
+    mixed=len({require(db,ElementType,item.type_id).category for item in products})>1
+    params=body.changes.get('parameters',{})
+    if not isinstance(params,dict):raise HTTPException(422,'Параметры должны быть заполнены как свойства')
+    if mixed and set(params)-{'image','description','ip'}:raise HTTPException(422,'Выбраны разные объекты. Доступны только общие свойства товаров.')
+    pending=[];changes={};identities=set()
+    for item in products:
+        values={key:getattr(item,key) for key in ProductInput.model_fields if hasattr(item,key)}
+        values.update({key:value for key,value in body.changes.items() if key!='parameters'})
+        values['parameters']={**item.parameters,**params}
+        candidate=checked_bulk_model(ProductInput,values)
+        maker=require(db,Manufacturer,candidate.manufacturer_id)
+        if candidate.active and not maker.active:raise HTTPException(409,'Сначала восстановите производителя выбранного товара')
+        if candidate.supplier_id is not None:require(db,Supplier,candidate.supplier_id)
+        typ=require(db,ElementType,candidate.type_id)
+        if candidate.active and not typ.active:raise HTTPException(409,'Сначала восстановите номенклатуру выбранного товара')
+        from .quotations import validate_image
+        if 'image' in params:
+            try:validate_image(params['image'])
+            except (ValueError,TypeError):raise HTTPException(422,'Не удалось прочитать изображение товара')
+        final=candidate.model_dump(exclude={'allow_duplicate','manufacturer_name'})
+        from .shared_catalog import CatalogDuplicate
+        try:guard_product_duplicate(db,final,item)
+        except CatalogDuplicate as error:
+            raise HTTPException(409,'Изменение не применено: найдены похожие товары. Отредактируйте карточки отдельно: '+', '.join(match['name'] for match in error.matches[:3]))
+        marker=(identity(maker.name),identity(candidate.sku)) if candidate.sku else (identity(maker.name),candidate.type_id,identity(candidate.name))
+        if 'manufacturer_id' in body.changes and marker in identities:raise HTTPException(409,'Изменение производителя создаст одинаковые товары. Отредактируйте эти карточки отдельно.')
+        identities.add(marker)
+        pending.append((item,final));changes[item.id]=(metadata(db,item),None)
+    for item,values in pending:
+        for key,value in values.items():setattr(item,key,value)
+        changes[item.id]=(changes[item.id][0],metadata(db,item))
+    propagate_metadata(db,changes);db.commit()
+    return {'updated':len(pending)}
+
 @app.get('/api/catalog/import-template.csv')
 def catalog_import_template():
     content=(
@@ -1446,6 +1489,54 @@ def page_image(page_id: int, edge: int | None = Query(default=None, ge=1, le=819
 class AppearanceBatch(BaseModel):
     element_ids: list[int] = Field(min_length=1,max_length=5000)
     changes: dict
+
+def checked_bulk_model(model,values):
+    try:return model.model_validate(values)
+    except ValidationError as error:
+        from .errors import validation_message, field_name
+        raise HTTPException(422,'; '.join(field_name(item.get('loc',[]))+': '+validation_message(item) for item in error.errors()))
+
+@app.patch('/api/projects/{pid}/elements/properties')
+def edit_element_properties(pid:int,body:AppearanceBatch,db:DbSession=Depends(session)):
+    require(db,Project,pid)
+    allowed={'layer_id','room_id','product_id','comment','parameters'}
+    if not body.changes or set(body.changes)-allowed:raise HTTPException(422,'Выберите поддерживаемые свойства для изменения')
+    elements=[require(db,Element,eid) for eid in dict.fromkeys(body.element_ids)]
+    if any(item.project_id!=pid for item in elements):raise HTTPException(422,'Объект принадлежит другому проекту')
+    kinds={item.type_id:require(db,ElementType,item.type_id) for item in elements}
+    mixed=len({kind.category for kind in kinds.values()})>1
+    params=body.changes.get('parameters',{})
+    if not isinstance(params,dict):raise HTTPException(422,'Параметры должны быть заполнены как свойства')
+    specific={'quantity','ip','manual_length','length','power_watts','connectors','end_caps'}
+    shared=set.intersection(*(set(kinds[item.type_id].defaults)|set(item.parameters) for item in elements))
+    protected={'frame_group','frame_posts','led_strip_id','led_strip_ids','measured_length'}
+    if set(params)&protected or any(key not in APPEARANCE_KEYS and key not in specific and key not in shared and not key.startswith('custom:') for key in params):raise HTTPException(422,'Это свойство нельзя менять совместно. Рамки и привязки LED-лент редактируются отдельными инструментами.')
+    if mixed and set(params)-APPEARANCE_KEYS:raise HTTPException(422,'Выбраны разные категории. Доступны только общие свойства и оформление.')
+    if 'product_id' in body.changes and body.changes['product_id'] is not None and len(kinds)>1:raise HTTPException(422,'Один товар можно назначить только объектам одной номенклатуры')
+    if 'quantity' in params and any(kind.unit!='шт' for kind in kinds.values()):raise HTTPException(422,'Количество в штуках нельзя назначить линиям в метрах')
+    if {'length','manual_length'}&set(params) and any(kind.unit!='м' for kind in kinds.values()):raise HTTPException(422,'Длину в метрах можно менять только у линий')
+    pending=[]
+    for item in elements:
+        if require(db,Layer,item.layer_id).locked:raise HTTPException(409,'Слой выбранного объекта заблокирован. Разблокируйте его перед изменением.')
+        values={key:getattr(item,key) for key in ElementInput.model_fields}
+        values.update({key:value for key,value in body.changes.items() if key!='parameters'})
+        parameters={**item.parameters}
+        for key,value in params.items():
+            if value is None:parameters.pop(key,None)
+            else:parameters[key]=value
+        if 'manual_length' in params:
+            if params['manual_length'] is not None:parameters['length']=params['manual_length']
+        values['parameters']=parameters
+        candidate=checked_bulk_model(ElementInput,values)
+        if candidate.room_id is not None:
+            room=require(db,Room,candidate.room_id)
+            if room.page_id is not None and room.page_id!=item.page_id:raise HTTPException(422,'Помещение находится на другом листе. Выберите объекты одного листа или другое помещение.')
+        values['parameters']=validate_element(db,pid,candidate,existing_type_id=item.type_id,existing_product_id=item.product_id)
+        pending.append((item,values))
+    remember_elements(db,pid)
+    for item,values in pending:
+        for key,value in values.items():setattr(item,key,value)
+    db.commit();return {'updated':len(pending)}
 
 @app.patch('/api/projects/{pid}/elements/appearance')
 def edit_appearance(pid: int,body: AppearanceBatch,db: DbSession = Depends(session)):

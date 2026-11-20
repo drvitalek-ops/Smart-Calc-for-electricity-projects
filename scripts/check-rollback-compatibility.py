@@ -18,7 +18,7 @@ import tempfile
 def canonical(value):
     if isinstance(value,list):return [canonical(item) for item in value]
     if isinstance(value,dict):
-        result={key:canonical(item) for key,item in value.items() if key not in ('source_signature','room_layout') and not (key in ('comment','ip') and item=='' or key=='hidden_groups' and item==[] or key=='style' and item in ({},{'font':'Golos','table_scale':1,'colors':{}}))}
+        result={key:canonical(item) for key,item in value.items() if key not in ('source_signature','room_layout') and not (key in ('comment','ip') and item=='' or key=='hidden_groups' and item==[] or key=='active' and item is True and set(value).issubset({'id','name','active'}) or key=='style' and item in ({},{'font':'Golos','table_scale':1,'colors':{}}))}
         # v46 intentionally replaces the old identical yellow fixture defaults.
         seed=result.get('seed_key') or ''
         if result.get('category')=='Освещение' and seed.startswith('Освещение:') and str(result.get('color','')).lower()=='#facc15':

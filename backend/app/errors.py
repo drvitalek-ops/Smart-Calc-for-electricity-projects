@@ -81,7 +81,10 @@ def install_error_handlers(app):
     @app.exception_handler(HTTPException)
     async def http_error(_request,error):
         detail=public_message(error.detail,error.status_code)
-        return JSONResponse(status_code=error.status_code,content={'detail':detail},headers=error.headers)
+        from .shared_catalog import CatalogDuplicate
+        payload={'detail':detail}
+        if isinstance(error,CatalogDuplicate):payload.update(code='catalog_duplicate',matches=error.matches)
+        return JSONResponse(status_code=error.status_code,content=payload,headers=error.headers)
 
     @app.exception_handler(Exception)
     async def internal_error(_request,error):

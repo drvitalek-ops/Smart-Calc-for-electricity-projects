@@ -1,3 +1,6 @@
+import {rebaseCatalogue} from './catalogueRebase';
+import useCatalogue,{refreshCatalogue,type CatalogueSnapshot} from './catalogueStore';
+import {ManufacturerField,DuplicateProducts,duplicateProducts,type DuplicateProduct} from './CatalogueFields';
 import {StatusBadge} from "./ui/Controls";
 import QuotePreflight from "./QuotePreflight";
 import {quoteNumberIssues,type QuoteNumberIssue} from "./quotationValidation";
@@ -16,8 +19,6 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import "./QuotationEditor.css";
 
 export type QuotationKind = { id:number; name:string; category:string; unit:string; active:boolean };
-type Product = { id:number; type_id:number; name:string; sku:string; unit:string; price:number; currency:string; active:boolean; manufacturer:string; parameters?:{image?:string;description?:string;ip?:string|number} };
-type Catalogue = { products:Product[]; manufacturers:{id:number;name:string}[] };
 type Line = {
   id:string; source_key:string; source_signature?:string; source_ids:number[]; type_id:number|null; product_id:number|null;
   name:string; sku:string; manufacturer:string; ip?:string; room:string; description:string; comment?:string; quantity:string;
@@ -53,7 +54,9 @@ type Calculated=Pick<Quote,'client'|'partner'>;
 
 export default function QuotationEditor({projectId,quotationId,projectName,rooms=[],types,onChanged,onDirtyChange,onBusyChange,onBrowse,onAttached}:Props) {
   const [doc,setDoc]=useState<Quote|null>(null),[prices,setPrices]=useState<Calculated|null>(null);
-  const [catalogue,setCatalogue]=useState<Catalogue>({products:[],manufacturers:[]});
+  const catalogue=useCatalogue();
+  const lastCatalogue=useRef<CatalogueSnapshot|null>(null),savedDocument=useRef<Quote|null>(null);
+  const [productDuplicates,setProductDuplicates]=useState<DuplicateProduct[]|null>(null);
   const [busy,setBusy]=useState(false),[dirty,setDirty]=useState(false),[calculating,setCalculating]=useState(false);
   const [error,setError]=useState(""),[message,setMessage]=useState(""),[mode,setMode]=useState<"client"|"partner">("partner");
   const [linePage,setLinePage]=useState(0),[lineQuery,setLineQuery]=useState(''),[catalogLimit,setCatalogLimit]=useState(100);
@@ -65,7 +68,18 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const [importPage,setImportPage]=useState(0);
   const [importMode,setImportMode]=useState<"append"|"replace">("append");
   const importInput=useRef<HTMLInputElement>(null);
-  const [newProduct,setNewProduct]=useState<{lineId:string;name:string;manufacturer:string;sku:string;typeId:string;price:string;currency:string;image:string}|null>(null);
+  const [newProduct,setNewProduct]=useState<{lineId:string;name:string;manufacturer:string;sku:string;typeId:string;price:string;currency:string;image:string;existingId?:number}|null>(null);
+  const previousProductCatalogue=useRef(catalogue);
+  useEffect(()=>{
+    const previous=previousProductCatalogue.current;previousProductCatalogue.current=catalogue;
+    if(!newProduct?.existingId)return;
+    const before=previous.products.find(item=>item.id===newProduct.existingId),after=catalogue.products.find(item=>item.id===newProduct.existingId);
+    if(!before||!after)return;
+    const fields=(product:typeof before)=>({...newProduct,name:product.name,sku:product.sku,manufacturer:product.manufacturer,typeId:String(product.type_id),price:String(product.price),currency:product.currency,image:typeof product.parameters.image==='string'?product.parameters.image:''});
+    const old=fields(before),next=fields(after);
+    try{productInitial.current=JSON.stringify(rebaseCatalogue(JSON.parse(productInitial.current),old,next));}catch{}
+    setNewProduct(current=>current?.existingId===after.id?rebaseCatalogue(current,old,next):current);
+  },[catalogue]);
   const [roomFilter,setRoomFilter]=useState<string|null>(null),[activeLineId,setActiveLineId]=useState<string|null>(null),[editingLineId,setEditingLineId]=useState<string|null>(null);
   const [expandedRows,setExpandedRows]=useState<ReadonlySet<string>>(new Set());
   const [draggedId,setDraggedId]=useState<string|null>(null),[dropTarget,setDropTarget]=useState<{id:string;after:boolean}|null>(null);
@@ -109,7 +123,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const linePages=Math.max(1,Math.ceil(filteredLines.length/linePageSize)),activePage=Math.min(linePage,linePages-1),visibleLines=filteredLines.slice(activePage*linePageSize,(activePage+1)*linePageSize);
   const insertionAnchor=visibleLines.find(item=>item.line.id===activeLineId)??visibleLines.at(-1);
   const filteredProducts=useMemo(()=>catalogue.products.filter(product=>product.active&&matchesSearch([product.name,product.sku,product.manufacturer].join(' '),productSearch)),[catalogue.products,productSearch]);
-  const docRef=useRef<Quote|null>(doc);docRef.current=doc;
+  const docRef=useRef<Quote|null>(doc),dirtyRef=useRef(dirty);docRef.current=doc;dirtyRef.current=dirty;
   const numericError=useMemo(()=>numberError(doc),[doc]),validationIssues=useMemo(()=>quoteNumberIssues(doc),[doc]);
   const errorSummary=useRef<HTMLDivElement>(null),focusError=useRef(false);
   const productInitial=useRef('');
@@ -118,15 +132,15 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const history=useRef<Quote[]>([]),future=useRef<Quote[]>([]),lastChange=useRef(0);
   const standalone=quotationId!==undefined;
   const base=standalone ? "/quotations/"+quotationId : "/projects/"+projectId+"/quotation";
-  function apply(value:Quote) {calculatedKey.current=priceRequest(value);setDoc(value);setPrices(value);setDirty(false);setCalculating(false);history.current=[];future.current=[];lastChange.current=0;}
+  function apply(value:Quote) {savedDocument.current=value;calculatedKey.current=priceRequest(value);setDoc(value);setPrices(value);setDirty(false);setCalculating(false);history.current=[];future.current=[];lastChange.current=0;}
   async function work(action:()=>Promise<void>) {
     setBusy(true);setError("");setMessage("");
     try {await action();} catch(error) {setError(errorMessage(error,"Ошибка"));}
     finally {setBusy(false);}
   }
   async function load() {
-    const [value,products]=await Promise.all([api<Quote>(base),api<Catalogue>("/catalog")]);
-    apply(value);setCatalogue(products);
+    const [value,products]=await Promise.all([api<Quote>(base),refreshCatalogue()]);
+    apply(value);lastCatalogue.current=products;
   }
   useEffect(()=>{void work(load);},[base]);
   useEffect(()=>{onDirtyChange(dirty||Boolean(newProduct)||Boolean(imported));},[dirty,newProduct,imported,onDirtyChange]);
@@ -201,7 +215,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
         const values=line.id===id?patch:general&&Object.hasOwn(patch,'unit_price')&&priceIdentity(line)===key?{unit_price:patch.unit_price}:null;
         if(!values)return line;
         const allowed=['name','sku','manufacturer','room','description','ip','unit_price','currency','image'];
-        const overrides=line.source_key ? [...new Set([...(line.overrides??[]),...Object.keys(values).filter(key=>allowed.includes(key))])] : line.overrides;
+        const overrides=line.source_key||line.product_id ? [...new Set([...(line.overrides??[]),...Object.keys(values).filter(key=>allowed.includes(key))])] : line.overrides;
         return {...line,...values,overrides};
       })};
     });
@@ -221,10 +235,28 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     window.addEventListener("keydown",key);return()=>window.removeEventListener("keydown",key);
   },[doc,busy,newProduct,imported,attachOpen]);
   useEffect(()=>{
+    if(!doc||busy||lastCatalogue.current===catalogue)return;
     const controller=new AbortController();
-    api<Catalogue>('/catalog','GET',undefined,controller.signal).then(value=>{if(!controller.signal.aborted)setCatalogue(value);}).catch(error=>{if(!controller.signal.aborted)setError(errorMessage(error,'Не удалось обновить каталог'));});
+    void api<Quote>(base,'GET',undefined,controller.signal).then(remote=>{
+      const current=docRef.current,baseline=savedDocument.current;
+      if(controller.signal.aborted||!current)return;
+      lastCatalogue.current=catalogue;
+      if(remote.revision<=current.revision)return;
+      if(!dirtyRef.current){apply(remote);return;}
+      if(!baseline)return;
+      // Only catalogue metadata may advance a dirty draft's revision. Other
+      // concurrent edits must retain the normal save-conflict protection.
+      const stableContent=({revision,client,partner,lines,...value}:Quote)=>({...value,lines:lines.map(({name,sku,manufacturer,image,description,ip,source_signature,...line})=>line)});
+      if(JSON.stringify(stableContent(remote))!==JSON.stringify(stableContent(baseline)))return;
+      const merge=(value:Quote):Quote=>({...value,revision:remote.revision,lines:value.lines.map(line=>{
+        const old=baseline.lines.find(item=>item.id===line.id),next=remote.lines.find(item=>item.id===line.id);if(!old||!next)return line;
+        const updated={...line};for(const key of ['name','sku','manufacturer','image','description','ip'] as const)if(line[key]===old[key])updated[key]=next[key]??'';return updated;
+      })});
+      const merged=merge(current);docRef.current=merged;setDoc(merged);savedDocument.current=remote;
+      history.current=history.current.map(merge);future.current=future.current.map(merge);
+    }).catch(error=>{if(!controller.signal.aborted)setError(errorMessage(error,'Не удалось обновить товары КП'));});
     return()=>controller.abort();
-  },[types]);
+  },[catalogue,base,busy,Boolean(doc)]);
   function jumpToLine(id:string,index:number,field?:QuoteNumberIssue['field']){
     chooseQuoteTool('positions');setLineQuery('');setRoomFilter(null);setEditingLineId(null);setLinePage(Math.floor(index/linePageSize));setActiveLineId(id);
     if(!field)expandRow(id);
@@ -234,9 +266,29 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     if(issue.id!==undefined&&issue.index!==undefined)jumpToLine(issue.id,issue.index,issue.field);
     else {chooseQuoteTool('details');requestAnimationFrame(()=>document.querySelector<HTMLInputElement>('[aria-label="Общая скидка КП"]')?.focus());}
   }
+  function editCatalogueProduct(lineId:string,id:number){
+    const product=catalogue.products.find(item=>item.id===id);if(!product)return;
+    const draft={lineId,existingId:product.id,name:product.name,manufacturer:product.manufacturer,sku:product.sku,typeId:String(product.type_id),price:String(product.price),currency:product.currency,image:typeof product.parameters.image==='string'?product.parameters.image:''};
+    productInitial.current=JSON.stringify(draft);setProductDuplicates(null);setError('');setNewProduct(draft);
+  }
+  async function deleteCatalogueProduct(id:number){
+    if(!confirm('Удалить товар из общего выбора? Позиции и цены в сохранённых планах и КП останутся.'))return;
+    await work(async()=>{await api('/products/'+id,'DELETE');await refreshCatalogue();setNewProduct(null);setProductDuplicates(null);await onChanged();setMessage('Товар удалён из общего выбора');});
+  }
+  async function saveProductFromQuote(allowDuplicate=false){
+    if(!newProduct)return;
+    await work(async()=>{
+      const saved=await saveCurrent();let value:Quote;
+      try{value=await api<Quote>(base+'/product','POST',{revision:saved.revision,line_id:newProduct.lineId,type_id:newProduct.typeId?Number(newProduct.typeId):null,
+        name:newProduct.name,manufacturer:newProduct.manufacturer,sku:newProduct.sku,unit_price:newProduct.price,currency:newProduct.currency,image:newProduct.image,
+        existing_product_id:newProduct.existingId??null,allow_duplicate:allowDuplicate});}
+      catch(error){const matches=duplicateProducts(error);if(matches){setProductDuplicates(matches);return;}throw error;}
+      apply(value);setNewProduct(null);setProductDuplicates(null);await refreshCatalogue();await onChanged();setMessage(newProduct.existingId?'Товар обновлён в общей базе':'Товар создан в каталоге и привязан к позиции');
+    });
+  }
   function openNewProduct(line:Line){
     const draft={lineId:line.id,name:line.name,manufacturer:line.manufacturer,sku:line.sku,typeId:line.type_id?String(line.type_id):"",price:line.unit_price,currency:line.currency,image:line.image};
-    productInitial.current=JSON.stringify(draft);setError('');setNewProduct(draft);
+    productInitial.current=JSON.stringify(draft);setError('');setProductDuplicates(null);setNewProduct(draft);
   }
   function closeNewProduct(){
     if(busy)return;
@@ -384,11 +436,11 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
             onDragEnd={endDrag} onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&['ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();const target=doc.lines[index+(event.key==='ArrowUp'?-1:1)];if(target){moveLine(line.id,target.id,event.key==='ArrowDown');setLinePage(Math.floor((index+(event.key==='ArrowUp'?-1:1))/linePageSize));requestAnimationFrame(()=>document.querySelector<HTMLButtonElement>(`[data-quote-line="${CSS.escape(line.id)}"] .quote-drag-handle`)?.focus());}}}}><ActionIcon name="grip"/><small>{index+1}</small></button>
             {line.image&&<img src={line.image} alt=""/>}<div><input className="quotation-name-input" title={[line.name,line.sku].filter(Boolean).join(" · ")} aria-label={"Наименование строки "+(index+1)} value={line.name} disabled={busy} onChange={e=>editLine(line.id,{name:e.target.value})}/></div></div>
             <div className="quotation-row-meta"><input aria-label={"Артикул строки "+(index+1)} placeholder="Артикул" maxLength={200} title={line.sku||''} value={line.sku} disabled={busy} onChange={event=>editLine(line.id,{sku:event.target.value})}/>
-              <SearchInput aria-label={"Бренд строки "+(index+1)} placeholder="Бренд" maxLength={500} title={line.manufacturer||''} options={catalogue.manufacturers.map(item=>item.name)} value={line.manufacturer} disabled={busy} onChange={manufacturer=>editLine(line.id,{manufacturer})}/></div>
+              <SearchInput aria-label={"Бренд строки "+(index+1)} placeholder="Бренд" maxLength={500} title={line.manufacturer||''} options={catalogue.manufacturers.filter(item=>item.active!==false).map(item=>item.name)} value={line.manufacturer} disabled={busy} onChange={manufacturer=>editLine(line.id,{manufacturer})}/></div>
             <details className="quotation-row-details" open={expandedRows.has(line.id)} onToggle={event=>{const open=event.currentTarget.open;if(open!==expandedRows.has(line.id))expandRow(line.id,open);}}><summary aria-label={"Свойства строки "+(index+1)} title="Товар, фото и свойства">Товар, фото и свойства{line.sku?' · '+line.sku:''}{line.source_ids.length?' · На плане: '+line.source_ids.length:''}</summary>
             {expandedRows.has(line.id)&&<>
             <SearchSelect aria-label={"Товар строки "+(index+1)} value={line.product_id??''} disabled={busy} dataOptions={productOptions(line)} onChange={event=>void bind(line.id,event.target.value)}/>
-            <div className="quotation-inline-actions"><button type="button" disabled={busy} onClick={()=>openNewProduct(line)}>＋ Товар в базу</button>
+            <div className="quotation-inline-actions">{line.product_id&&<><ToolButton icon="edit" disabled={busy} onClick={()=>editCatalogueProduct(line.id,line.product_id!)}>Редактировать товар в базе</ToolButton><ToolButton icon="trash" disabled={busy} onClick={()=>void deleteCatalogueProduct(line.product_id!)}>Удалить товар из базы</ToolButton></>}<button type="button" disabled={busy} onClick={()=>openNewProduct(line)}>＋ Товар в базу</button>
               <ImageField label={"Фото строки "+(index+1)} value={line.image} disabled={busy} onChange={image=>editLine(line.id,{image})}/>
             </div>
             <div className="quotation-row-context"><label>Помещение<SearchInput aria-label={"Помещение строки "+(index+1)} placeholder="Без помещения" maxLength={500} options={roomChoices} value={group} disabled={busy} onChange={room=>editLine(line.id,{room})}/></label>
@@ -414,7 +466,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       {!doc.lines.length && <p className="hint">Пока нет позиций. Добавьте строку вручную или импортируйте расчёт проекта.</p>}
 
       {quoteTool==='catalog'&&<section className="quote-catalog-panel" aria-label="Товары для КП"><h3>Добавить товар из базы</h3><input aria-label="Поиск товаров для КП" type="search" placeholder="Название, артикул, производитель…" value={productSearch} onChange={event=>{setProductSearch(event.target.value);setCatalogLimit(100);}}/>
-        <div className="quote-catalog-products">{filteredProducts.slice(0,catalogLimit).map(product=><article key={product.id}><strong>{product.name}</strong><small>{product.manufacturer} · {product.sku}</small><b>{amount(product.price,product.currency)} / {product.unit}</b><ToolButton icon="plus" disabled={busy} onClick={()=>{appendLine({...newLine(),name:product.name,sku:product.sku,manufacturer:product.manufacturer,product_id:product.id,type_id:product.type_id,unit:product.unit as 'шт'|'м',unit_price:String(product.price),currency:product.currency,image:product.parameters?.image??'',description:product.parameters?.description??'',ip:String(product.parameters?.ip??'')});}}>Добавить в КП</ToolButton></article>)}</div>
+        <div className="quote-catalog-products">{filteredProducts.slice(0,catalogLimit).map(product=><article key={product.id}><strong>{product.name}</strong><small>{product.manufacturer} · {product.sku}</small><b>{amount(product.price,product.currency)} / {product.unit}</b><ToolButton icon="plus" disabled={busy} onClick={()=>{appendLine({...newLine(),name:product.name,sku:product.sku,manufacturer:product.manufacturer,product_id:product.id,type_id:product.type_id,unit:product.unit as 'шт'|'м',unit_price:String(product.price),currency:product.currency,image:typeof product.parameters.image==='string'?product.parameters.image:'',description:typeof product.parameters.description==='string'?product.parameters.description:'',ip:String(product.parameters?.ip??'')});}}>Добавить в КП</ToolButton></article>)}</div>
         {filteredProducts.length>catalogLimit&&<button type="button" onClick={()=>setCatalogLimit(value=>value+100)}>Показать ещё {Math.min(100,filteredProducts.length-catalogLimit)} товаров</button>}
         <p className="hint">Найдено товаров: {filteredProducts.length}</p>
       </section>}
@@ -444,25 +496,23 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       <ToolButton icon="sku" title="Word: наименования, бренды и количество без цен" disabled={busy||!doc.lines.length} onClick={()=>void downloadSku()}>Сделать SKU</ToolButton>
     </div>
     {newProduct && <QuoteDialog title="Новый товар из КП" busy={busy} onClose={closeNewProduct}>
-      <h2>Новый товар в базу</h2><p>{standalone ? "Товар сохранится в общем каталоге и строке КП." : "Товар сохранится в общем каталоге и будет привязан к этой строке и её объектам на плане."}</p>
-      <form onSubmit={event=>{event.preventDefault();void work(async()=>{
-        const saved=await saveCurrent();
-        const value=await api<Quote>(base+"/product","POST",{revision:saved.revision,line_id:newProduct.lineId,type_id:newProduct.typeId ? Number(newProduct.typeId) : null,
-          name:newProduct.name,manufacturer:newProduct.manufacturer,sku:newProduct.sku,unit_price:newProduct.price,currency:newProduct.currency,image:newProduct.image});
-        apply(value);setNewProduct(null);setCatalogue(await api<Catalogue>("/catalog"));await onChanged();setMessage("Товар создан в каталоге и привязан к позиции");
-      });}}>
+      <h2>{newProduct.existingId?"Редактирование товара в общей базе":"Новый товар в базу"}</h2><p>{standalone ? "Товар сохранится в общем каталоге и строке КП." : "Товар сохранится в общем каталоге и будет привязан к этой строке и её объектам на плане."}</p>
+      {newProduct.existingId&&!catalogue.products.find(item=>item.id===newProduct.existingId)?.active&&<p className="hint">Товар находится в архиве. Сохранение восстановит его в общей базе.</p>}
+      <form onSubmit={event=>{event.preventDefault();void saveProductFromQuote();}}>
         <fieldset disabled={busy} onDragOver={imageDragOver} onDrop={event=>imageDrop(event,file=>void upload(file,image=>setNewProduct(current=>current?{...current,image}:null)))} data-image-target onPasteCapture={event=>imagePaste(event,file=>void upload(file,image=>setNewProduct(current=>current?{...current,image}:null)))}>
-          <label>Название<input autoFocus aria-label="Название нового товара КП" required maxLength={500} value={newProduct.name} onChange={e=>setNewProduct({...newProduct,name:e.target.value})}/></label>
-          <label>Номенклатура<SearchSelect aria-label="Номенклатура нового товара КП" required={!doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:")} value={newProduct.typeId} onChange={e=>setNewProduct({...newProduct,typeId:e.target.value})}><option value="">{doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:") ? "Рамка по расчёту" : "Выберите номенклатуру"}</option>{types.filter(type=>type.active && type.unit===doc.lines.find(line=>line.id===newProduct.lineId)?.unit && (!doc.lines.find(line=>line.id===newProduct.lineId)?.source_ids.length || type.id===doc.lines.find(line=>line.id===newProduct.lineId)?.type_id)).map(type=><option key={type.id} value={type.id}>{type.name}</option>)}</SearchSelect></label>
-          <label>Производитель<SearchInput aria-label="Производитель нового товара КП" required options={catalogue.manufacturers.map(m=>m.name)} value={newProduct.manufacturer} onChange={manufacturer=>setNewProduct(current=>current?{...current,manufacturer}:null)}/></label>
-          <label>Артикул<input aria-label="Артикул нового товара КП" value={newProduct.sku} onChange={e=>setNewProduct({...newProduct,sku:e.target.value})}/></label>
+          <label>Название<input autoFocus aria-label="Название нового товара КП" required maxLength={500} value={newProduct.name} onChange={e=>{setProductDuplicates(null);setNewProduct({...newProduct,name:e.target.value});}}/></label>
+          <label>Номенклатура<SearchSelect aria-label="Номенклатура нового товара КП" required={!doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:")} value={newProduct.typeId} onChange={e=>{setProductDuplicates(null);setNewProduct({...newProduct,typeId:e.target.value});}}><option value="">{doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:") ? "Рамка по расчёту" : "Выберите номенклатуру"}</option>{types.filter(type=>type.active && type.unit===doc.lines.find(line=>line.id===newProduct.lineId)?.unit && (!doc.lines.find(line=>line.id===newProduct.lineId)?.source_ids.length || type.id===doc.lines.find(line=>line.id===newProduct.lineId)?.type_id)).map(type=><option key={type.id} value={type.id}>{type.name}</option>)}</SearchSelect></label>
+          <ManufacturerField label="Производитель нового товара КП" value={newProduct.manufacturer} makers={catalogue.manufacturers} disabled={busy} onChange={manufacturer=>{setProductDuplicates(null);setNewProduct(current=>current?{...current,manufacturer}:null);}}/>
+          <label>Артикул<input aria-label="Артикул нового товара КП" value={newProduct.sku} onChange={e=>{setProductDuplicates(null);setNewProduct({...newProduct,sku:e.target.value});}}/></label>
           <label>Цена<DecimalInput aria-label="Цена нового товара КП" required  min="0" max="1000000000" step=".01" value={newProduct.price} onChange={e=>setNewProduct({...newProduct,price:e.target.value})}/></label>
           <label>Валюта<input aria-label="Валюта нового товара КП" required pattern="[A-Z]{3}" maxLength={3} value={newProduct.currency} onChange={e=>setNewProduct({...newProduct,currency:e.target.value.toUpperCase()})}/></label>
           <ImageField label="Фото нового товара КП" value={newProduct.image} disabled={busy} onChange={image=>setNewProduct(current=>current?{...current,image}:null)}/>
 
         </fieldset>
         {error && <p role="alert" className="catalog-error">{error}</p>}
-        <div className="modal-actions"><button type="button" disabled={busy} onClick={closeNewProduct}>Отмена</button><button className="quote-primary" disabled={busy}>Создать и привязать товар</button></div>
+        <div className="modal-actions"><button type="button" disabled={busy} onClick={closeNewProduct}>Отмена</button><button className="quote-primary" disabled={busy}>{newProduct.existingId?"Сохранить товар":"Создать и привязать товар"}</button></div>
+        {productDuplicates&&<DuplicateProducts matches={productDuplicates} disabled={busy} canEdit={item=>{const line=doc.lines.find(line=>line.id===newProduct.lineId);return Boolean(line&&item.unit===line.unit&&(!line.source_ids.length||item.type_id===line.type_id));}} onEdit={id=>editCatalogueProduct(newProduct.lineId,id)} onSeparate={()=>void saveProductFromQuote(true)} onCancel={()=>setProductDuplicates(null)}/>}
+        {newProduct.existingId&&<ToolButton icon="trash" disabled={busy} onClick={()=>void deleteCatalogueProduct(newProduct.existingId!)}>Удалить товар из базы</ToolButton>}
       </form>
     </QuoteDialog>}
     {attachOpen && <QuoteDialog title="Прикрепить КП к проекту" busy={busy} onClose={()=>{setAttachOpen(false);setError("");}}>

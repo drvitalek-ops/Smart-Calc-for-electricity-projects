@@ -84,6 +84,7 @@ class Manufacturer(Base):
     __tablename__ = 'manufacturers'
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str]
+    active: Mapped[bool] = mapped_column(Boolean, default=True, server_default='1')
 
 class Supplier(Base):
     __tablename__ = 'suppliers'

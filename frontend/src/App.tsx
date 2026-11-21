@@ -2882,8 +2882,13 @@ export default function App() {
                           onClick={() => {
                             setSelectedIds([item.id]);
                             setSelected(item);
-                            setLeftPanelVisible(true);setLeftTool("properties");
+                            setLeftPanelVisible(true);setLeftTool("properties");setLeftExpanded(true);
+                            if(window.innerWidth<1100)setRightExpanded(false);
                             setObjectMenu(null);
+                            requestAnimationFrame(()=>{
+                              const title=document.querySelector<HTMLButtonElement>('.objects-panel [data-tool-section="properties"] .object-focus');
+                              title?.focus({preventScroll:true});title?.scrollIntoView({block:'nearest'});
+                            });
                           }}
                         >
                           Изменить свойства

@@ -141,6 +141,7 @@ jobs:
           node frontend/tests/plan-products.cjs
           node frontend/tests/plan-product-dialog.cjs
           node frontend/tests/context-properties.cjs
+          node frontend/tests/plan-label-bounds.cjs
 
       - name: Validate Docker Compose
         run: docker compose config --quiet

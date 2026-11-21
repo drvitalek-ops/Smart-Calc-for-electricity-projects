@@ -1,4 +1,4 @@
-from .plan_appearance import APPEARANCE_KEYS, validate_appearance, draw_marker, rgb
+from .plan_appearance import APPEARANCE_KEYS, validate_appearance, draw_marker, draw_plan_label, rgb
 import io
 import copy
 import csv
@@ -123,7 +123,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.60'
+APP_VERSION = '1.0.61'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 from .errors import install_error_handlers, exception_message
 install_error_handlers(app)
@@ -1824,6 +1824,7 @@ def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
     document=pymupdf.open(); document.insert_pdf(source,from_page=page.source_index,to_page=page.source_index)
     source.close(); sheet=document[0]
     sheet.insert_font(fontname='CalcPlan',fontfile=str(pdf_font_path()))
+    label_font=pymupdf.Font(fontfile=str(pdf_font_path()))
     query=(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id)
            .join(Layer,Element.layer_id==Layer.id).where(Element.page_id==page_id,Layer.export.is_(True)))
     for element,typ,layer in db.execute(query):
@@ -1845,9 +1846,9 @@ def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
             label=name+f" #{element.id}"+(f" · {element.parameters['power_watts']:g} Вт" if element.parameters.get('power_watts') else '')
             if points: label+=f" · {element.parameters.get('length',0):g} м"
             unit=page.width/1000
-            label_x=(18 if points else 19 if is_power_supply(typ) else 12)*unit*element.parameters.get('plan_size',1)
+            label_x=(18 if points else (19 if is_power_supply(typ) else 12)*element.parameters.get('plan_size',1))*unit
             label_y=(-10 if points else 5)*unit
-            sheet.insert_text((anchor.x+label_x,anchor.y+label_y),label,fontsize=2*unit*element.parameters.get('plan_label_size',7),fontname='CalcPlan',color=rgb(element.parameters.get('plan_label_color','#0f172a')))
+            draw_plan_label(sheet,anchor,label,label_font,2*unit*element.parameters.get('plan_label_size',7),rgb(element.parameters.get('plan_label_color','#0f172a')),label_x,label_y)
     content=document.tobytes(deflate=True); document.close()
     return StreamingResponse(
         io.BytesIO(content),media_type='application/pdf',

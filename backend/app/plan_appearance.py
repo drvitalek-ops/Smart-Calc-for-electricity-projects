@@ -98,3 +98,42 @@ def draw_marker(sheet,anchor,parameters,color,power=False,kind=None):
     if icon:
         font_size=max(1,min(size*1.4,size*3/max(1,len(icon))))
         sheet.insert_text((anchor.x-font_size*len(icon)*.28,anchor.y+font_size*.32),icon,fontsize=font_size,fontname='CalcPlan',color=ink)
+
+
+def draw_plan_label(sheet,anchor,label,font,size,color,gap,offset):
+    """Fit complete plan text inside the page, keeping normal placements intact."""
+    margin=min(sheet.rect.width/250,sheet.rect.height/8)
+    left,right=sheet.rect.x0+margin,sheet.rect.x1-margin
+    top,bottom=sheet.rect.y0+margin,sheet.rect.y1-margin
+    space_right=max(1,right-anchor.x-gap);space_left=max(1,anchor.x-gap-left)
+    width=font.text_length(label,fontsize=size)
+    side='right' if width<=space_right else 'left' if width<=space_left else 'right' if space_right>=space_left else 'left'
+    available_width=min(right-left,space_right if side=='right' else space_left)
+    available_height=bottom-top;ascent=max(1,font.ascender);descent=max(.3,-font.descender)
+    def wrap(text,current_size):
+        lines=[]
+        while text:
+            if font.text_length(text,fontsize=current_size)<=available_width:
+                lines.append(text);break
+            low,high=1,len(text)
+            while low<high:
+                middle=(low+high+1)//2
+                if font.text_length(text[:middle],fontsize=current_size)<=available_width:low=middle
+                else:high=middle-1
+            end=low
+            if end<len(text):
+                space=text.rfind(' ',1,end)
+                if space>0:end=space+1
+            lines.append(text[:end]);text=text[end:]
+        return lines or ['']
+    for _ in range(10):
+        lines=wrap(label,size);width=max(font.text_length(line,fontsize=size) for line in lines)
+        line_height=size*1.4;height=size*(ascent+descent)+(len(lines)-1)*line_height
+        if width<=available_width and height<=available_height:break
+        size*=min(.95,available_width/max(1,width),(available_height/max(1,height))**.5*.95)
+    x=max(left,min(right-width,anchor.x+gap if side=='right' else anchor.x-gap-width))
+    y=anchor.y+offset-((len(lines)-1)*line_height if offset<0 else 0)
+    if y-size*ascent<top:y=anchor.y+abs(offset)+size*ascent
+    if y+(len(lines)-1)*line_height+size*descent>bottom:y=anchor.y-abs(offset)-(len(lines)-1)*line_height-size*descent
+    y=max(top+size*ascent,min(bottom-size*descent-(len(lines)-1)*line_height,y))
+    sheet.insert_text((x,y),'\n'.join(lines),fontsize=size,lineheight=1.4,fontname='CalcPlan',color=color)

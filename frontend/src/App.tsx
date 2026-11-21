@@ -470,10 +470,10 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
-    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.59 используйте копию данных до обновления.</p></div></div>
+    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.60 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.59" target="_blank" rel="noreferrer">Открыть релиз v1.0.59</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.60" target="_blank" rel="noreferrer">Открыть релиз v1.0.60</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div id="settings-transfer" tabIndex={-1} className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -1436,7 +1436,8 @@ export default function App() {
   }, [selected, selectedIds.length, project, busy, planProductDirty, deletingProject, view, objectDragging]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
-      if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject || catalogOpen || planProductDirty || (event.target as HTMLElement|null)?.closest('[role="dialog"],[data-search-popup]')) return;
+      // A dialog is visible before its child's effect reports modal state to App.
+      if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject || catalogOpen || planProductDirty || (event.target as HTMLElement|null)?.closest('[role="dialog"],[data-search-popup]') || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       if(supplyLinking) {
         if((event.target as HTMLElement|null)?.matches('input,textarea,[contenteditable="true"]'))return;
         const modifier=event.ctrlKey || event.metaKey,key=event.key.toLowerCase();
@@ -3416,7 +3417,7 @@ export default function App() {
                         })()}
                         <g className="plan-elements" style={{ pointerEvents: roomMode||calibrating||placing&&kind?.unit==='м'&&!supplyLinking ? "none" : undefined }}>
                         <PlanScene previewRef={planPreview} elements={renderedElements} types={typeMap} pages={pageMap} layers={layerMap}
-                          unframed={unframedSet} selection={selectionSet} draft={selected} scale={symbolScale} labels={labelsVisible} dense={denseLabels} adaptive={adaptiveLabels} pixelScale={850*zoom/1000} grip={8*1000/(850*zoom)}
+                          unframed={unframedSet} selection={selectionSet} draft={selected} scale={symbolScale} labels={labelsVisible} dense={denseLabels} adaptive={adaptiveLabels} pixelScale={850*zoom/1000} labelBounds={planWindow?.visible} grip={8*1000/(850*zoom)}
                           linking={Boolean(supplyLinking)} picked={linkedStripSet} busy={busy} aspect={page.width/page.height}
                           onContextMenu={sceneContextMenu} onDoubleClick={sceneDoubleClick} onPointerDown={scenePointerDown} onNodeDrag={sceneNodeDrag}/>
 
@@ -3963,7 +3964,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.60</span>
+        <span>SMART HOME CALC / 1.0.61</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

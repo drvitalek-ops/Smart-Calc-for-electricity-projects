@@ -13,6 +13,13 @@ const front=process.env.FRAME_TEST_FRONTEND||'http://127.0.0.1:5174',back=proces
  await page.goto(front);await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));await page.locator('.sheet>svg').waitFor();
  await page.getByRole('button',{name:'Инструмент: Список объектов',exact:true}).click();await page.getByRole('button',{name:new RegExp('Выбрать объект №'+item.id+' —')}).click();
  const left=page.getByRole('complementary',{name:'Объекты и рамки'}),dialog=page.getByRole('dialog',{name:'Новый товар с плана',exact:true});
+ // Simulate the interval after a modal enters the DOM but before React's
+ // parent dirty flag has propagated. Focus may already be on the window body.
+ const undoRequests=[];page.on('request',request=>{if(request.method()==='POST'&&request.url().endsWith('/elements/undo'))undoRequests.push(request.url());});
+ await page.evaluate(()=>{const modal=document.createElement('section');modal.id='pending-modal-test';modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');document.body.append(modal);document.activeElement?.blur();document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'z',ctrlKey:true,bubbles:true,cancelable:true}));});
+ await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+ assert.equal(undoRequests.length,0,'A visible modal must block plan undo before parent state propagation');
+ assert.ok((await checked(await api.get(base+`/projects/${pid}`))).elements.some(e=>e.id===item.id));await page.locator('#pending-modal-test').evaluate(node=>node.remove());
  // First show that a normal physical click opens the form at laptop height.
  await left.getByRole('button',{name:'＋ Добавить товар в базу с плана',exact:true}).click();await dialog.waitFor();
  await page.evaluate(()=>document.activeElement?.blur());await page.keyboard.press('Control+z');

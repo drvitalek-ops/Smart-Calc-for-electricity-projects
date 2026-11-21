@@ -1436,7 +1436,8 @@ export default function App() {
   }, [selected, selectedIds.length, project, busy, planProductDirty, deletingProject, view, objectDragging]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
-      if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject || catalogOpen || planProductDirty || (event.target as HTMLElement|null)?.closest('[role="dialog"],[data-search-popup]')) return;
+      // A dialog is visible before its child's effect reports modal state to App.
+      if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject || catalogOpen || planProductDirty || (event.target as HTMLElement|null)?.closest('[role="dialog"],[data-search-popup]') || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       if(supplyLinking) {
         if((event.target as HTMLElement|null)?.matches('input,textarea,[contenteditable="true"]'))return;
         const modifier=event.ctrlKey || event.metaKey,key=event.key.toLowerCase();

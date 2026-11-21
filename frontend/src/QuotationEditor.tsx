@@ -1,3 +1,4 @@
+import ProductCardFields from "./ProductCardFields";
 import BulkEditor,{type BulkField} from "./BulkEditor";
 import IssueBar,{type WorkIssue} from "./IssueBar";
 import {rebaseCatalogue} from './catalogueRebase';
@@ -74,6 +75,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const [importPage,setImportPage]=useState(0);
   const [importMode,setImportMode]=useState<"append"|"replace">("append");
   const importInput=useRef<HTMLInputElement>(null);
+  const [productImageBusy,setProductImageBusy]=useState(false);
   const [newProduct,setNewProduct]=useState<{lineId:string;name:string;manufacturer:string;sku:string;typeId:string;price:string;currency:string;image:string;existingId?:number}|null>(null);
   const previousProductCatalogue=useRef(catalogue);
   useEffect(()=>{
@@ -119,7 +121,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     const byUnit=new Map<string,SearchOption[]>(),byType=new Map<string,SearchOption[]>(),byId=new Map<number,SearchOption>();
     const add=(map:Map<string,SearchOption[]>,key:string,option:SearchOption)=>{const options=map.get(key)??[{value:'',label:'Без привязки к товару'}];options.push(option);map.set(key,options);};
     for(const product of catalogue.products){
-      const option={value:String(product.id),label:product.name+(product.sku?' · '+product.sku:''),group:product.manufacturer,disabled:!product.active};byId.set(product.id,option);
+      const option={value:String(product.id),label:product.name+(product.sku?' · '+product.sku:''),group:product.manufacturer,disabled:!product.active,image:typeof product.parameters.image==='string'?product.parameters.image:undefined};byId.set(product.id,option);
       if(product.active){add(byUnit,product.unit,option);add(byType,product.unit+':'+product.type_id,option);}
     }
     return {byUnit,byType,byId};
@@ -171,7 +173,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   }
   useEffect(()=>{void work(load);},[base]);
   useEffect(()=>{onDirtyChange(dirty||quoteBulkDirty||Boolean(newProduct)||Boolean(imported));},[dirty,quoteBulkDirty,newProduct,imported,onDirtyChange]);
-  useEffect(()=>{onBusyChange(busy);},[busy,onBusyChange]);
+  useEffect(()=>{onBusyChange(busy||productImageBusy);},[busy,productImageBusy,onBusyChange]);
   useEffect(()=>()=>{onDirtyChange(false);onBusyChange(false);},[onDirtyChange,onBusyChange]);
   useEffect(()=>{
     const unload=(event:BeforeUnloadEvent)=>{if(dirty||quoteBulkDirty){event.preventDefault();event.returnValue="";}};
@@ -268,16 +270,17 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       const current=docRef.current,baseline=savedDocument.current;
       if(controller.signal.aborted||!current)return;
       lastCatalogue.current=catalogue;
-      if(remote.revision<=current.revision)return;
+      if(remote.revision<current.revision)return;
+      if(remote.revision===current.revision&&JSON.stringify(remote)===JSON.stringify(baseline))return;
       if(!dirtyRef.current){apply(remote);return;}
       if(!baseline)return;
       // Only catalogue metadata may advance a dirty draft's revision. Other
       // concurrent edits must retain the normal save-conflict protection.
-      const stableContent=({revision,client,partner,lines,...value}:Quote)=>({...value,lines:lines.map(({name,sku,manufacturer,image,description,ip,source_signature,...line})=>line)});
+      const stableContent=({revision,client,partner,lines,...value}:Quote)=>({...value,lines:lines.map(({name,sku,manufacturer,image,description,ip,product_id,source_signature,...line})=>line)});
       if(JSON.stringify(stableContent(remote))!==JSON.stringify(stableContent(baseline)))return;
       const merge=(value:Quote):Quote=>({...value,revision:remote.revision,lines:value.lines.map(line=>{
         const old=baseline.lines.find(item=>item.id===line.id),next=remote.lines.find(item=>item.id===line.id);if(!old||!next)return line;
-        const updated={...line};for(const key of ['name','sku','manufacturer','image','description','ip'] as const)if(line[key]===old[key])updated[key]=next[key]??'';return updated;
+        const updated={...line};for(const key of ['name','sku','manufacturer','image','description','ip','product_id'] as const)if(line[key]===old[key])Object.assign(updated,{[key]:next[key]??(key==='product_id'?null:'')});return updated;
       })});
       const merged=merge(current);docRef.current=merged;setDoc(merged);savedDocument.current=remote;
       history.current=history.current.map(merge);future.current=future.current.map(merge);
@@ -530,22 +533,13 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       <ToolButton icon="save" disabled={busy||!dirty} onClick={()=>void work(async()=>{await saveCurrent();setMessage('КП сохранено');})}>Сохранить изменения КП</ToolButton>
       <ToolButton icon="sku" title="Word: наименования, бренды и количество без цен" disabled={busy||!doc.lines.length} onClick={()=>void downloadSku()}>Сделать SKU</ToolButton>
     </div>
-    {newProduct && <QuoteDialog title="Новый товар из КП" busy={busy} onClose={closeNewProduct}>
+    {newProduct && <QuoteDialog title="Новый товар из КП" busy={busy||productImageBusy} onClose={closeNewProduct}>
       <h2>{newProduct.existingId?"Редактирование товара в общей базе":"Новый товар в базу"}</h2><p>{standalone ? "Товар сохранится в общем каталоге и строке КП." : "Товар сохранится в общем каталоге и будет привязан к этой строке и её объектам на плане."}</p>
       {newProduct.existingId&&!catalogue.products.find(item=>item.id===newProduct.existingId)?.active&&<p className="hint">Товар находится в архиве. Сохранение восстановит его в общей базе.</p>}
-      <form onSubmit={event=>{event.preventDefault();void saveProductFromQuote();}}>
-        <fieldset disabled={busy} onDragOver={imageDragOver} onDrop={event=>imageDrop(event,file=>void upload(file,image=>setNewProduct(current=>current?{...current,image}:null)))} data-image-target onPasteCapture={event=>imagePaste(event,file=>void upload(file,image=>setNewProduct(current=>current?{...current,image}:null)))}>
-          <label>Название<input autoFocus aria-label="Название нового товара КП" required maxLength={500} value={newProduct.name} onChange={e=>{setProductDuplicates(null);setNewProduct({...newProduct,name:e.target.value});}}/></label>
-          <label>Номенклатура<SearchSelect aria-label="Номенклатура нового товара КП" required={!doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:")} value={newProduct.typeId} onChange={e=>{setProductDuplicates(null);setNewProduct({...newProduct,typeId:e.target.value});}}><option value="">{doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith("frame:") ? "Рамка по расчёту" : "Выберите номенклатуру"}</option>{types.filter(type=>type.active && type.unit===doc.lines.find(line=>line.id===newProduct.lineId)?.unit && (!doc.lines.find(line=>line.id===newProduct.lineId)?.source_ids.length || type.id===doc.lines.find(line=>line.id===newProduct.lineId)?.type_id)).map(type=><option key={type.id} value={type.id}>{type.name}</option>)}</SearchSelect></label>
-          <ManufacturerField label="Производитель нового товара КП" value={newProduct.manufacturer} makers={catalogue.manufacturers} disabled={busy} onChange={manufacturer=>{setProductDuplicates(null);setNewProduct(current=>current?{...current,manufacturer}:null);}}/>
-          <label>Артикул<input aria-label="Артикул нового товара КП" value={newProduct.sku} onChange={e=>{setProductDuplicates(null);setNewProduct({...newProduct,sku:e.target.value});}}/></label>
-          <label>Цена<DecimalInput aria-label="Цена нового товара КП" required  min="0" max="1000000000" step=".01" value={newProduct.price} onChange={e=>setNewProduct({...newProduct,price:e.target.value})}/></label>
-          <label>Валюта<input aria-label="Валюта нового товара КП" required pattern="[A-Z]{3}" maxLength={3} value={newProduct.currency} onChange={e=>setNewProduct({...newProduct,currency:e.target.value.toUpperCase()})}/></label>
-          <ImageField label="Фото нового товара КП" value={newProduct.image} disabled={busy} onChange={image=>setNewProduct(current=>current?{...current,image}:null)}/>
-
-        </fieldset>
+      <form onSubmit={event=>{event.preventDefault();if(!productImageBusy)void saveProductFromQuote();}}>
+        <ProductCardFields context="КП" value={newProduct} disabled={busy} makers={catalogue.manufacturers} requiredType={!doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith('frame:')} typePlaceholder={doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith('frame:')?'Рамка по расчёту':'Выберите номенклатуру'} types={types.filter(type=>type.active&&type.unit===doc.lines.find(line=>line.id===newProduct.lineId)?.unit&&(!doc.lines.find(line=>line.id===newProduct.lineId)?.source_ids.length||type.id===doc.lines.find(line=>line.id===newProduct.lineId)?.type_id))} onBusyChange={setProductImageBusy} onChange={patch=>{if(['name','sku','manufacturer','typeId'].some(key=>Object.hasOwn(patch,key)))setProductDuplicates(null);setNewProduct(current=>current?{...current,...patch}:null);}}/>
         {error && <p role="alert" className="catalog-error">{error}</p>}
-        <div className="modal-actions"><button type="button" disabled={busy} onClick={closeNewProduct}>Отмена</button><button className="quote-primary" disabled={busy}>{newProduct.existingId?"Сохранить товар":"Создать и привязать товар"}</button></div>
+        <div className="modal-actions"><button type="button" disabled={busy||productImageBusy} onClick={closeNewProduct}>Отмена</button><button className="quote-primary" disabled={busy||productImageBusy}>{newProduct.existingId?"Сохранить товар":"Создать и привязать товар"}</button></div>
         {productDuplicates&&<DuplicateProducts matches={productDuplicates} disabled={busy} canEdit={item=>{const line=doc.lines.find(line=>line.id===newProduct.lineId);return Boolean(line&&item.unit===line.unit&&(!line.source_ids.length||item.type_id===line.type_id));}} onEdit={id=>editCatalogueProduct(newProduct.lineId,id)} onSeparate={()=>void saveProductFromQuote(true)} onCancel={()=>setProductDuplicates(null)}/>}
         {newProduct.existingId&&<ToolButton icon="trash" disabled={busy} onClick={()=>void deleteCatalogueProduct(newProduct.existingId!)}>Удалить товар из базы</ToolButton>}
       </form>

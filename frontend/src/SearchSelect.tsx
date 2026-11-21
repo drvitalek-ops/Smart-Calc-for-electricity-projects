@@ -5,9 +5,9 @@ import {createPortal,flushSync} from 'react-dom';
 import './SearchSelect.css';
 import usePopupPosition from './usePopupPosition';
 
-export type SearchOption={value:string;label:string;group?:string;disabled?:boolean;color?:string;iconKind?:PlanKind};
-type Props=React.SelectHTMLAttributes<HTMLSelectElement>&{dataOptions?:readonly SearchOption[]};
-type Option={value:string;label:string;group:string;disabled:boolean;search:string;color?:string;iconKind?:PlanKind};
+export type SearchOption={value:string;label:string;group?:string;disabled?:boolean;color?:string;iconKind?:PlanKind;image?:string};
+type Props=React.SelectHTMLAttributes<HTMLSelectElement>&{dataOptions?:readonly SearchOption[];onCreate?:(query:string)=>void};
+type Option={value:string;label:string;group:string;disabled:boolean;search:string;color?:string;iconKind?:PlanKind;image?:string};
 const fold=(value:string)=>value.toLocaleLowerCase('ru').replaceAll('ё','е');
 
 export const matchesSearch=(text:string,query:string)=>fold(text).includes(fold(query.trim()));
@@ -20,7 +20,7 @@ export function SearchHighlight({text,query}:{text:string;query:string}) {
 
 /** Native select remains the form control; the searchable picker also supports
  * dynamically rendered optgroups, required fields and existing change handlers. */
-export default function SearchSelect({dataOptions,...props}:Props) {
+export default function SearchSelect({dataOptions,onCreate,...props}:Props) {
   const select=useRef<HTMLSelectElement>(null),popup=useRef<HTMLDivElement>(null),input=useRef<HTMLInputElement>(null);
   const [pending,setPending]=useState<SearchOption|null>(null),[limit,setLimit]=useState(200);
   const [open,setOpen]=useState(false),[query,setQuery]=useState(''),[options,setOptions]=useState<Option[]>([]),[active,setActive]=useState(0);
@@ -47,6 +47,7 @@ export default function SearchSelect({dataOptions,...props}:Props) {
   }
   useEffect(()=>{if(pending?.value===String(props.value??''))setPending(null);},[props.value,dataOptions]);
   function close(focus=false) {setOpen(false);if(focus)select.current?.focus({preventScroll:true});}
+  function create(){close();onCreate?.(query.trim());}
   function choose(option:Option) {
     if(option.disabled || !select.current)return;
     if(dataOptions&&!Array.from(select.current.options).some(item=>item.value===option.value))flushSync(()=>setPending(option));
@@ -91,16 +92,16 @@ export default function SearchSelect({dataOptions,...props}:Props) {
         onChange={event=>{setQuery(event.target.value);setActive(0);setLimit(200);}} onKeyDown={event=>{
           if(event.key==='ArrowDown'||event.key==='ArrowUp'){
             event.preventDefault();event.stopPropagation();setActive(current=>{const step=event.key==='ArrowDown'?1:-1;let next=current+step;while(next>=0&&next<filtered.length&&filtered[next].disabled)next+=step;if(next>=limit)setLimit(next+50);return next>=0&&next<filtered.length ? next : current;});
-          } else if(event.key==='Enter'){event.preventDefault();event.stopPropagation();if(filtered[active])choose(filtered[active]);}
+          } else if(event.key==='Enter'){event.preventDefault();event.stopPropagation();if(filtered[active])choose(filtered[active]);else if(onCreate)create();}
         }}/><button type="button" aria-label="Очистить поиск" onClick={()=>{setQuery('');setActive(0);input.current?.focus({preventScroll:true});}}>×</button></div>
       <div className="search-select-options" role="listbox" id={id} aria-label={label}>
         {filtered.slice(0,limit).map((option,index)=><button key={option.value+'-'+index} type="button" role="option" id={id+'-'+index} aria-selected={option.value===String(props.value??'')}
           aria-disabled={option.disabled} data-active={index===active} disabled={option.disabled} onPointerDown={event=>event.preventDefault()} onClick={()=>choose(option)}>
-          <span className="search-option-main">{option.iconKind&&<svg viewBox="-20 -20 40 40" aria-hidden="true"><PlanSymbol kind={option.iconKind} color={option.color??'#38bdf8'} radius={10}/></svg>}<span className="search-option-copy"><span>{highlight(option.label)}</span>{option.group&&<small>{highlight(option.group)}</small>}</span></span>
+          <span className="search-option-main">{option.image?<img className="search-option-image" src={option.image} alt=""/>:option.iconKind&&<svg viewBox="-20 -20 40 40" aria-hidden="true"><PlanSymbol kind={option.iconKind} color={option.color??'#38bdf8'} radius={10}/></svg>}<span className="search-option-copy"><span>{highlight(option.label)}</span>{option.group&&<small>{highlight(option.group)}</small>}</span></span>
         </button>)}
         {filtered.length>limit&&<button type="button" onPointerDown={event=>event.preventDefault()} onClick={()=>setLimit(value=>value+200)}>Показать ещё {Math.min(200,filtered.length-limit)}</button>}
         {!filtered.length && <p>Ничего не найдено</p>}
-      </div><small className="search-select-count" aria-live="polite">Найдено: {filtered.length}</small>
+      </div>{onCreate&&<div className="search-select-create"><button type="button" onClick={create}>＋ Добавить товар{query.trim()?' «'+query.trim()+'»':''} в базу</button><small>Заполните карточку и фотографию один раз для всех инструментов.</small></div>}<small className="search-select-count" aria-live="polite">Найдено: {filtered.length}</small>
     </div>,select.current?.closest('[role="dialog"]')||document.body)}
   </span>;
 }

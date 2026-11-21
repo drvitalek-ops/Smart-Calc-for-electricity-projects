@@ -528,7 +528,10 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False):
         updated.append(line)
     if len(updated)>5000:raise HTTPException(422,'В КП больше 5000 строк')
     quote.lines=updated
-    return quote
+    from .quotation_prices import inherit_prices
+    inherit_prices(quote)
+    from .plan_products import sync_plan_products
+    return sync_plan_products(db,pid,quote)
 
 
 def bind_product(db,pid,quote,line_id,product):

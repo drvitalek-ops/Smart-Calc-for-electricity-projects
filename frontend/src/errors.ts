@@ -34,7 +34,7 @@ export async function apiFetch(url:string,init:RequestInit={}):Promise<Response>
  try{response=await fetch(url,init);}catch(error){if(init.signal?.aborted)throw error;throw Error(errorMessage(error,'Не удалось связаться с приложением. Повторите действие.'));}
  if(!response.ok){let data:unknown;try{data=await response.json();}catch{}throw new ApiError(responseError(data,response.status),response.status,data);}
  const method=(init.method??'GET').toUpperCase();
- if(['POST','PUT','PATCH','DELETE'].includes(method)&&/^\/api\/(?:manufacturers(?:\/|$)|suppliers(?:\/|$)|products(?:\/|$)|types(?:\/|$)|categories(?:\/|$)|catalog\/import(?:$|\?)|quotations\/\d+\/product(?:$|\?)|projects\/\d+\/quotation\/product(?:$|\?))/.test(url))window.dispatchEvent(new Event('smart-calc:catalog-mutated'));
+ if(['POST','PUT','PATCH','DELETE'].includes(method)&&/^\/api\/(?:manufacturers(?:\/|$)|suppliers(?:\/|$)|products(?:\/|$)|types(?:\/|$)|categories(?:\/|$)|catalog\/import(?:$|\?)|quotations\/\d+\/product(?:$|\?)|projects\/\d+\/(?:quotation|elements)\/product(?:$|\?))/.test(url))window.dispatchEvent(new Event('smart-calc:catalog-mutated'));
  return response;
 }
 export async function api<T>(path:string,method='GET',body?:unknown,signal?:AbortSignal):Promise<T>{

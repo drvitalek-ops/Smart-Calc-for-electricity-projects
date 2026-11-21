@@ -138,6 +138,7 @@ jobs:
           node frontend/tests/catalog.cjs
           node frontend/tests/shared-catalog.cjs
           node frontend/tests/bulk-edit.cjs
+          node frontend/tests/plan-products.cjs
 
       - name: Validate Docker Compose
         run: docker compose config --quiet

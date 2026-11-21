@@ -35,10 +35,11 @@ export function imageDrop(event:DragEvent,done:(file:File)=>void){
   if(file)done(file);
 }
 export function imageDragOver(event:DragEvent){if(event.dataTransfer.types.includes('Files')){event.preventDefault();event.stopPropagation();event.dataTransfer.dropEffect='copy';}}
-export default function ImageField({value,onChange,label,disabled=false,logo=false}:{value:string;onChange:(value:string)=>void;label:string;disabled?:boolean;logo?:boolean}) {
+export default function ImageField({value,onChange,label,disabled=false,logo=false,onBusyChange}:{value:string;onChange:(value:string)=>void;label:string;disabled?:boolean;logo?:boolean;onBusyChange?:(busy:boolean)=>void}) {
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[drag,setDrag]=useState(false);
   const request=useRef(0);
   useEffect(()=>()=>{request.current++;},[]);
+  useEffect(()=>{onBusyChange?.(busy);return()=>onBusyChange?.(false);},[busy,onBusyChange]);
   async function receive(file:File) {
     if(disabled)return;
     const current=++request.current;setBusy(true);setError('');

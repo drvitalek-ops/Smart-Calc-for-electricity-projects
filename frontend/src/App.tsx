@@ -470,10 +470,10 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
-    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.58 используйте копию данных до обновления.</p></div></div>
+    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.59 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.58" target="_blank" rel="noreferrer">Открыть релиз v1.0.58</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.59" target="_blank" rel="noreferrer">Открыть релиз v1.0.59</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div id="settings-transfer" tabIndex={-1} className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -1424,7 +1424,7 @@ export default function App() {
     );
   }
   useEffect(() => {
-    if (!selected || objectDragging || selectedIds.length!==1 || !project || busy || ["quote","quotations"].includes(view) || deletingProject || drag.current || nodeDrag.current)
+    if (!selected || objectDragging || selectedIds.length!==1 || !project || busy || planProductDirty || ["quote","quotations"].includes(view) || deletingProject || drag.current || nodeDrag.current)
       return;
     const stored = project.elements.find((item) => item.id === selected.id);
     if (!stored || sameItem(selected, stored)) return;
@@ -1433,10 +1433,10 @@ export default function App() {
       600,
     );
     return () => window.clearTimeout(timeout);
-  }, [selected, selectedIds.length, project, busy, deletingProject, view, objectDragging]);
+  }, [selected, selectedIds.length, project, busy, planProductDirty, deletingProject, view, objectDragging]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
-      if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject || catalogOpen || (event.target as HTMLElement|null)?.closest('[role="dialog"],[data-search-popup]')) return;
+      if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject || catalogOpen || planProductDirty || (event.target as HTMLElement|null)?.closest('[role="dialog"],[data-search-popup]')) return;
       if(supplyLinking) {
         if((event.target as HTMLElement|null)?.matches('input,textarea,[contenteditable="true"]'))return;
         const modifier=event.ctrlKey || event.metaKey,key=event.key.toLowerCase();
@@ -1505,7 +1505,7 @@ export default function App() {
     }
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport, deletingProject, view,catalogOpen,elementMap,elementsVisible,zoom]);
+  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport, deletingProject, view,catalogOpen,planProductDirty,elementMap,elementsVisible,zoom]);
   useEffect(() => {
     if (!busy && !["quote","quotations"].includes(view) && !deletingProject && pendingHistory.current.length) {
       const redo = pendingHistory.current.shift()!;
@@ -2514,7 +2514,8 @@ export default function App() {
                     </p>
                   )}
                   </section><section data-tool-section="properties"><PanelHeading title="Свойства объекта" caption="Параметры и оформление" icon="edit"/><ToolButton icon="back" aria-label="Вернуться к плану" onClick={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()}>Вернуться к плану</ToolButton>
-                  {bulkPlanItems.length>0&&<PlanProductAssignment key={project.id} projectId={project.id} items={selected&&selectedIds.length===1?[selected]:bulkPlanItems} types={types} catalog={catalog} busy={actionBusy} locked={bulkPlanItems.some(item=>layerMap.get(item.layer_id)?.locked)} onBefore={async()=>{await saveDraftBeforeNavigation();await elementSaveQueue.current;}} onAssigned={async()=>{const next=await refresh(project.id);setSelected(current=>current?next.elements.find(item=>item.id===current.id)??null:null);setError('');}} onRefine={ids=>void run(async()=>{await saveDraftBeforeNavigation();setSelectedIds(ids);setSelected(ids.length?elementMap.get(ids[0])??null:null);})} onError={setError} onDirtyChange={setPlanProductDirty} onBusyChange={setPlanProductBusy}/>}
+                  {/* Keep the captured product draft mounted when visibility refreshes clear selection. */}
+                  <PlanProductAssignment key={project.id} projectId={project.id} items={selected&&selectedIds.length===1?[selected]:bulkPlanItems} types={types} catalog={catalog} busy={actionBusy} locked={bulkPlanItems.some(item=>layerMap.get(item.layer_id)?.locked)} onBefore={async()=>{await saveDraftBeforeNavigation();await elementSaveQueue.current;}} onAssigned={async()=>{const next=await refresh(project.id);setSelected(current=>current?next.elements.find(item=>item.id===current.id)??null:null);setError('');}} onRefine={ids=>void run(async()=>{await saveDraftBeforeNavigation();setSelectedIds(ids);setSelected(ids.length?elementMap.get(ids[0])??null:null);})} onError={setError} onDirtyChange={setPlanProductDirty} onBusyChange={setPlanProductBusy}/>
                   {selected && selectedIds.length === 1 ? (
                     <fieldset disabled={busy||project.layers.find(layer=>layer.id===selected.layer_id)?.locked} style={{border:0,padding:0}}>
                       <div className="object-title">
@@ -3957,7 +3958,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.59</span>
+        <span>SMART HOME CALC / 1.0.60</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

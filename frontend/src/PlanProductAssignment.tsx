@@ -37,7 +37,7 @@ export default function PlanProductAssignment({items,types,catalog,projectId,bus
   catch(e){const duplicates=duplicateProducts(e);if(duplicates)setMatches(duplicates);else{const message=errorMessage(e);setError(message);onError(message);}}finally{setSaving(false);}
  }
  const groups=[...new Set(items.map(item=>item.type_id))];
- return <div className="plan-product-assignment" aria-label="Назначение товара выбранным объектам">
+ return <>{items.length>0&&<div className="plan-product-assignment" aria-label="Назначение товара выбранным объектам">
   <h4>Товар для выбранных · {items.length}</h4>
   {compatible?<><label>Товар<SearchSelect aria-label={items.length===1?'Товар объекта':'Товар выбранных объектов'} value={selectedId} disabled={working||locked} dataOptions={[{value:'',label:common===null&&items.some(item=>item.product_id!==null)?'Разные товары / без привязки':'Без привязки к товару'},...choices]} onCreate={kind?.active?query=>open(query):undefined} onChange={event=>{const value=event.target.value;setChosen(value);if(items.length===1)void assign(value?Number(value):null);}}/></label>
     {product&&<div className="plan-product-preview">{typeof product.parameters.image==='string'&&product.parameters.image&&<img src={product.parameters.image} alt="Фотография выбранного товара"/>}<span><strong>{product.name}</strong><small>{product.manufacturer} · {product.sku||'Без артикула'}</small><small>{product.price.toLocaleString('ru-RU')} {product.currency} / {product.unit}</small></span></div>}
@@ -46,6 +46,7 @@ export default function PlanProductAssignment({items,types,catalog,projectId,bus
     {items.some(item=>item.product_id!==null)&&<button type="button" disabled={working||locked} onClick={()=>void assign(null)}>Снять привязку товара{items.length>1?' у выбранных':''}</button>}
    </>:<div className="warning"><strong>Выбраны разные объекты</strong><p>Для одного товара выберите объекты одной номенклатуры. Типы и единицы сохранятся.</p>{groups.map(id=><button key={id} type="button" disabled={working} onClick={()=>onRefine(items.filter(item=>item.type_id===id).map(item=>item.id))}>Выбрать: {types.find(type=>type.id===id)?.name||'Номенклатура'} · {items.filter(item=>item.type_id===id).length}</button>)}</div>}
    {saving&&<p role="status">Сохранение товара и привязок…</p>}{error&&!creation&&<p role="alert" className="catalog-error">{error}</p>}
+  </div>}
    {creation&&createPortal(<PlanProductModal busy={working} onClose={close}>
      <h2>{creation.existingId?'Редактирование товара в общей базе':'Новый товар с плана'}</h2><p>Карточка и фотография сохранятся в общей базе. Товар будет назначен выбранным объектам: {creation.ids.length}. Фотография будет доступна в КП; цены ранее сохранённых КП сохранятся.</p>
      <form onSubmit={event=>{event.preventDefault();if(!working)void create();}}>
@@ -54,7 +55,7 @@ export default function PlanProductAssignment({items,types,catalog,projectId,bus
       {matches&&<><DuplicateProducts matches={matches} disabled={working} canEdit={item=>item.type_id===creation.typeId&&item.active} onEdit={id=>{const product=catalog.products.find(product=>product.id===id);if(product)setCreation(current=>current?{...current,existingId:product.id,draft:{...current.draft,name:product.name,sku:product.sku,manufacturer:product.manufacturer,price:String(product.price),currency:product.currency,image:String(product.parameters.image??'')}}:null);}} onSeparate={()=>void create(true,true)} onCancel={()=>setMatches(null)}/><p className="hint">Для использования существующей карточки выберите её ниже. Повторное добавление не требуется.</p>{matches.filter(item=>item.type_id===creation.typeId&&item.active).map(item=><button type="button" disabled={working} key={item.id} onClick={()=>void assign(item.id,creation.ids)}>Использовать существующий товар: {item.name}</button>)}</>}
      </form>
    </PlanProductModal>,document.body)}
- </div>;
+ </>;
 }
 
 function PlanProductModal({busy,onClose,children}:{busy:boolean;onClose:()=>void;children:React.ReactNode}){

@@ -123,7 +123,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.58'
+APP_VERSION = '1.0.59'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 from .errors import install_error_handlers, exception_message
 install_error_handlers(app)
@@ -1535,6 +1535,10 @@ def edit_element_properties(pid:int,body:AppearanceBatch,db:DbSession=Depends(se
             if room.page_id is not None and room.page_id!=item.page_id:raise HTTPException(422,'Помещение находится на другом листе. Выберите объекты одного листа или другое помещение.')
         values['parameters']=validate_element(db,pid,candidate,existing_type_id=item.type_id,existing_product_id=item.product_id)
         pending.append((item,values))
+    if 'product_id' in body.changes and db.get(Quotation,pid) is not None:
+        from .quotations import get_quote
+        from .plan_products import sync_plan_products
+        sync_plan_products(db,pid,get_quote(db,pid),{item.id:values['product_id'] for item,values in pending})
     remember_elements(db,pid)
     for item,values in pending:
         for key,value in values.items():setattr(item,key,value)
@@ -1585,6 +1589,10 @@ def edit_element(eid: int, body: ElementInput, db: DbSession = Depends(session))
     if automatic_room: values['room_id']=automatic_room.id
     elif e.room_id and (current_room:=db.get(Room,e.room_id)) and current_room.polygon:
         values['room_id']=None
+    if e.product_id!=body.product_id and db.get(Quotation,e.project_id) is not None:
+        from .quotations import get_quote
+        from .plan_products import sync_plan_products
+        sync_plan_products(db,e.project_id,get_quote(db,e.project_id),{e.id:body.product_id})
     remember_elements(db,e.project_id)
     if old_frame_group and old_frame_group!=new_frame_group:
         clear_frame_groups(db,e.project_id,{old_frame_group})
@@ -1865,6 +1873,8 @@ def export(pid: int, format: str, db: DbSession = Depends(session)):
 
 from .quotations import router as quotations_router
 app.include_router(quotations_router)
+from .plan_products import router as plan_products_router
+app.include_router(plan_products_router)
 
 STATIC_DIR = Path(os.getenv(
     'STATIC_DIR',

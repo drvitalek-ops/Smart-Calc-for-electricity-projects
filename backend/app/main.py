@@ -123,7 +123,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.59'
+APP_VERSION = '1.0.60'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 from .errors import install_error_handlers, exception_message
 install_error_handlers(app)

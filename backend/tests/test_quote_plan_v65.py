@@ -9,6 +9,7 @@ def ok(response):
 
 def test_untyped_product_can_be_created_bound_and_transferred(client):
     pid,base=setup(client);item=ok(client.post(f'/api/projects/{pid}/elements',json=base))
+    ok(client.get(f'/api/projects/{pid}/quotation'))
     maker=ok(client.post('/api/manufacturers',json={'name':'Завод'}))
     product=ok(client.post('/api/products',json={'name':'Товар без номенклатуры','manufacturer_id':maker['id'],'unit':'м','price':150}))
     assert product['type_id'] is None
@@ -16,6 +17,9 @@ def test_untyped_product_can_be_created_bound_and_transferred(client):
     assert not any(t['name'].startswith('Без номенклатуры') for t in ok(client.get('/api/types')))
     ok(client.post(f'/api/projects/{pid}/elements/product',json={'element_ids':[item['id']],'product_id':product['id']}))
     quote=ok(client.get(f'/api/projects/{pid}/quotation'));assert quote['lines'][0]['type_id']==base['type_id']
+    quote['apply_to_plan']=True;quote['lines'][0]['comment']='Комментарий после выбора товара'
+    ok(client.put(f'/api/projects/{pid}/quotation',json=quote))
+    assert 'display_name' not in ok(client.get(f'/api/projects/{pid}'))['elements'][0]['parameters'],'Generated catalogue names must not become sticky manual plan labels'
     archive=client.get(f'/api/projects/{pid}/backup');copy=ok(client.post('/api/projects/import',files={'file':('copy.zip',archive.content,'application/zip')}))
     assert ok(client.get(f'/api/projects/{copy["id"]}/quotation'))['lines'][0]['product_id'] is not None
     standalone=ok(client.post('/api/quotations',json={'lines':[{'id':'manual','name':'Своя позиция','unit':'шт'}]}))

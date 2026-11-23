@@ -30,6 +30,7 @@ def apply_quote_changes(db,pid,quote,baseline=None):
     if stored is None:return
     previous={eid:line for line in stored.content.get('lines',[]) for eid in line.get('source_ids',[])}
     persisted_ids=set(previous)
+    derived={eid:line.model_dump(mode='json') for line in baseline.lines for eid in line.source_ids} if baseline else {}
     if baseline:
         for line in baseline.lines:
             for eid in line.source_ids:previous.setdefault(eid,line.model_dump(mode='json'))
@@ -53,6 +54,10 @@ def apply_quote_changes(db,pid,quote,baseline=None):
             if field in differences:return differences[field]
             value=getattr(line,field)
             result=any(Decimal(str(row.get(field,0)))!=value for row in old) if field=='unit_price' else any(row.get(field,'')!=value for row in old)
+            if result and field in ('name','ip',*commercial) and field not in line.overrides:
+                current=[derived[eid] for eid in line.source_ids if eid in derived]
+                if current:
+                    result=any(Decimal(str(row.get(field,0)))!=value for row in current) if field=='unit_price' else any(row.get(field,'')!=value for row in current)
             differences[field]=result
             return result
         quantity=line.quantity_override is not None and any(Decimal(str(row.get('quantity_override') or 0))!=line.quantity_override for row in old)
@@ -66,7 +71,7 @@ def apply_quote_changes(db,pid,quote,baseline=None):
         fields={key:getattr(line,key) for key in commercial if changed(key)}
         for index,item in enumerate(items):
             parameters={**item.parameters};values={key:getattr(item,key) for key in ElementInput.model_fields}
-            item_fields={key:getattr(line,key) for key in commercial} if item.id not in persisted_ids else fields
+            item_fields={**fields,'unit_price':line.unit_price,'currency':line.currency} if item.id not in persisted_ids else fields
             if item_fields:parameters['_quotation']={**parameters.get('_quotation',{}),**{key:str(value) for key,value in item_fields.items()}}
             if changed('name'):parameters['display_name']=line.name[:200]
             if changed('ip'):

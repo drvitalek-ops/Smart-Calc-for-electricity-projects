@@ -333,7 +333,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   }
   async function setRoomLayout(layout:'combined'|'rooms'){
     if(standalone)return;
-    await work(async()=>{const saved=await saveCurrent();apply(await api<Quote>(base+'/room-layout','POST',{revision:saved.revision,layout}));setRoomFilter(null);setLineQuery('');setLinePage(0);setMessage(layout==='rooms'?'Светильники и электроустановки распределены по помещениям плана.':'Одинаковые позиции объединены в общее КП.');});
+    await work(async()=>{const saved=await saveCurrent();apply(await api<Quote>(base+'/room-layout','POST',{revision:saved.revision,layout}));setRoomFilter(null);setLineQuery('');setLinePage(0);setMessage(layout==='rooms'?'Все связанные позиции распределены по помещениям плана, как в спецификации.':'Одинаковые позиции объединены в общее КП.');});
   }
   async function bind(lineId:string,productId:string) {
     await work(async()=>{

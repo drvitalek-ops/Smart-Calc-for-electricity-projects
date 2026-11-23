@@ -23,5 +23,25 @@ const frontend=process.env.FRAME_TEST_FRONTEND||'http://127.0.0.1:5174',backend=
  await actions.getByRole('button',{name:'Объединить помещения',exact:true}).click();await waitUntil(async()=>await rows.count()===1,'Combine room rows');
  quote=await checked(await api.get(base+`/projects/${pid}/quotation`));assert.equal(quote.room_layout,'combined');assert.equal(quote.lines[0].room,'');assert.equal(Number(quote.lines[0].quantity),5);assert.equal(quote.partner.totals.RUB.total,'450.00');
  await page.reload();await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));await page.getByRole('button',{name:'КП',exact:true}).click();await actions.waitFor();assert.equal(await rows.count(),1);assert.ok((await actions.textContent()).includes('Общее КП'));
- assert.deepEqual(errors,[]);console.log('PASS: new CP combined across rooms, one-click room distribution saves drafts/prices/brand/discount, actual quantities and room headers, reverse action and persistence');
+ // Room distribution must also work when the plan contains no lighting or EUI.
+ const other=await checked(await api.post(base+'/projects',{data:{name:'LED and supplies '+Date.now()}})),otherId=other.id;
+ const otherPages=await checked(await api.post(base+`/projects/${otherId}/pdf`,{multipart:{file:{name:'other.pdf',mimeType:'application/pdf',buffer:blankPdf()}}})),otherPlan=await checked(await api.get(base+`/projects/${otherId}`));
+ const otherRooms=[];for(const name of ['Кухня','Спальня'])otherRooms.push(await checked(await api.post(base+`/projects/${otherId}/rooms`,{data:{name}})));
+ let tape;const expected=[];
+ for(const name of ['LED-линия','Блок питания LED-ленты','Алюминиевый профиль']){
+  const type=types.find(t=>t.name===name);
+  for(let i=0;i<2;i++){
+   const quantity=type.unit==='м'?1.25+i*.5:i+1,parameters=type.unit==='м'?{length:quantity}:{quantity};if(name==='Блок питания LED-ленты')Object.assign(parameters,{power_watts:60,led_strip_ids:[tape]});
+   const item=await checked(await api.post(base+`/projects/${otherId}/elements`,{data:{page_id:otherPages[0].id,layer_id:otherPlan.layers.find(l=>l.name===type.category).id,type_id:type.id,room_id:otherRooms[i].id,x:.3+i*.3,y:.3,parameters}}));
+   if(name==='LED-линия'&&tape===undefined)tape=item.id;expected.push([type.id,otherRooms[i].name,quantity,item.id]);
+  }
+ }
+ await page.reload();await page.getByLabel('Проект',{exact:true}).selectOption(String(otherId));await page.getByRole('button',{name:'КП',exact:true}).click();await actions.waitFor();await waitUntil(async()=>await rows.count()===3,'Combined non-EUI rows');
+ for(let i=1;i<=3;i++){await editor.getByLabel('Цена строки '+i,{exact:true}).fill('100');await editor.getByLabel('Скидка строки '+i,{exact:true}).fill('10');}
+ await actions.getByRole('button',{name:'Распределить по помещениям',exact:true}).click();await waitUntil(async()=>await rows.count()===6,'Distribute tape, power supplies and profiles');
+ quote=await checked(await api.get(base+`/projects/${otherId}/quotation`));assert.equal(quote.room_layout,'rooms');assert.equal(quote.partner.totals.RUB.total,'810.00');
+ for(const [typeId,room,quantity,id]of expected){const line=quote.lines.find(l=>l.source_ids.includes(id));assert.ok(line);assert.equal(line.type_id,typeId);assert.equal(line.room,room);assert.equal(Number(line.quantity),quantity);assert.equal(Number(line.unit_price),100);assert.equal(Number(line.discount),10);}
+ assert.ok((await editor.textContent()).includes('Все связанные позиции распределены'));assert.ok(!quote.lines.some(l=>l.room==='Общие позиции'));
+ await actions.getByRole('button',{name:'Объединить помещения',exact:true}).click();await waitUntil(async()=>await rows.count()===3,'Combine non-EUI rows');assert.equal((await checked(await api.get(base+`/projects/${otherId}/quotation`))).partner.totals.RUB.total,'810.00');
+ assert.deepEqual(errors,[]);console.log('PASS: combined CP, one-click room distribution for lighting, tape, power supplies and profiles, exact quantities/metres, preserved prices/discounts/brand, reverse action and persistence');
 }finally{await browser.close();}})().catch(error=>{console.error(error);process.exitCode=1;});

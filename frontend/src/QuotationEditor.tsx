@@ -330,7 +330,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     if(!doc)throw Error("КП ещё не загружено");
     const issue=numberError(doc);if(issue){focusError.current=true;throw Error(issue);}
     if(!dirty)return doc;
-    const saved=await api<Quote>(base,"PUT",{...doc,apply_to_plan:!standalone});apply(saved);return saved;
+    const saved=await api<Quote>(base,"PUT",{...doc,apply_to_plan:!standalone});apply(saved);if(!standalone)await onChanged();return saved;
   }
   async function setRoomLayout(layout:'combined'|'rooms'){
     if(standalone)return;

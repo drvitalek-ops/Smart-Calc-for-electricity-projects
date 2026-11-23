@@ -249,6 +249,9 @@
 .app-shell .catalog-page-products>label{margin:0 0 9px;font-size:10px;color:var(--ds-color-muted)}
 .catalog-page-products>label>input{margin-top:5px;padding:7px 10px;font-size:12px;min-height:32px}
 .app-shell .catalog-admin{margin:0 0 12px;padding:9px 11px;background:white;border:1px solid var(--ds-color-border);border-radius:8px}
+.app-shell .catalog-page-products>.catalog-admin{flex:none}
+.app-shell .catalog-admin .catalogue-maker-list{max-height:180px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.app-shell .catalog-page-products>.catalog-products{min-height:260px;flex-shrink:0}
 .catalog-admin summary{font-size:11px;color:var(--ds-color-muted)}
 .app-shell .catalog-admin .catalog-grid{grid-template-columns:1fr 1fr;gap:16px}
 .catalog-admin h3{font-size:12px}

@@ -8,10 +8,11 @@ def folded(value):
 
 
 def price_identity(line):
+    from .quotation_grouping import commercial_description
     common=(line.unit,line.currency)
     if folded(line.sku):return ('sku',folded(line.sku),folded(line.manufacturer),*common)
     if line.product_id:return ('product',line.product_id,*common)
-    return ('position',line.type_id,folded(line.name),folded(line.manufacturer),folded(line.description),re.sub(r'^ip\s*','',folded(line.ip)),*common)
+    return ('position',line.type_id,folded(line.name),folded(line.manufacturer),folded(commercial_description(line)),re.sub(r'^ip\s*','',folded(line.ip)),*common)
 
 
 def general_quote(quote):

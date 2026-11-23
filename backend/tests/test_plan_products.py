@@ -131,8 +131,9 @@ def test_legacy_inherited_price_survives_new_plan_product_identity(client):
     # Older versions could store an empty duplicate price; current views inherit
     # the already agreed price from the other identical position.
     with Session() as db:
-        row=db.get(Quotation,pid);content=copy.deepcopy(row.content);content['lines'][1]['unit_price']='0';content['lines'][1]['overrides']=[];row.content=content;db.commit()
-    assert client.get(f'/api/projects/{pid}/quotation').json()['lines'][1]['unit_price']=='100'
+        row=db.get(Quotation,pid);content=copy.deepcopy(row.content);content['lines']=copy.deepcopy(quote['lines']);content['lines'][1]['unit_price']='0';content['lines'][1]['overrides']=[];row.content=content;db.commit()
+    inherited=client.get(f'/api/projects/{pid}/quotation').json()['lines']
+    assert all(Decimal(line['unit_price'])==100 for line in inherited) and sum(Decimal(line['quantity']) for line in inherited)==2
     response=client.post(f'/api/projects/{pid}/elements/product',json={'element_ids':[items[1]['id']],'create':{'name':'Каталожная модель','manufacturer':'Завод','type_id':typ['id'],'unit_price':'900'}})
     assert response.status_code==201,response.text
     current=client.get(f'/api/projects/{pid}/quotation').json()

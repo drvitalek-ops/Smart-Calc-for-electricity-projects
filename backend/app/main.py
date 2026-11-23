@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session as DbSession
 from .db import Base, engine, session, Session
 from .models import (
     Project, Page, Room, Layer, Element, ElementType, Manufacturer, Supplier,
-    Product, Report, Quotation, CatalogCategory,
+    Product, Report, Quotation, CatalogCategory, initialize_element_sequence,
 )
 from .shared_catalog import catalogue_write_guard, identity, manufacturer_index, manufacturer_named, resolve_manufacturer, guard_product_duplicate, product_is_used, metadata, propagate_metadata
 from .catalog import LAYERS, seed
@@ -113,6 +113,8 @@ async def lifespan(app):
                 connection.execute(text('ALTER TABLE rooms ADD COLUMN polygon JSON'))
         for table in Base.metadata.sorted_tables:
             for index in table.indexes: index.create(engine,checkfirst=True)
+    with engine.begin() as connection:
+        initialize_element_sequence(connection)
     with Session() as db:
         seed(db)
         migrate_power_links(db)
@@ -123,7 +125,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.61'
+APP_VERSION = '1.0.62'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 from .errors import install_error_handlers, exception_message
 install_error_handlers(app)

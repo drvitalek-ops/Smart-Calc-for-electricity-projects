@@ -1,4 +1,7 @@
 {
+  "plan_sync": "Синхронизация с планом",
+  "plan_snapshot_ids": "Позиции плана в КП",
+  "excluded_plan_ids": "Исключённые позиции плана",
   "quantity": "Количество",
   "quantity_override": "Ручное количество",
   "calculated_quantity": "Количество по плану",

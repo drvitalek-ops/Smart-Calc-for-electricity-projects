@@ -46,6 +46,8 @@ def regroup_quote(db,pid,quote,target):
     for line in linked:
         if line.source_key.startswith('frame:') and not line.source_ids:frames[line.source_key.rsplit(':',1)[-1]].append(line)
     elements={item.id:item for item in db.scalars(select(Element).where(Element.project_id==pid))}
+    excluded=set(quote.excluded_plan_ids)
+    rows=[{**row,'element_ids':[eid for eid in row.get('element_ids',[]) if eid not in excluded]} for row in rows if not row.get('element_ids') or any(eid not in excluded for eid in row['element_ids'])]
     candidates=[];hits=defaultdict(int)
     for row in rows:
         ids=row.get('element_ids',[])

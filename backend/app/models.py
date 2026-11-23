@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import String, ForeignKey, JSON, Float, Boolean, DateTime
+from sqlalchemy import String, ForeignKey, JSON, Float, Boolean, DateTime, event
 from sqlalchemy.orm import Mapped, mapped_column
 from .db import Base
 
@@ -131,3 +131,35 @@ class CatalogCategory(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
     description: Mapped[str] = mapped_column(String(1000), default='')
+
+
+def initialize_element_sequence(connection):
+    """Keep SQLite plan identities above deleted objects without rebuilding old DBs.
+
+    sqlite_sequence already exists for standalone_quotations. Its elements entry
+    is retained across deletion and backups; PostgreSQL uses its own sequence.
+    The first write also serializes concurrent allocations before reading max(id).
+    """
+    if connection.dialect.name != 'sqlite':
+        return
+    connection.exec_driver_sql("""
+        INSERT INTO sqlite_sequence(name, seq)
+        SELECT 'elements', (SELECT coalesce(max(id), 0) FROM elements)
+        WHERE NOT EXISTS (SELECT 1 FROM sqlite_sequence WHERE name = 'elements')
+    """)
+    connection.exec_driver_sql("""
+        UPDATE sqlite_sequence
+        SET seq = max(coalesce(seq, 0), (SELECT coalesce(max(id), 0) FROM elements))
+        WHERE name = 'elements'
+    """)
+
+
+@event.listens_for(Element, 'before_insert')
+def allocate_element_id(mapper, connection, target):
+    if connection.dialect.name != 'sqlite' or target.id is not None:
+        return
+    initialize_element_sequence(connection)
+    connection.exec_driver_sql("UPDATE sqlite_sequence SET seq = seq + 1 WHERE name = 'elements'")
+    target.id = int(connection.exec_driver_sql(
+        "SELECT seq FROM sqlite_sequence WHERE name = 'elements'"
+    ).scalar_one())

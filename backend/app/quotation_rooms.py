@@ -7,16 +7,13 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from .models import Element
 
-ROOM_CATEGORIES={'Электроустановки','Освещение','Рамки'}
-
-
 def calculated_rows(db,pid,layout):
     from .main import report_rows
     rows=[row for row in report_rows(db,pid)['rows'] if row['quantity']>0]
     if layout=='legacy':return rows
     grouped={}
     for original in rows:
-        room=original['room'] if layout=='rooms' and original['category'] in ROOM_CATEGORIES else 'Общие позиции' if layout=='rooms' else ''
+        room=original['room'] if layout=='rooms' else ''
         row={**original,'room':room}
         key=json.dumps({key:value for key,value in row.items() if key not in ('element_ids','quantity','total')},ensure_ascii=False,sort_keys=True)
         if key not in grouped:grouped[key]={**row,'element_ids':[],'quantity':Decimal(0)}
@@ -57,8 +54,8 @@ def regroup_quote(db,pid,quote,target):
             matches=[line for line in frames.get(row['name'],[]) if not row['room'] or line.source_key in (source_key(row),'frame::'+row['name'])]
         for line in matches:hits[line.id]+=1
         if matches:candidates.append((row,matches))
-    if target=='rooms' and not any(row['category'] in ROOM_CATEGORIES for row,_ in candidates):
-        raise HTTPException(422,'В КП нет связанных с планом светильников, электроустановок или рамок для распределения')
+    if target=='rooms' and not candidates:
+        raise HTTPException(422,'В КП нет связанных с планом позиций для распределения')
     for line in linked:
         if line.quantity_override is not None and hits[line.id]>1:
             raise HTTPException(409,'Позиция с ручным количеством распределяется по нескольким помещениям. Снимите галочку «Вручную» у позиции «'+line.name[:100]+'» и повторите действие.')

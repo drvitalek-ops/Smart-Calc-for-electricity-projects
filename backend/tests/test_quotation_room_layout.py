@@ -40,12 +40,12 @@ def test_new_quote_is_combined_and_binding_once_applies_to_every_room(client):
     product=next(p for p in ok(client.get('/api/catalog'))['products'] if p['id']==product_id)
     ok(client.put('/api/products/'+str(product_id),json={**product,'price':200}))
     split=ok(client.post(path+'/room-layout',json={'revision':saved['revision'],'layout':'rooms'}))
-    assert split['room_layout']=='rooms' and len(split['lines'])==5 and split['partner']['totals']==before
+    assert split['room_layout']=='rooms' and len(split['lines'])==6 and split['partner']['totals']==before
     lights=[line for line in split['lines'] if line['type_id']==light['type_id']]
     assert {line['room']:Decimal(line['quantity']) for line in lights}=={'Ванная':Decimal(2),'Кухня':Decimal(3)}
     assert all(line['product_id']==product_id and Decimal(line['unit_price'])==100 and Decimal(line['discount'])==10 and line['manufacturer']=='Мой бренд' and line['comment']=='Общий комментарий' and line['sku']=='LIGHT-01' for line in lights)
-    strip=next(line for line in split['lines'] if line['type_id']==items[-1]['type_id'])
-    assert strip['room']=='Общие позиции' and Decimal(strip['quantity'])==6
+    strips=[line for line in split['lines'] if line['type_id']==items[-1]['type_id']]
+    assert {line['room']:Decimal(line['quantity']) for line in strips}=={'Ванная':Decimal('3.5'),'Кухня':Decimal('2.5')}
     for mode in ('client','partner'):
         response=client.get(path+'/export.pdf?mode='+mode)
         with pymupdf.open(stream=response.content,filetype='pdf') as pdf:
@@ -86,8 +86,8 @@ def test_legacy_quotes_and_old_backups_keep_room_layout_until_explicit_action(cl
     split=ok(client.post(path+'/room-layout',json={'revision':quote['revision'],'layout':'rooms'}))
     with main.Session() as db:
         stored=db.get(main.Quotation,pid);stored.content={key:value for key,value in stored.content.items() if key!='room_layout'};db.commit()
-    legacy=ok(client.get(path));assert legacy['room_layout']=='legacy' and len(legacy['lines'])==5
-    assert all(legacy['lines'][i]['room']==split['lines'][i]['room'] for i in range(5))
+    legacy=ok(client.get(path));assert legacy['room_layout']=='legacy' and len(legacy['lines'])==6
+    assert all(legacy['lines'][i]['room']==split['lines'][i]['room'] for i in range(6))
     backup=client.get(f'/api/projects/{pid}/backup')
     restored=ok(client.post('/api/projects/import',files={'file':('copy.zip',backup.content,'application/zip')}))
     assert ok(client.get('/api/projects/'+str(restored['id'])+'/quotation'))['room_layout']=='legacy'
@@ -102,7 +102,7 @@ def test_room_layout_word_and_automatic_count_follow_the_selected_mode(client):
     assert Decimal(light['quantity'])==7 and light['room']=='Ванная'
     payload={'room_layout':current['room_layout'],'lines':current['lines']}
     response=client.post(path+'/sku.docx',json=payload);assert response.status_code==200,response.text
-    word=Document(io.BytesIO(response.content));assert len(word.tables[0].rows)==6
+    word=Document(io.BytesIO(response.content));assert len(word.tables[0].rows)==7
     combined=ok(client.post(path+'/room-layout',json={'revision':current['revision'],'layout':'combined'}))
     light=next(line for line in combined['lines'] if a['id'] in line['source_ids']);assert Decimal(light['quantity'])==10
 
@@ -142,3 +142,46 @@ def test_frame_prices_and_quantities_split_combine_and_survive_project_transfer(
     saved=ok(client.put(path,json=saved));combined=ok(client.post(path+'/room-layout',json={'revision':saved['revision'],'layout':'combined'}))
     frame=next(line for line in combined['lines'] if line['source_key'].startswith('frame:'))
     assert Decimal(frame['quantity'])==2 and Decimal(frame['unit_price'])==250 and combined['client']['totals']['RUB']['total']=='500.00'
+
+
+def test_all_plan_categories_distribute_like_specification_without_lights_or_sockets(client):
+    pid,base=setup(client);path=f'/api/projects/{pid}/quotation'
+    project=ok(client.get(f'/api/projects/{pid}'));types=ok(client.get('/api/types'))
+    kitchen=ok(client.post(f'/api/projects/{pid}/rooms',json={'name':'Кухня'}))
+    custom=ok(client.post('/api/types',json={'name':'Свой модуль','category':'Пользовательское оборудование','unit':'шт','defaults':{'quantity':1}}))
+    custom_layer=ok(client.post(f'/api/projects/{pid}/layers',json={'name':custom['category']}))
+    project['layers'].append(custom_layer);types.append(custom)
+    names=['LED-линия','Блок питания LED-ленты','Алюминиевый профиль','Движение','Электрокарниз','Zigbee диммер двухканальный','Свой модуль']
+    tape=None
+    for name in names:
+        kind=next(t for t in types if t['name']==name)
+        layer=next(l for l in project['layers'] if l['name']==kind['category'])
+        for index,room_id in enumerate((base['room_id'],kitchen['id'],None)):
+            parameters={'length':1.25+index*.5} if kind['unit']=='м' else {'quantity':index+1}
+            # Supply placement room, rather than its linked tape's room, follows the report.
+            if name=='Блок питания LED-ленты':parameters.update(power_watts=60,led_strip_ids=[tape])
+            item=ok(client.post(f'/api/projects/{pid}/elements',json={**base,'type_id':kind['id'],'layer_id':layer['id'],'room_id':room_id,'parameters':parameters}))
+            if name=='LED-линия' and tape is None:tape=item['id']
+    report=ok(client.get(f'/api/projects/{pid}/report'))['rows'];quote=ok(client.get(path))
+    assert len(quote['lines'])==len(names) and all(not line['room'] for line in quote['lines'])
+    for index,line in enumerate(quote['lines']):line.update(unit_price=str(100+index*10),discount='10',comment='Сохранить '+str(index))
+    saved=ok(client.put(path,json=quote));terms={line['type_id']:(line['unit_price'],line['discount'],line['comment']) for line in saved['lines']}
+    split=ok(client.post(path+'/room-layout',json={'revision':saved['revision'],'layout':'rooms'}))
+    expected={(row['type_id'],row['room']):(Decimal(str(row['quantity'])),row['unit'],set(row['element_ids'])) for row in report}
+    actual={(line['type_id'],line['room']):(Decimal(line['quantity']),line['unit'],set(line['source_ids'])) for line in split['lines']}
+    assert actual==expected and len(split['lines'])==len(names)*3
+    assert all((line['unit_price'],line['discount'],line['comment'])==terms[line['type_id']] for line in split['lines'])
+    assert split['partner']['totals']==saved['partner']['totals'] and ok(client.get(path))==split
+    for mode in ('client','partner'):
+        response=client.get(path+'/export.pdf?mode='+mode);assert response.is_success
+        with pymupdf.open(stream=response.content,filetype='pdf') as pdf:
+            text=' '.join(p.get_text() for p in pdf)
+            assert all(name in text for name in ('Ванная','Кухня','Без помещения','Блок питания LED-ленты','Свой модуль')) and 'Общие позиции' not in text
+    # Existing pre-v63 room mode can be redistributed again without re-entering terms.
+    combined=ok(client.post(path+'/room-layout',json={'revision':split['revision'],'layout':'combined'}))
+    assert len(combined['lines'])==len(names) and combined['partner']['totals']==saved['partner']['totals']
+    with main.Session() as db:
+        stored=db.get(main.Quotation,pid);stored.content={**stored.content,'room_layout':'rooms','lines':[{**line,'room':'Общие позиции'} for line in stored.content['lines']]};db.commit()
+    old=ok(client.get(path));redistributed=ok(client.post(path+'/room-layout',json={'revision':old['revision'],'layout':'rooms'}))
+    assert {(line['type_id'],line['room']):(Decimal(line['quantity']),line['unit'],set(line['source_ids'])) for line in redistributed['lines']}==expected
+    assert redistributed['partner']['totals']==saved['partner']['totals']

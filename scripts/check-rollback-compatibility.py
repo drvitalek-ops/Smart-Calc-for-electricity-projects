@@ -84,6 +84,12 @@ def run_stage(stage, root):
         ids=json.loads((root/'ids.json').read_text());pid=ids['project']
         project=get(f'/projects/{pid}');project.pop('history',None)
         capture={'project':project,'report':get(f'/projects/{pid}/report'),'catalog':get('/catalog'),'types':get('/types'),'quote':get(f'/projects/{pid}/quotation'),'standalone':get('/quotations/'+str(ids['quote']))}
+        # v65 adds library entries, without changing any placed legacy objects.
+        additions={'Шинопровод','Трековый светильник','Трековый линейный светильник','Трековый спот','Трековый подвес','Блок питания трека','Соединитель трека прямой','Соединитель трека угловой','Соединитель трека Т-образный','Соединитель трека гибкий','Ввод питания трека','Заглушка трека','Подвес трека','Крепление трека'}
+        added=[item for item in capture['types'] if item.get('seed_key')=='Освещение:'+item['name'] and item['name'] in additions]
+        capture['types']=[item for item in capture['types'] if item not in added]
+        for category in capture['catalog'].get('categories',[]):
+            if category['name']=='Освещение':category['positions']-=len(added)
         capture=canonical(capture)
         expected=root/'expected.json'
         if stage=='seed':expected.write_text(json.dumps(capture,ensure_ascii=False,sort_keys=True))

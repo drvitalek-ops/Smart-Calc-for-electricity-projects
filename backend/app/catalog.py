@@ -112,6 +112,19 @@ def simplify_momentary_switches(db):
                 item.seed_key=f'legacy-momentary:{item.id}'
 
 
+TRACK_EQUIPMENT = [
+    dict(name='Шинопровод',unit='м',color='#475569',defaults={'length':1,'track_type':'магнитный','voltage':48,'color':'черный','mount':'накладной'}),
+    dict(name='Трековый светильник',color='#0284c7',defaults={'quantity':1,'ip':20}),
+    dict(name='Трековый линейный светильник',color='#059669',defaults={'quantity':1,'ip':20}),
+    dict(name='Трековый спот',color='#db2777',defaults={'quantity':1,'ip':20}),
+    dict(name='Трековый подвес',color='#7c3aed',defaults={'quantity':1,'ip':20}),
+    dict(name='Блок питания трека',color='#dc2626',defaults={'quantity':1,'power_watts':100,'voltage':48,'plan_shape':'rectangle'}),
+    *[dict(name=name,color='#64748b',defaults={'quantity':1}) for name in (
+        'Соединитель трека прямой','Соединитель трека угловой','Соединитель трека Т-образный',
+        'Соединитель трека гибкий','Ввод питания трека','Заглушка трека','Подвес трека','Крепление трека')],
+]
+
+
 def seed(db):
     groups = [
         ('Электроустановки', list(ELECTRICAL_COLORS), '#fb923c', 44),
@@ -133,6 +146,7 @@ def seed(db):
         dict(name='Электрокарниз',category='Электрокарнизы',color='#60a5fa',defaults={'quantity':1,'length':1,'control':'Zigbee'}),
     ]
     for values in extras: builtin_type(db,**values)
+    for values in TRACK_EQUIPMENT:builtin_type(db,category='Освещение',**values)
     simplify_momentary_switches(db)
     for project in db.scalars(select(Project)):
         layers=list(db.scalars(select(Layer).where(Layer.project_id==project.id).order_by(Layer.id)))

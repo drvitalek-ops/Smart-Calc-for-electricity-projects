@@ -57,6 +57,7 @@ class CatalogDuplicate(HTTPException):
 
 
 def product_matches(db,values,exclude_id=None):
+    from .catalog_types import product_type_id
     name=identity(values.get('name'));sku=identity(values.get('sku'))
     maker_id=values.get('manufacturer_id');matches=[]
     maker=db.get(Manufacturer,maker_id)
@@ -70,7 +71,7 @@ def product_matches(db,values,exclude_id=None):
         ratio=SequenceMatcher(None,normalized[:500],other_normalized[:500]).ratio() if item.type_id==values.get('type_id') else 0
         if not same_sku and not same_name and (len(normalized)<5 or ratio<.84):continue
         matches.append({'id':item.id,'name':item.name,'sku':item.sku,'manufacturer_id':item.manufacturer_id,
-            'type_id':item.type_id,'unit':item.unit,'price':item.price,'currency':item.currency,'active':item.active,
+            'type_id':product_type_id(db,item),'unit':item.unit,'price':item.price,'currency':item.currency,'active':item.active,
             'reason':'Совпадает артикул' if same_sku else 'Совпадает название' if same_name else 'Похожее название',
             '_score':2 if same_sku else 1 if same_name else ratio})
     return [{k:v for k,v in item.items() if k!='_score'} for item in sorted(matches,key=lambda row:(-row['_score'],row['id']))[:8]]

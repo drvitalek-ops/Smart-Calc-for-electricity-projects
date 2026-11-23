@@ -8,6 +8,7 @@ from xml.sax.saxutils import escape
 from .report_summary import build_summary, summarize_categories
 
 PARAMETER_LABELS = {
+    'quotation_description':'Описание',
     'ip': 'Степень защиты', 'voltage': 'Напряжение, В', 'control': 'Управление',
     'zone': 'Зона', 'strip_type': 'Тип ленты', 'profile': 'Профиль',
     'track_type': 'Тип трека', 'color': 'Цвет', 'mount': 'Монтаж',

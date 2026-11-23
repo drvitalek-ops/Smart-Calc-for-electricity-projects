@@ -22,8 +22,8 @@ const frontend=process.env.FRAME_TEST_FRONTEND||'http://127.0.0.1:5174',backend=
  assert.equal((await api.delete(base+'/elements/'+second.id)).status(),204);await goPlan();await goQuote(5);
  await goPlan();await page.locator('.sheet>svg').focus();await page.keyboard.press('Control+z');await goQuote(7);
  await editor.getByLabel('Ручное количество строки 1',{exact:true}).check();await count.fill('12');await editor.getByRole('button',{name:'Сохранить изменения КП',exact:true}).click();await waitUntil(async()=>!await editor.getByRole('button',{name:'Сохранить изменения КП',exact:true}).isEnabled(),'Save manual count');
- await checked(await api.put(base+'/elements/'+item.id,{data:{...body,parameters:{quantity:9,ip:20}}}));await goPlan();await goQuote(12);
- assert.ok((await editor.locator('.manual-quantity').locator('..').textContent()).includes('По плану: 11'));
- await editor.getByLabel('Ручное количество строки 1',{exact:true}).uncheck();assert.equal(Number(await count.inputValue()),11);
+ let applied;await waitUntil(async()=>{applied=await checked(await api.get(base+`/projects/${pid}`));return applied.elements.reduce((sum,e)=>sum+Number(e.parameters.quantity),0)===12;},'CP quantity has reached existing plan objects');assert.equal(applied.elements.length,2);
+ assert.equal((await checked(await api.get(base+`/projects/${pid}/quotation`))).lines[0].quantity_override,null);
+ await checked(await api.put(base+'/elements/'+item.id,{data:{...body,parameters:{quantity:4,ip:20}}}));await goPlan();await goQuote(7);
  assert.deepEqual(errors,[]);console.log('PASS: plan quantity edit saves on CP navigation, automatic totals/add/delete/undo, preserved prices/comments/discounts and explicit manual quantity override');
 }finally{await browser.close();}})().catch(error=>{console.error(error);process.exitCode=1;});

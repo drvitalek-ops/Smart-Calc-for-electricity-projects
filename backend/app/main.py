@@ -30,6 +30,7 @@ from .models import (
     Product, Report, Quotation, CatalogCategory, initialize_element_sequence,
 )
 from .shared_catalog import catalogue_write_guard, identity, manufacturer_index, manufacturer_named, resolve_manufacturer, guard_product_duplicate, product_is_used, metadata, propagate_metadata
+from .catalog_types import catalog_type,product_type_id,untyped_kind
 from .catalog import LAYERS, seed
 from .nomenclature import nomenclature_key, nomenclature_group, nomenclature_group_order
 from .polygons import polygon_error
@@ -125,7 +126,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.64'
+APP_VERSION = '1.0.65'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 from .errors import install_error_handlers, exception_message
 install_error_handlers(app)
@@ -280,7 +281,7 @@ class ProductInput(NameInput):
     manufacturer_name:str=Field(default='',max_length=500)
     manufacturer_id: int | None = None
     supplier_id: int | None = None
-    type_id: int
+    type_id: int | None = Field(default=None,gt=0)
     sku: str = Field(default='', max_length=200)
     unit: str = Field(default='шт', pattern='^(шт|м)$')
     price: float = Field(default=0, ge=0, le=1000000000)
@@ -376,6 +377,7 @@ class BackupManifest(BaseModel):
 
 def catalog_product(db, product):
     row=data(product)
+    row['type_id']=product_type_id(db,product)
     row['manufacturer']=db.get(Manufacturer,product.manufacturer_id).name
     row['supplier']=db.get(Supplier,product.supplier_id).name if product.supplier_id else ''
     return row
@@ -512,9 +514,19 @@ def validate_element(db, project_id, body, check_locked=True, existing_type_id=N
         raise HTTPException(409,'Позиция удалена из библиотеки; сначала восстановите её')
     if body.product_id is not None:
         product=require(db,Product,body.product_id)
-        if product.type_id != typ.id or not product.active and check_locked and existing_product_id!=product.id:
+        if product.unit!=typ.unit or product_type_id(db,product) not in (None,typ.id) or not product.active and check_locked and existing_product_id!=product.id:
             raise HTTPException(422, 'Товар не соответствует типу элемента')
     parameters = {**typ.defaults, **body.parameters}
+    if '_quotation' in parameters:
+        terms=parameters['_quotation'];limits={'sku':200,'manufacturer':500,'description':2000,'unit_price':30,'currency':3}
+        if not isinstance(terms,dict) or any(key not in limits or not isinstance(value,str) or len(value)>limits[key] for key,value in terms.items()):
+            raise HTTPException(422,'Некорректные данные связанной позиции КП')
+        if 'unit_price' in terms:
+            try:
+                value=float(terms['unit_price'])
+                if not math.isfinite(value) or not 0<=value<=1000000000:raise ValueError()
+            except ValueError:raise HTTPException(422,'Некорректная цена связанной позиции КП')
+        if 'currency' in terms and not re.fullmatch('[A-Z]{3}',terms['currency']):raise HTTPException(422,'Некорректная валюта связанной позиции КП')
     points=geometry_points(body.geometry)
     if points:
         if len(points)<2:
@@ -681,7 +693,7 @@ def types(include_inactive: bool = False, db: DbSession = Depends(session)):
         nomenclature_key(item.name),
         item.id,
     ))
-    return [data(item) for item in items if (item.active or include_inactive) and not (item.seed_key or '').startswith('legacy-momentary:')]
+    return [data(item) for item in items if (item.active or include_inactive) and not untyped_kind(item) and not (item.seed_key or '').startswith('legacy-momentary:')]
 
 def type_values(db,body,item=None):
     values=body.model_dump()
@@ -777,12 +789,16 @@ def delete_category(category_id:int,db:DbSession=Depends(session)):
 def catalog(db: DbSession = Depends(session)):
     manufacturers=[data(item) for item in db.scalars(select(Manufacturer).order_by(Manufacturer.name))]
     suppliers=[data(item) for item in db.scalars(select(Supplier).order_by(Supplier.name))]
-    maker_names={item['id']:item['name'] for item in manufacturers}
-    supplier_names={item['id']:item['name'] for item in suppliers}
     products=[]
-    for product in db.scalars(select(Product).order_by(Product.name)):
-        products.append({**data(product),'manufacturer':maker_names.get(product.manufacturer_id,''),
-            'supplier':supplier_names.get(product.supplier_id,'')})
+    # Read each product and its metadata in one statement: a concurrent insert
+    # must not expose a hidden type ID or an empty manufacturer name.
+    rows=db.execute(select(Product,ElementType,Manufacturer.name,Supplier.name)
+        .join(ElementType,Product.type_id==ElementType.id)
+        .join(Manufacturer,Product.manufacturer_id==Manufacturer.id)
+        .outerjoin(Supplier,Product.supplier_id==Supplier.id).order_by(Product.name))
+    for product,kind,maker_name,supplier_name in rows:
+        products.append({**data(product),'type_id':None if untyped_kind(kind) else product.type_id,
+            'manufacturer':maker_name,'supplier':supplier_name or ''})
     return {'manufacturers':manufacturers,'suppliers':suppliers,'products':products,'categories':category_rows(db)}
 
 @app.post('/api/manufacturers',status_code=201)
@@ -825,11 +841,11 @@ def edit_supplier(item_id: int, body: SupplierInput, db: DbSession = Depends(ses
 def add_product(body: ProductInput, db: DbSession = Depends(session), _catalogue=Depends(catalogue_write_guard)):
     maker=require(db,Manufacturer,body.manufacturer_id) if body.manufacturer_id else resolve_manufacturer(db,body.manufacturer_name)
     if not maker.active:raise HTTPException(409,'Сначала восстановите производителя в каталоге')
-    typ=require(db,ElementType,body.type_id)
+    typ=catalog_type(db,body.type_id,body.unit)
     if not typ.active: raise HTTPException(409,'Сначала восстановите позицию в библиотеке')
     if body.unit != typ.unit: raise HTTPException(422,'Единица товара должна совпадать с типом элемента')
     if body.supplier_id is not None: require(db,Supplier,body.supplier_id)
-    values=body.model_dump(exclude={'allow_duplicate','manufacturer_name'});values['manufacturer_id']=maker.id;values['name']=' '.join(body.name.split());values['sku']=body.sku.strip()
+    values=body.model_dump(exclude={'allow_duplicate','manufacturer_name'});values['type_id']=typ.id;values['manufacturer_id']=maker.id;values['name']=' '.join(body.name.split());values['sku']=body.sku.strip()
     if not values['name']:raise HTTPException(422,'Укажите название товара')
     guard_product_duplicate(db,values,allow_duplicate=body.allow_duplicate)
     item=Product(**values); db.add(item); db.commit(); return catalog_product(db,item)
@@ -837,15 +853,15 @@ def add_product(body: ProductInput, db: DbSession = Depends(session), _catalogue
 @app.put('/api/products/{product_id}')
 def edit_product(product_id: int, body: ProductInput, db: DbSession = Depends(session), _catalogue=Depends(catalogue_write_guard)):
     item=require(db,Product,product_id)
-    if (body.type_id!=item.type_id or body.unit!=item.unit) and product_is_used(db,product_id):
+    if (body.type_id is not None and body.type_id!=product_type_id(db,item) or body.unit!=item.unit) and product_is_used(db,product_id):
         raise HTTPException(409,'Тип и единица измерения используемого товара защищены')
     maker=require(db,Manufacturer,body.manufacturer_id) if body.manufacturer_id else resolve_manufacturer(db,body.manufacturer_name)
     if not maker.active:raise HTTPException(409,'Сначала восстановите производителя в каталоге')
-    typ=require(db,ElementType,body.type_id)
+    typ=catalog_type(db,body.type_id,body.unit)
     if not typ.active and body.type_id!=item.type_id: raise HTTPException(409,'Сначала восстановите позицию в библиотеке')
     if body.unit != typ.unit: raise HTTPException(422,'Единица товара должна совпадать с типом элемента')
     if body.supplier_id is not None: require(db,Supplier,body.supplier_id)
-    values=body.model_dump(exclude={'allow_duplicate','manufacturer_name'});values['manufacturer_id']=maker.id;values['name']=' '.join(body.name.split());values['sku']=body.sku.strip()
+    values=body.model_dump(exclude={'allow_duplicate','manufacturer_name'});values['type_id']=typ.id;values['manufacturer_id']=maker.id;values['name']=' '.join(body.name.split());values['sku']=body.sku.strip()
     if not values['name']:raise HTTPException(422,'Укажите название товара')
     guard_product_duplicate(db,values,item,body.allow_duplicate)
     before=metadata(db,item)
@@ -1209,7 +1225,7 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
         for item in manifest.elements:
             product=product_map.get(item.product_backup_id) if item.product_backup_id is not None else None
             typ=type_map[item.type_backup_id]
-            if product and product.type_id!=typ.id:
+            if product and (product_type_id(db,product) not in (None,typ.id) or product.unit!=typ.unit):
                 raise ValueError('Товар не соответствует типу элемента')
             obj=Element(
                 project_id=project.id,page_id=page_map[item.page_backup_id].id,
@@ -1745,7 +1761,9 @@ def report_rows(db,pid):
         product=product_map.get(e.product_id)
         manufacturer=maker_map.get(product.manufacturer_id) if product else None
         supplier=supplier_map.get(product.supplier_id) if product else None
-        group_parameters={k:v for k,v in e.parameters.items() if k not in APPEARANCE_KEYS | {'length','quantity','frame_posts','frame_group','manual_length','measured_length'}}
+        commercial=e.parameters.get('_quotation',{})
+        group_parameters={k:v for k,v in e.parameters.items() if k not in APPEARANCE_KEYS | {'_quotation','length','quantity','frame_posts','frame_group','manual_length','measured_length'}}
+        if commercial.get('description'):group_parameters['quotation_description']=commercial['description']
         if is_power_supply(t):
             descriptions=[]
             for strip_id in sorted(linked_strip_ids(e.parameters)):
@@ -1760,9 +1778,9 @@ def report_rows(db,pid):
             room.name if room else 'Без помещения',t.category,e.parameters.get('display_name','').strip() or t.name,t.unit,
             json.dumps(group_parameters,ensure_ascii=False,sort_keys=True),
             product.id if product else None,
-            product.name if product else '', product.sku if product else '',
-            manufacturer.name if manufacturer else '', supplier.name if supplier else '',
-            float(product.price) if product else 0, product.currency if product else 'RUB',t.id,
+            product.name if product else '', commercial.get('sku',product.sku if product else ''),
+            commercial.get('manufacturer',manufacturer.name if manufacturer else ''), supplier.name if supplier else '',
+            float(commercial.get('unit_price',product.price if product else 0)), commercial.get('currency',product.currency if product else 'RUB'),t.id,
         )
         group_ids[key].append(e.id)
         group_type_ids[key]=t.id
@@ -1846,6 +1864,7 @@ def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
         if element.parameters.get('plan_label_visible',True):
             name=element.parameters.get('display_name','').strip() or typ.name
             label=name+f" #{element.id}"+(f" · {element.parameters['power_watts']:g} Вт" if element.parameters.get('power_watts') else '')
+            if typ.unit=='шт' and element.parameters.get('quantity',1)!=1:label+=f" · {element.parameters.get('quantity',1):g} шт"
             if points: label+=f" · {element.parameters.get('length',0):g} м"
             unit=page.width/1000
             label_x=(18 if points else (19 if is_power_supply(typ) else 12)*element.parameters.get('plan_size',1))*unit

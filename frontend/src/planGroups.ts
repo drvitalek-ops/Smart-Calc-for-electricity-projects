@@ -6,7 +6,7 @@ const lighting:Record<string,string>={recessed:'Встраиваемые све�
 export function planGroup(kind:Kind):PlanGroup{
   if(kind.category==='Электроустановки')return {key:'electrical:'+(kind.group??kind.category),label:kind.group??kind.category};
   if(kind.category==='Освещение'){
-    if(kind.unit==='м'&&kind.name.toLocaleLowerCase('ru').includes('трек'))return {key:'light:track',label:'Треки'};
+    if(kind.unit==='м'&&/трек|шинопровод/i.test(kind.name))return {key:'light:track',label:'Треки'};
     const glyph=defaultGlyph(kind);return {key:'light:'+glyph,label:lighting[glyph]??kind.name};
   }
   return kind.group&&kind.group!==kind.category?{key:'group:'+kind.group,label:kind.group}:{key:'type:'+kind.name,label:kind.name};

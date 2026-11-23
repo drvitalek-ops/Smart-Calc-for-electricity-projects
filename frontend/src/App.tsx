@@ -153,7 +153,7 @@ export type Project = {
 };
 export type Product = {
   id: number;
-  type_id: number;
+  type_id: number|null;
   manufacturer_id: number;
   supplier_id: number | null;
   name: string;
@@ -470,10 +470,10 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
-    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.63 используйте копию данных до обновления.</p></div></div>
+    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.64 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.63" target="_blank" rel="noreferrer">Открыть релиз v1.0.63</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.64" target="_blank" rel="noreferrer">Открыть релиз v1.0.64</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div id="settings-transfer" tabIndex={-1} className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -518,7 +518,7 @@ function NomenclatureEditor({types,categories=[],onChanged,onDirtyChange,onBusyC
         <label>Название<input aria-label="Название номенклатуры" required maxLength={200} value={form.name} onChange={event=>setForm({...form,name:event.target.value})} /></label>
         <label>Категория<SearchInput aria-label="Категория номенклатуры" required maxLength={200} options={[...new Set(["Электроустановки","Освещение","LED-подсветка","Датчики","Электрокарнизы","Умные устройства","Профиль",...types.map(item=>item.category),...categories.map(item=>item.name)])]} value={form.category} onChange={category=>setForm({...form,category})}/></label>
         <label>Единица измерения<SearchSelect aria-label="Единица номенклатуры" value={form.unit} onChange={event=>setForm({...form,unit:event.target.value,defaults:{...Object.fromEntries(Object.entries(form.defaults).filter(([key])=>!["length","quantity"].includes(key))),...(event.target.value === "м" ? {length:1} : {quantity:1})}})}><option value="шт">Штуки</option><option value="м">Метры</option></SearchSelect></label>
-        <label>Цвет на плане<input aria-label="Цвет номенклатуры" type="color" value={form.color} onChange={event=>setForm({...form,color:event.target.value})} /></label>
+        <label>Цвет на плане<input aria-label="Цвет номенклатуры" type="color" value={form.color} onChange={event=>setForm({...form,color:event.target.value,defaults:{...form.defaults,...(form.defaults.plan_color!==undefined?{plan_color:event.target.value}:{})}})} /></label>
         <label>Рекомендуемый IP во влажной зоне<input aria-label="Минимальный IP номенклатуры" type="number" min="0" max="69" placeholder="Не задан" value={form.wet_min_ip} onChange={event=>setForm({...form,wet_min_ip:event.target.value})} /></label>
         <details className="manual-properties"><summary>Значок по умолчанию для новых объектов</summary><AppearanceEditor kind={{name:form.name,category:form.category,unit:form.unit}} value={form.defaults} onChange={defaults=>setForm({...form,defaults})} color={form.color} allowName={false} line={form.unit==="м"}/></details><CustomFieldsEditor value={form.defaults} onChange={defaults=>setForm({...form,defaults})}/><h3>Параметры по умолчанию</h3>
         {Object.entries(form.defaults).filter(([key])=>!appearanceKeys.includes(key)&&!key.startsWith("custom:")).map(([key,value])=><label key={key} className="nomenclature-param">{labels[key] ?? (key.startsWith("custom:")?key.slice(7):key)}<span><input aria-label={`По умолчанию: ${labels[key] ?? (key.startsWith("custom:")?key.slice(7):key)}`} type={typeof value === "number" ? "number" : "text"} step="any" value={String(value)} onChange={event=>setForm({...form,defaults:{...form.defaults,[key]:typeof value === "number" ? Number(event.target.value) : event.target.value}})} /><button type="button" aria-label={`Убрать параметр ${labels[key] ?? (key.startsWith("custom:")?key.slice(7):key)}`} onClick={()=> {const defaults={...form.defaults};delete defaults[key];setForm({...form,defaults});}}>×</button></span></label>)}
@@ -571,7 +571,7 @@ function CatalogManager({
     sku: "",
     manufacturer_id: catalog.manufacturers.find(item=>item.active!==false)?.id ?? 0,
     supplier_id: 0,
-    type_id: types.find(item=>item.active)?.id ?? 0,
+    type_id: 0,unit:'шт',
     price: 0,
     currency: "RUB",
     active: true,
@@ -592,7 +592,7 @@ function CatalogManager({
     const previous=previousCatalogue.current;previousCatalogue.current=catalog;
     const before=previous.products.find(item=>item.id===form.id),after=catalog.products.find(item=>item.id===form.id);
     if(before&&after){
-      const fields=(product:Product)=>({id:product.id,name:product.name,sku:product.sku,manufacturer_id:product.manufacturer_id,supplier_id:product.supplier_id??0,type_id:product.type_id,price:product.price,currency:product.currency,active:product.active,parameters:product.parameters});
+      const fields=(product:Product)=>({id:product.id,name:product.name,sku:product.sku,manufacturer_id:product.manufacturer_id,supplier_id:product.supplier_id??0,type_id:product.type_id??0,unit:product.unit,price:product.price,currency:product.currency,active:product.active,parameters:product.parameters});
       setForm(current=>current.id===after.id?rebaseCatalogue(current,fields(before),fields(after)):current);
       setProductManufacturer(current=>rebaseCatalogue(current,before.manufacturer,after.manufacturer));
     }
@@ -600,14 +600,14 @@ function CatalogManager({
     if(oldMaker&&newMaker)setManufacturer(current=>rebaseCatalogue(current,oldMaker.name,newMaker.name));
   },[catalog]);
   const originalProduct=catalog.products.find(item=>item.id===form.id),originalMaker=catalog.manufacturers.find(item=>item.id===manufacturerId),originalSupplier=catalog.suppliers.find(item=>item.id===supplierId);
-  const productDirty=originalProduct?['name','sku','manufacturer_id','type_id','price','currency','active'].some(key=>form[key as keyof typeof form]!==originalProduct[key as keyof Product])||form.supplier_id!==(originalProduct.supplier_id??0)||JSON.stringify(form.parameters)!==JSON.stringify(originalProduct.parameters):Boolean(form.name||form.sku||form.price||Object.keys(form.parameters).length);
+  const productDirty=originalProduct?['name','sku','manufacturer_id','type_id','unit','price','currency','active'].some(key=>key==='type_id'?form.type_id!==(originalProduct.type_id??0):form[key as keyof typeof form]!==originalProduct[key as keyof Product])||form.supplier_id!==(originalProduct.supplier_id??0)||JSON.stringify(form.parameters)!==JSON.stringify(originalProduct.parameters):Boolean(form.name||form.sku||form.price||Object.keys(form.parameters).length);
   const dirty=typeDirty||categoryDirty||bulkProductDirty||productDirty||Boolean(productManufacturer&&!form.manufacturer_id)||manufacturer!==(originalMaker?.name??'')||supplier!==(originalSupplier?.name??'')||contact!==(originalSupplier?.contact??'');
   const anyBusy=saving||typeBusy||categoryBusy;
   useEffect(()=>{onBusyChange(anyBusy);return()=>onBusyChange(false);},[anyBusy,onBusyChange]);
   useEffect(()=>{onDirtyChange(dirty);return()=>onDirtyChange(false);},[dirty,onDirtyChange]);
   useEffect(()=>setProductLimit(100),[databaseSearch]);
   const kindLookup=useMemo(()=>new Map(types.map(kind=>[kind.id,kind])),[types]);
-  const filteredProducts=useMemo(()=>catalog.products.filter(item=>{if(!showArchived&&!item.active)return false;const kind=kindLookup.get(item.type_id);return matchesSearch([item.name,item.sku,item.manufacturer,item.supplier,kind?.name,kind?.category].join(' '),databaseSearch);}),[catalog.products,kindLookup,databaseSearch,showArchived]);
+  const filteredProducts=useMemo(()=>catalog.products.filter(item=>{if(!showArchived&&!item.active)return false;const kind=kindLookup.get(item.type_id??0);return matchesSearch([item.name,item.sku,item.manufacturer,item.supplier,kind?.name,kind?.category].join(' '),databaseSearch);}),[catalog.products,kindLookup,databaseSearch,showArchived]);
   const selectedProducts=useMemo(()=>catalog.products.filter(item=>productSelection.has(item.id)),[catalog.products,productSelection]);
   const productFields=useMemo(()=>productBulkFields(selectedProducts,catalog),[selectedProducts,catalog]);
   const mixedProducts=categoriesMixed(selectedProducts.map(item=>item.type_id),types);
@@ -636,10 +636,10 @@ function CatalogManager({
     e?.preventDefault();
     await work(async () => {
       const kind = types.find((item) => item.id === form.type_id);
-      if (!kind) throw Error("Выберите тип оборудования");
+
       if (!productManufacturer.trim()) throw Error("Добавьте производителя");
       const body = {name:form.name,sku:form.sku,manufacturer_id:form.manufacturer_id||null,manufacturer_name:productManufacturer,
-        supplier_id:form.supplier_id||null,type_id:form.type_id,unit:kind.unit,price:Number(form.price),currency:form.currency.toUpperCase(),active:form.active,parameters:form.parameters,allow_duplicate:allowDuplicate};
+        supplier_id:form.supplier_id||null,type_id:form.type_id||null,unit:kind?.unit??form.unit,price:Number(form.price),currency:form.currency.toUpperCase(),active:form.active,parameters:form.parameters,allow_duplicate:allowDuplicate};
       let saved:Product;
       try{saved=await api<Product>(form.id?`/products/${form.id}`:'/products',form.id?'PUT':'POST',body);}
       catch(error){const matches=duplicateProducts(error);if(matches){setDuplicates(matches);return;}throw error;}
@@ -656,7 +656,7 @@ function CatalogManager({
       sku: product.sku,
       manufacturer_id: product.manufacturer_id,
       supplier_id: product.supplier_id ?? 0,
-      type_id: product.type_id,
+      type_id: product.type_id??0,unit:product.unit,
       price: product.price,
       currency: product.currency,
       active: product.active,
@@ -844,17 +844,18 @@ function CatalogManager({
                 />
               </label>
               <label>
-                Тип
+                Номенклатура
                 <SearchSelect
-                  required
+                  aria-label="Тип"
                   value={form.type_id || ""}
                   onChange={(e) =>
                     setForm({ ...form, type_id: +e.target.value })
                   }
                 >
-                  <KindOptions types={types.filter(item=>item.active || item.id===form.type_id)} showUnits />
+                  <option value="">Без номенклатуры</option><KindOptions types={types.filter(item=>item.active || item.id===form.type_id)} showUnits />
                 </SearchSelect>
               </label>
+              {!form.type_id&&<label>Единица измерения<SearchSelect aria-label="Единица товара" value={form.unit} onChange={event=>setForm({...form,unit:event.target.value})}><option value="шт">Штуки</option><option value="м">Метры</option></SearchSelect></label>}
               <ManufacturerField value={productManufacturer} makers={catalog.manufacturers} disabled={saving} onChange={(name,id)=>{setProductManufacturer(name);setForm(current=>({...current,manufacturer_id:id??0}));setDuplicates(null);}}/>
               <label>
                 Поставщик
@@ -2614,7 +2615,7 @@ export default function App() {
                         .filter(
                           ([key]) =>
                             ![
-                              ...appearanceKeys,"manual_length","measured_length",
+                              ...appearanceKeys,"_quotation","manual_length","measured_length",
                               "frame_posts",
                               "frame_group",
                               "plan_icon",
@@ -3967,7 +3968,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.64</span>
+        <span>SMART HOME CALC / 1.0.65</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

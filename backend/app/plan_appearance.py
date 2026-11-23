@@ -75,7 +75,7 @@ def draw_marker(sheet,anchor,parameters,color,power=False,kind=None):
     def point(x,y):
         return pymupdf.Point(anchor.x+size*(x*math.cos(angle)-y*math.sin(angle)),anchor.y+size*(x*math.sin(angle)+y*math.cos(angle)))
     white=(1,1,1)
-    solid=bool(power or parameters.get('plan_shape') or parameters.get('plan_icon'))
+    solid=bool(power or parameters.get('plan_shape') or parameters.get('plan_icon') or parameters.get('plan_color'))
     fill=color if solid else white
     border=white if solid else color
     outline=.85

@@ -21,6 +21,7 @@ router=APIRouter()
 from .shared_catalog import catalogue_write_guard, resolve_manufacturer, guard_product_duplicate, metadata, propagate_metadata, product_is_used, synchronize_quote_metadata
 from .numbers import RussianDecimal
 from .errors import exception_message
+from .catalog_types import catalog_type,product_type_id
 
 CENT=Decimal('0.01')
 
@@ -151,6 +152,7 @@ class QuoteStyle(BaseModel):
 
 
 class QuoteInput(BaseModel):
+    apply_to_plan:bool=Field(default=False,exclude=True)
     _merged_line_ids:dict[str,str]=PrivateAttr(default_factory=dict)
     model_config=ConfigDict(validate_default=True)
     style:QuoteStyle=Field(default_factory=QuoteStyle)
@@ -393,7 +395,7 @@ def present(quote,*,with_aliases=False):
 
 def product_snapshot(db,line,product):
     line.product_id=product.id
-    line.type_id=product.type_id
+    line.type_id=product_type_id(db,product) if not line.source_ids else line.type_id
     line.name=product.name;line.sku=product.sku
     line.manufacturer=db.get(Manufacturer,product.manufacturer_id).name
     line.unit_price=money(product.price);line.currency=product.currency
@@ -597,12 +599,12 @@ def bind_product(db,pid,quote,line_id,product):
     line=next((line for line in quote.lines if line.id==line_id),None)
     if line is None: raise HTTPException(404,'Строка КП не найдена')
     if not product.active: raise HTTPException(409,'Товар находится в архиве')
-    if product.unit!=line.unit or line.source_ids and line.type_id is not None and product.type_id!=line.type_id:
+    if product.unit!=line.unit or line.source_ids and line.type_id is not None and product_type_id(db,product) not in (None,line.type_id):
         raise HTTPException(422,'Тип и единица товара должны соответствовать позиции')
     elements=[]
     for eid in line.source_ids:
         element=db.get(Element,eid)
-        if element is None or element.project_id!=pid or element.type_id!=product.type_id:
+        if element is None or element.project_id!=pid or product_type_id(db,product) not in (None,element.type_id):
             raise HTTPException(409,'Позиции плана изменились. Обновите КП из расчёта.')
         if db.get(Layer,element.layer_id).locked:
             raise HTTPException(409,'Слой позиции заблокирован. Разблокируйте его перед привязкой товара.')
@@ -610,7 +612,9 @@ def bind_product(db,pid,quote,line_id,product):
     if elements:
         from .main import remember_elements
         remember_elements(db,pid)
-        for element in elements: element.product_id=product.id
+        for element in elements:
+            if element.product_id!=product.id:element.parameters={key:value for key,value in element.parameters.items() if key!='_quotation'}
+            element.product_id=product.id
     # Product metadata follows the catalogue; the editor's room grouping stays manual.
     line.overrides=[field for field in line.overrides if field=='room']
     product_snapshot(db,line,product)
@@ -638,15 +642,18 @@ def read_quote(db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
 @router.put('/api/projects/{pid}/quotation')
 def save_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
     pid,standalone=scope
-    check_revision(db,pid,body.revision,standalone)
+    baseline=check_revision(db,pid,body.revision,standalone)
     if standalone: validate_standalone(body)
     for line in body.lines:
         if line.type_id is not None and db.get(ElementType,line.type_id) is None:
             raise HTTPException(422,'Номенклатура строки не найдена')
         if line.product_id is not None:
             product=db.get(Product,line.product_id)
-            if product is None or product.unit!=line.unit or line.type_id!=product.type_id:
+            if product is None or product.unit!=line.unit or product_type_id(db,product) is not None and line.type_id!=product.type_id:
                 raise HTTPException(422,'Товар строки не соответствует номенклатуре или единице')
+    if not standalone and body.apply_to_plan:
+        from .quote_to_plan import apply_quote_changes
+        apply_quote_changes(db,pid,body,baseline)
     persist_quote(db,pid,body,standalone);db.commit()
     return present(body,with_aliases=True)
 
@@ -731,6 +738,7 @@ def create_quote_product(body:QuoteProduct,db:DbSession=Depends(session),scope:t
         if typ is None:
             typ=ElementType(category='Рамки',name=line.name,unit='шт',color='#64748b',defaults={'quantity':1},active=True)
             db.add(typ);db.flush()
+    if typ is None and body.type_id is None:typ=catalog_type(db,None,line.unit)
     if typ is None or not typ.active: raise HTTPException(422,'Выберите действующую номенклатуру')
     name=body.name.strip();manufacturer_name=body.manufacturer.strip()
     if not name or not manufacturer_name: raise HTTPException(422,'Укажите название и производителя')

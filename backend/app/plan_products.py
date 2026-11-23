@@ -9,6 +9,8 @@ from .models import Project,Element,ElementType,Layer,Product,Quotation
 from .numbers import RussianDecimal
 from .shared_catalog import catalogue_write_guard,resolve_manufacturer,guard_product_duplicate,metadata,propagate_metadata
 
+from .catalog_types import catalog_type,product_type_id
+
 router=APIRouter()
 
 class PlanProductCreate(BaseModel):
@@ -16,7 +18,7 @@ class PlanProductCreate(BaseModel):
     name:str=Field(min_length=1,max_length=500)
     manufacturer:str=Field(min_length=1,max_length=500)
     sku:str=Field(default='',max_length=200)
-    type_id:int=Field(gt=0)
+    type_id:int|None=Field(default=None,gt=0)
     unit_price:RussianDecimal=Field(ge=0,le=1000000000,decimal_places=2,allow_inf_nan=False)
     currency:str=Field(default='RUB',pattern='^[A-Z]{3}$')
     image:str=Field(default='',max_length=300000)
@@ -110,9 +112,9 @@ def assign_plan_product(pid:int,body:PlanProductBinding,db=Depends(session),_cat
     if (body.create or body.product_id) and len(type_ids)!=1:raise HTTPException(422,'Выбраны разные объекты. Один товар можно назначить объектам одной номенклатуры. Уточните выделение.')
     product=None;changes={}
     if body.create is not None:
-        draft=body.create;typ=require(db,ElementType,draft.type_id)
+        draft=body.create;selected_kind=require(db,ElementType,next(iter(type_ids)));typ=catalog_type(db,draft.type_id,selected_kind.unit)
         if not typ.active:raise HTTPException(409,'Сначала восстановите номенклатуру в каталоге')
-        if type_ids!={typ.id}:raise HTTPException(422,'Товар не соответствует номенклатуре выбранных объектов')
+        if draft.type_id is not None and type_ids!={typ.id}:raise HTTPException(422,'Товар не соответствует номенклатуре выбранных объектов')
         try:validate_image(draft.image)
         except ValueError:raise HTTPException(422,'Не удалось прочитать фотографию. Используйте PNG, JPEG или WebP.')
         name=' '.join(draft.name.split())
@@ -133,12 +135,14 @@ def assign_plan_product(pid:int,body:PlanProductBinding,db=Depends(session),_cat
         product=require(db,Product,body.product_id)
         if not product.active:raise HTTPException(409,'Товар находится в архиве. Сначала восстановите его в каталоге.')
         typ=require(db,ElementType,next(iter(type_ids)))
-        if product.type_id!=typ.id or product.unit!=typ.unit:raise HTTPException(422,'Тип и единица товара должны соответствовать выбранным объектам')
+        if product_type_id(db,product) not in (None,typ.id) or product.unit!=typ.unit:raise HTTPException(422,'Тип и единица товара должны соответствовать выбранным объектам')
     product_id=product.id if product else None
     if db.get(Quotation,pid) is not None:sync_plan_products(db,pid,get_quote(db,pid),{item.id:product_id for item in items})
     propagate_metadata(db,changes)
     if any(item.product_id!=product_id for item in items):
         remember_elements(db,pid)
-        for item in items:item.product_id=product_id
+        for item in items:
+            if item.product_id!=product_id:item.parameters={key:value for key,value in item.parameters.items() if key!='_quotation'}
+            item.product_id=product_id
     db.commit()
     return {'updated':len(items),'product':catalog_product(db,product) if product else None}

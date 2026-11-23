@@ -84,7 +84,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     if(!newProduct?.existingId)return;
     const before=previous.products.find(item=>item.id===newProduct.existingId),after=catalogue.products.find(item=>item.id===newProduct.existingId);
     if(!before||!after)return;
-    const fields=(product:typeof before)=>({...newProduct,name:product.name,sku:product.sku,manufacturer:product.manufacturer,typeId:String(product.type_id),price:String(product.price),currency:product.currency,image:typeof product.parameters.image==='string'?product.parameters.image:''});
+    const fields=(product:typeof before)=>({...newProduct,name:product.name,sku:product.sku,manufacturer:product.manufacturer,typeId:product.type_id?String(product.type_id):'',price:String(product.price),currency:product.currency,image:typeof product.parameters.image==='string'?product.parameters.image:''});
     const old=fields(before),next=fields(after);
     try{productInitial.current=JSON.stringify(rebaseCatalogue(JSON.parse(productInitial.current),old,next));}catch{}
     setNewProduct(current=>current?.existingId===after.id?rebaseCatalogue(current,old,next):current);
@@ -123,7 +123,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     const add=(map:Map<string,SearchOption[]>,key:string,option:SearchOption)=>{const options=map.get(key)??[{value:'',label:'Без привязки к товару'}];options.push(option);map.set(key,options);};
     for(const product of catalogue.products){
       const option={value:String(product.id),label:product.name+(product.sku?' · '+product.sku:''),group:product.manufacturer,disabled:!product.active,image:typeof product.parameters.image==='string'?product.parameters.image:undefined};byId.set(product.id,option);
-      if(product.active){add(byUnit,product.unit,option);add(byType,product.unit+':'+product.type_id,option);}
+      if(product.active){add(byUnit,product.unit,option);add(byType,product.unit+':'+product.type_id,option);if(product.type_id===null)for(const type of types.filter(type=>type.unit===product.unit))add(byType,product.unit+':'+type.id,option);}
     }
     return {byUnit,byType,byId};
   },[catalogue.products]);
@@ -299,7 +299,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   }
   function editCatalogueProduct(lineId:string,id:number){
     const product=catalogue.products.find(item=>item.id===id);if(!product)return;
-    const draft={lineId,existingId:product.id,name:product.name,manufacturer:product.manufacturer,sku:product.sku,typeId:String(product.type_id),price:String(product.price),currency:product.currency,image:typeof product.parameters.image==='string'?product.parameters.image:''};
+    const draft={lineId,existingId:product.id,name:product.name,manufacturer:product.manufacturer,sku:product.sku,typeId:product.type_id?String(product.type_id):'',price:String(product.price),currency:product.currency,image:typeof product.parameters.image==='string'?product.parameters.image:''};
     productInitial.current=JSON.stringify(draft);setProductDuplicates(null);setError('');setNewProduct(draft);
   }
   async function deleteCatalogueProduct(id:number){
@@ -330,7 +330,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     if(!doc)throw Error("КП ещё не загружено");
     const issue=numberError(doc);if(issue){focusError.current=true;throw Error(issue);}
     if(!dirty)return doc;
-    const saved=await api<Quote>(base,"PUT",doc);apply(saved);return saved;
+    const saved=await api<Quote>(base,"PUT",{...doc,apply_to_plan:!standalone});apply(saved);return saved;
   }
   async function setRoomLayout(layout:'combined'|'rooms'){
     if(standalone)return;
@@ -492,7 +492,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
             <textarea aria-label={"Описание строки "+(index+1)} placeholder="Описание товара" value={line.description} disabled={busy} onChange={e=>editLine(line.id,{description:e.target.value})}/>
             </>}</details>
           </td>
-          <td><DecimalInput aria-label={"Количество строки "+(index+1)}  min=".001" max="1000000" step=".001" value={line.quantity} disabled={busy || (Boolean(line.source_key)&&line.quantity_override==null)} onChange={e=>editLine(line.id,{quantity:e.target.value,...(line.source_key?{quantity_override:e.target.value}:{})})}/>{line.source_key&&<><label className="manual-quantity"><input type="checkbox" aria-label={"Ручное количество строки "+(index+1)} checked={line.quantity_override!=null} onChange={event=>editLine(line.id,event.target.checked?{calculated_quantity:line.calculated_quantity??line.quantity,quantity_override:line.quantity}:{quantity_override:null,quantity:line.calculated_quantity??line.quantity})}/>Вручную</label><small>По плану: {line.calculated_quantity??line.quantity}</small></>}</td>
+          <td><DecimalInput aria-label={"Количество строки "+(index+1)}  min=".001" max="1000000" step=".001" value={line.quantity} disabled={busy || (Boolean(line.source_key)&&line.quantity_override==null)} onChange={e=>editLine(line.id,{quantity:e.target.value,...(line.source_key?{quantity_override:e.target.value}:{})})}/>{line.source_key&&<><label className="manual-quantity"><input type="checkbox" aria-label={"Ручное количество строки "+(index+1)} checked={line.quantity_override!=null} onChange={event=>editLine(line.id,event.target.checked?{calculated_quantity:line.calculated_quantity??line.quantity,quantity_override:line.quantity}:{quantity_override:null,quantity:line.calculated_quantity??line.quantity})}/>{standalone?"Вручную":"Изменить на плане"}</label><small>По плану: {line.calculated_quantity??line.quantity}</small></>}</td>
           <td><SearchSelect aria-label={"Единица строки "+(index+1)} value={line.unit} disabled={busy || Boolean(line.source_key) || Boolean(line.product_id)} onChange={e=>editLine(line.id,{unit:e.target.value as "шт"|"м"})}><option value="шт">шт</option><option value="м">м</option></SearchSelect></td>
           <td><DecimalInput aria-label={"Цена строки "+(index+1)}  min="0" max="1000000000" step=".01" value={line.unit_price} disabled={busy} onChange={e=>editLine(line.id,{unit_price:e.target.value})}/></td>
           <td><input aria-label={"Валюта строки "+(index+1)} maxLength={3} value={line.currency} disabled={busy} onChange={e=>editLine(line.id,{currency:e.target.value.toUpperCase()})}/></td>
@@ -539,10 +539,10 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       <h2>{newProduct.existingId?"Редактирование товара в общей базе":"Новый товар в базу"}</h2><p>{standalone ? "Товар сохранится в общем каталоге и строке КП." : "Товар сохранится в общем каталоге и будет привязан к этой строке и её объектам на плане."}</p>
       {newProduct.existingId&&!catalogue.products.find(item=>item.id===newProduct.existingId)?.active&&<p className="hint">Товар находится в архиве. Сохранение восстановит его в общей базе.</p>}
       <form onSubmit={event=>{event.preventDefault();if(!productImageBusy)void saveProductFromQuote();}}>
-        <ProductCardFields context="КП" value={newProduct} disabled={busy} makers={catalogue.manufacturers} requiredType={!doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith('frame:')} typePlaceholder={doc.lines.find(line=>line.id===newProduct.lineId)?.source_key.startsWith('frame:')?'Рамка по расчёту':'Выберите номенклатуру'} types={types.filter(type=>type.active&&type.unit===doc.lines.find(line=>line.id===newProduct.lineId)?.unit&&(!doc.lines.find(line=>line.id===newProduct.lineId)?.source_ids.length||type.id===doc.lines.find(line=>line.id===newProduct.lineId)?.type_id))} onBusyChange={setProductImageBusy} onChange={patch=>{if(['name','sku','manufacturer','typeId'].some(key=>Object.hasOwn(patch,key)))setProductDuplicates(null);setNewProduct(current=>current?{...current,...patch}:null);}}/>
+        <ProductCardFields context="КП" value={newProduct} disabled={busy} makers={catalogue.manufacturers} requiredType={false} typePlaceholder="Без номенклатуры" types={types.filter(type=>type.active&&type.unit===doc.lines.find(line=>line.id===newProduct.lineId)?.unit&&(!doc.lines.find(line=>line.id===newProduct.lineId)?.source_ids.length||type.id===doc.lines.find(line=>line.id===newProduct.lineId)?.type_id))} onBusyChange={setProductImageBusy} onChange={patch=>{if(['name','sku','manufacturer','typeId'].some(key=>Object.hasOwn(patch,key)))setProductDuplicates(null);setNewProduct(current=>current?{...current,...patch}:null);}}/>
         {error && <p role="alert" className="catalog-error">{error}</p>}
         <div className="modal-actions"><button type="button" disabled={busy||productImageBusy} onClick={closeNewProduct}>Отмена</button><button className="quote-primary" disabled={busy||productImageBusy}>{newProduct.existingId?"Сохранить товар":"Создать и привязать товар"}</button></div>
-        {productDuplicates&&<DuplicateProducts matches={productDuplicates} disabled={busy} canEdit={item=>{const line=doc.lines.find(line=>line.id===newProduct.lineId);return Boolean(line&&item.unit===line.unit&&(!line.source_ids.length||item.type_id===line.type_id));}} onEdit={id=>editCatalogueProduct(newProduct.lineId,id)} onSeparate={()=>void saveProductFromQuote(true)} onCancel={()=>setProductDuplicates(null)}/>}
+        {productDuplicates&&<DuplicateProducts matches={productDuplicates} disabled={busy} canEdit={item=>{const line=doc.lines.find(line=>line.id===newProduct.lineId);return Boolean(line&&item.unit===line.unit&&(!line.source_ids.length||(item.type_id===null||item.type_id===line.type_id)));}} onEdit={id=>editCatalogueProduct(newProduct.lineId,id)} onSeparate={()=>void saveProductFromQuote(true)} onCancel={()=>setProductDuplicates(null)}/>}
         {newProduct.existingId&&<ToolButton icon="trash" disabled={busy} onClick={()=>void deleteCatalogueProduct(newProduct.existingId!)}>Удалить товар из базы</ToolButton>}
       </form>
     </QuoteDialog>}

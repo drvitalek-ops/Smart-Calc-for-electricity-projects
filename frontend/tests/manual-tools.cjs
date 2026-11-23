@@ -62,13 +62,13 @@ const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKM
   const quote=(await(await api.get(base+'/projects/'+pid+'/quotation')).json()),index=quote.lines.findIndex(l=>l.source_ids.includes(marker.id))+1;
   const details=editor.locator('[data-quote-line]').nth(index-1).locator('details');await details.locator('summary').click();
   await editor.getByLabel('Наименование строки '+index,{exact:true}).fill('Датчик вручную в КП');await editor.getByLabel('Артикул строки '+index,{exact:true}).fill('MANUAL-41');await editor.getByLabel('Бренд строки '+index,{exact:true}).fill('Свой производитель');
-  await editor.getByLabel('Ручное количество строки '+index,{exact:true}).check();await editor.getByLabel('Количество строки '+index,{exact:true}).fill('2.5');await editor.getByLabel('Цена строки '+index,{exact:true}).fill('1200.50');
+  await editor.getByLabel('Ручное количество строки '+index,{exact:true}).check();await editor.getByLabel('Количество строки '+index,{exact:true}).fill('3');await editor.getByLabel('Цена строки '+index,{exact:true}).fill('1200.50');
   let response=page.waitForResponse(r=>r.url().endsWith('/quotation')&&r.request().method()==='PUT');await editor.getByRole('button',{name:'Сохранить КП',exact:true}).click();assert.equal((await response).status(),200);
   response=page.waitForResponse(r=>r.url().endsWith('/quotation/import')&&r.request().method()==='POST');await editor.getByRole('button',{name:'Обновить из расчёта',exact:true}).click();const refreshed=await(await response).json();
-  const edited=refreshed.lines.find(l=>l.source_ids.includes(marker.id));assert.equal(edited.name,'Датчик вручную в КП');assert.equal(edited.sku,'MANUAL-41');assert.equal(Number(edited.quantity),2.5);assert.equal(refreshed.client.totals.RUB.total,'3001.25');
+  const edited=refreshed.lines.find(l=>l.source_ids.includes(marker.id));assert.equal(edited.name,'Датчик вручную в КП');assert.equal(edited.sku,'MANUAL-41');assert.equal(Number(edited.quantity),3);assert.equal(refreshed.client.totals.RUB.total,'3601.50');
   await editor.getByRole('button',{name:'Инструмент: Оформление КП',exact:true}).click();assert.equal(await editor.locator('.quotation-table-wrap').isVisible(),false);assert.ok(await editor.locator('.quotation-brand').isVisible());
   await editor.getByRole('button',{name:'Редактировать',exact:true}).click();assert.ok(await editor.locator('.quotation-table-wrap').isVisible());
-  await editor.locator('.quotation-row-total').filter({hasText:/3\s001,25/}).waitFor();
+  await editor.locator('.quotation-row-total').filter({hasText:/3\s601,50/}).waitFor();
   await page.mouse.move(900,550);await page.screenshot({path:'/tmp/manual-quote-v41.png',fullPage:true});
   // Editing a catalogue position must keep its existing photograph and refresh
   // the open quotation's picker, without changing previously saved line prices.

@@ -2,7 +2,7 @@ import type {Catalog,Item,Kind,Project,Product} from './App';
 import type {BulkField} from './BulkEditor';
 import {appearanceKeys} from './PlanAppearance';
 import {isPowerSupply,isLedStrip} from './planDomain';
-export const categoriesMixed=(ids:number[],types:Kind[])=>new Set(ids.map(id=>types.find(t=>t.id===id)?.category??'Без категории')).size>1;
+export const categoriesMixed=(ids:(number|null)[],types:Kind[])=>new Set(ids.map(id=>types.find(t=>t.id===id)?.category??'Без категории')).size>1;
 export function productBulkFields(items:Product[],catalog:Catalog):BulkField[]{
  const field=(key:string,label:string,values:string[],extra:Partial<BulkField>={}):BulkField=>({key,label,values,...extra});
  return [field('manufacturer_id','Производитель',items.map(p=>String(p.manufacturer_id)),{type:'select',options:catalog.manufacturers.filter(m=>m.active!==false).map(m=>({value:String(m.id),label:m.name}))}),field('supplier_id','Поставщик',items.map(p=>p.supplier_id?String(p.supplier_id):''),{type:'select',emptyLabel:'Без поставщика',options:catalog.suppliers.map(s=>({value:String(s.id),label:s.name}))}),field('price','Цена',items.map(p=>String(p.price)),{type:'decimal'}),field('currency','Валюта',items.map(p=>p.currency),{maxLength:3}),field('active','Доступен для выбора',items.map(p=>p.active?'true':'false'),{type:'select',options:[{value:'true',label:'Да'},{value:'false',label:'Нет · архив'}]}),field('parameters.ip','IP',items.map(p=>String(p.parameters.ip??'')),{maxLength:16}),field('parameters.description','Описание',items.map(p=>String(p.parameters.description??'')),{maxLength:2000})];

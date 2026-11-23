@@ -3,7 +3,7 @@ import type {Box as PlanBounds} from './planGeometry';
 import {isPowerSupply} from './planDomain';
 export function planLabel(item:Item,kind?:Kind,short=false){
  const name=String(item.parameters.display_name||kind?.name||'Объект'),label=(short&&name.length>32?name.slice(0,29)+'…':name)+' #'+item.id;
- return label+(item.parameters.power_watts?' · '+item.parameters.power_watts+' Вт':'');
+ return label+(kind?.unit==='шт'&&Number(item.parameters.quantity??1)!==1?' · '+item.parameters.quantity+' шт':'')+(item.parameters.power_watts?' · '+item.parameters.power_watts+' Вт':'');
 }
 const widths=new Map<string,number>();let context:CanvasRenderingContext2D|null|undefined;
 function textWidth(text:string,size:number){

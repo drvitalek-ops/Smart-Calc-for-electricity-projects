@@ -84,7 +84,7 @@ def nomenclature_key(name):
         family=8
     elif 'подвес' in value or value=='pendant':
         family=9
-    elif 'трек' in value:
+    elif 'трек' in value or 'шинопровод' in value:
         family=10
     elif 'контроллер' in value:
         family=11

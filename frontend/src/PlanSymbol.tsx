@@ -5,7 +5,7 @@ type Parameters=Record<string,unknown>;
 export const PlanSymbol=memo(function PlanSymbol({parameters={},color='#38bdf8',radius=8,power=false,selected=false,preview=false,kind,shared=false,details=true}:{parameters?:Parameters;color?:string;radius?:number;power?:boolean;selected?:boolean;preview?:boolean;kind?:PlanKind;shared?:boolean;details?:boolean}) {
   const r=radius*Number(parameters.plan_size??1),{shape,glyph}=symbolAppearance(parameters,kind,power),icon=String(parameters.plan_icon??''),rotation=Number(parameters.plan_rotation??0);
   // Custom filled markers and the red power-supply rectangle remain explicit choices.
-  const solid=Boolean(power||parameters.plan_shape||icon),ink=solid?symbolInk(color):color,fill=solid?color:'#ffffff';
+  const solid=Boolean(power||parameters.plan_shape||icon||parameters.plan_color),ink=solid?symbolInk(color):color,fill=solid?color:'#ffffff';
   const points:Record<string,number[][]>={square:[[-1,-1],[1,-1],[1,1],[-1,1]],rectangle:[[-1.6,-.65],[1.6,-.65],[1.6,.65],[-1.6,.65]],diamond:[[0,-1.3],[1.3,0],[0,1.3],[-1.3,0]],triangle:[[0,-1.3],[1.2,1],[-1.2,1]],hexagon:Array.from({length:6},(_,i)=>[Math.cos(i*Math.PI/3),Math.sin(i*Math.PI/3)]),cross:[[-.35,-1],[.35,-1],[.35,-.35],[1,-.35],[1,.35],[.35,.35],[.35,1],[-.35,1],[-.35,.35],[-1,.35],[-1,-.35],[-.35,-.35]]};
   const detail=glyphs[glyph],outline={fill,stroke:solid?(selected?'#0f172a':'white'):color,strokeWidth:solid?1.2:1.4,vectorEffect:'non-scaling-stroke' as const};
   return <g className="editable-plan-symbol" data-glyph={glyph||'custom'} data-presentation={solid?'solid':'outline'}><g transform={`rotate(${rotation})`} strokeLinejoin="round">

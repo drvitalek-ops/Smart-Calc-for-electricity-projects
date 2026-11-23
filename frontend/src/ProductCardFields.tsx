@@ -6,7 +6,7 @@ import {ManufacturerField,type Maker} from './CatalogueFields';
 import {errorMessage} from './errors';
 import './ProductCard.css';
 export type ProductCardDraft={name:string;typeId:string;manufacturer:string;sku:string;price:string;currency:string;image:string};
-export default function ProductCardFields({value,onChange,types,makers,disabled=false,context,requiredType=true,typePlaceholder='Выберите номенклатуру',onBusyChange}:{value:ProductCardDraft;onChange:(patch:Partial<ProductCardDraft>)=>void;types:{id:number;name:string}[];makers:Maker[];disabled?:boolean;context:string;requiredType?:boolean;typePlaceholder?:string;onBusyChange?:(busy:boolean)=>void}){
+export default function ProductCardFields({value,onChange,types,makers,disabled=false,context,requiredType=false,typePlaceholder='Без номенклатуры',onBusyChange}:{value:ProductCardDraft;onChange:(patch:Partial<ProductCardDraft>)=>void;types:{id:number;name:string}[];makers:Maker[];disabled?:boolean;context:string;requiredType?:boolean;typePlaceholder?:string;onBusyChange?:(busy:boolean)=>void}){
  const [preparing,setPreparing]=useState(false),[imageBusy,setImageBusy]=useState(false),[error,setError]=useState(''),[imageGeneration,setImageGeneration]=useState(0),request=useRef(0);
  useEffect(()=>()=>{request.current++;},[]);
  useEffect(()=>{onBusyChange?.(preparing||imageBusy);return()=>onBusyChange?.(false);},[preparing,imageBusy,onBusyChange]);

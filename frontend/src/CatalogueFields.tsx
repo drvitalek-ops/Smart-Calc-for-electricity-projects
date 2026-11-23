@@ -5,7 +5,7 @@ import {refreshCatalogue} from './catalogueStore';
 import {ActionIcon} from './ToolRail';
 export const catalogueIdentity=(value:string)=>value.normalize('NFKC').trim().replace(/\s+/g,' ').toLocaleLowerCase('ru').replaceAll('ё','е');
 export type Maker={id:number;name:string;active?:boolean};
-export type DuplicateProduct={id:number;name:string;sku:string;manufacturer_id:number;type_id:number;unit:string;price:number;currency:string;active:boolean;reason:string};
+export type DuplicateProduct={id:number;name:string;sku:string;manufacturer_id:number;type_id:number|null;unit:string;price:number;currency:string;active:boolean;reason:string};
 export function duplicateProducts(error:unknown):DuplicateProduct[]|null{
   if(error instanceof ApiError&&error.data&&typeof error.data==='object'&&'code' in error.data&&error.data.code==='catalog_duplicate'&&'matches' in error.data&&Array.isArray(error.data.matches))return error.data.matches as DuplicateProduct[];
   return null;

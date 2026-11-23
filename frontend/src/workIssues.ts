@@ -15,6 +15,9 @@ export function productIssues(catalog:Catalog):Finding[]{
 }
 export function planIssues(project:Project|null,types:Kind[],catalog:Catalog):Finding[]{
  if(!project)return [];const result:Finding[]=[],kinds=new Map(types.map(t=>[t.id,t])),products=new Map(catalog.products.map(p=>[p.id,p])),elements=new Map(project.elements.map(e=>[e.id,e]));
+ const layerCounts=new Map<number,{count:number;first:number}>();
+ for(const item of project.elements){const value=layerCounts.get(item.layer_id);if(value)value.count++;else layerCounts.set(item.layer_id,{count:1,first:item.id});}
+ for(const layer of project.layers){const items=layerCounts.get(layer.id);if(layer.export||!items)continue;result.push({id:'excluded-layer'+layer.id,group:'Исключено из расчёта',title:layer.name+' · позиций: '+items.count,detail:'У слоя отключено включение в ведомость и КП. В разделе «Слои» включите флажок «Включение в ведомость», чтобы эти объекты учитывались.',targetId:items.first});}
  for(const page of project.pages)if(!page.meters_per_point)result.push({id:'scale'+page.id,group:'Нет масштаба',title:page.name||'Лист '+page.number,detail:'Задайте калибровочный отрезок в миллиметрах, прежде чем измерять линии. Длина LED-ленты будет рассчитана в метрах.',pageId:page.id});
  for(const item of project.elements){const kind=kinds.get(item.type_id),product=products.get(item.product_id??0),title='№ '+item.id+' · '+(String(item.parameters.display_name||kind?.name||'Неизвестный объект'));
   const add=(group:string,detail:string)=>result.push({id:group+item.id,group,title,detail,targetId:item.id});

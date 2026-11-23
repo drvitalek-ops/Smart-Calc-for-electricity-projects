@@ -85,16 +85,15 @@ def test_merging_plan_groups_does_not_merge_negotiated_prices_or_duplicate_manua
         assert Decimal(line['quantity'])==(Decimal('9') if old['quantity_override'] else calculated)
 
 
-def test_new_unlinked_types_and_manual_quotes_remain_independent(client):
+def test_new_plan_types_are_added_and_attached_manual_quotes_remain_independent(client):
     pid,body=setup(client);ok(client.post(f'/api/projects/{pid}/elements',json=body))
     path=f'/api/projects/{pid}/quotation';quote=ok(client.get(path))
     kinds=ok(client.get('/api/types'));kind=next(item for item in kinds if item['name']=='Люстра')
     project=ok(client.get(f'/api/projects/{pid}'));layer=next(item for item in project['layers'] if item['name']=='Освещение')
     ok(client.post(f'/api/projects/{pid}/elements',json={**body,'layer_id':layer['id'],'type_id':kind['id'],'parameters':{'quantity':3,'ip':20}}))
     first=ok(client.get(path));second=ok(client.get(path))
-    assert first==second and len(first['lines'])==1
-    # Adding new nomenclature to the CP remains an explicit action.
-    assert first['lines'][0]['type_id']==body['type_id']
+    assert first==second and len(first['lines'])==2
+    assert {line['type_id'] for line in first['lines']}=={body['type_id'],kind['id']}
     standalone=ok(client.post('/api/quotations',json={}))
     document=standalone['quotation'];document['lines']=[{'id':'manual','name':'Своя позиция','quantity':'13','unit_price':'100'}]
     saved=ok(client.put('/api/quotations/'+str(standalone['id']),json=document))

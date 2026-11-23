@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Literal
+from typing import Literal, Annotated
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request, Query
 from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
@@ -155,6 +155,9 @@ class QuoteInput(BaseModel):
     style:QuoteStyle=Field(default_factory=QuoteStyle)
     revision: int = Field(default=0,ge=0)
     room_layout:Literal['combined','rooms','legacy']='combined'
+    plan_sync:bool|None=None
+    plan_snapshot_ids:list[Annotated[int,Field(gt=0)]]|None=Field(default=None,max_length=100000)
+    excluded_plan_ids:list[Annotated[int,Field(gt=0)]]=Field(default_factory=list,max_length=100000)
     number: str = Field(default='',max_length=100)
     date: str = Field(default_factory=lambda:date.today().isoformat(),pattern=r'^\d{4}-\d{2}-\d{2}$')
     title: str = Field(default='Коммерческое предложение',min_length=1,max_length=300)
@@ -282,6 +285,7 @@ def quote_scope(request:Request):
 
 
 def validate_standalone(quote):
+    quote.plan_sync=False;quote.plan_snapshot_ids=[];quote.excluded_plan_ids=[]
     if any(line.source_ids or line.source_key for line in quote.lines):
         raise HTTPException(422,'Самостоятельное КП не может содержать привязки к плану')
 
@@ -432,6 +436,8 @@ def import_lines(db,pid,quote):
             elif len(matches)>1:
                 if any(candidate.quantity_override is not None for candidate in matches):
                     raise HTTPException(409,'Позиции с ручным количеством объединяются. Снимите галочки «Вручную» перед обновлением: '+row['name'][:100])
+                if len({(candidate.unit_price,candidate.currency) for candidate in matches})>1:
+                    raise HTTPException(409,'Объединяются строки с разными ценами или валютами. Укажите одинаковые условия перед обновлением КП.')
                 if len({candidate.discount for candidate in matches})>1:
                     raise HTTPException(409,'Объединяются строки с разными скидками. Укажите одинаковые скидки перед обновлением КП.')
                 old=matches[0].model_copy(deep=True)
@@ -463,24 +469,57 @@ def import_lines(db,pid,quote):
                 setattr(line,field,getattr(old,field))
         if row.get('custom_name'): line.name=row['name']
         if old:
+            if old.unit==line.unit:line.unit_price=old.unit_price;line.currency=old.currency
             for field in old.overrides: setattr(line,field,getattr(old,field))
         lines.append(line)
     lines.extend(line for line in quote.lines if not line.source_key)
     lines.sort(key=lambda line:order_hints.get(line.id,previous_order.get(line.id,len(quote.lines))))
     if len(lines)>5000: raise HTTPException(422,'В КП больше 5000 строк')
     quote.lines=lines
+    quote.plan_sync=True;quote.excluded_plan_ids=[]
+    quote.plan_snapshot_ids=sorted({eid for line in lines for eid in line.source_ids})
     return quote
 
 
-def sync_plan_quantities(db,pid,quote,*,update_signatures=False):
-    """Derive linked quantities from the plan without changing saved commercial terms.
+def _new_plan_line(db,pid,row,ids,quantity,used):
+    from .report_export import parameters_text
+    signature=source_signature(row);seed=f'{pid}:{signature}';nonce=0
+    line_id='plan-'+hashlib.sha256(seed.encode()).hexdigest()
+    while line_id in used:
+        nonce+=1;line_id='plan-'+hashlib.sha256(f'{seed}:{nonce}:{ids}'.encode()).hexdigest()
+    used.add(line_id)
+    line=QuoteLine(id=line_id,source_key=source_key({'element_ids':ids}),source_signature=signature,
+        source_ids=ids,type_id=row.get('type_id'),name=row['product'] or row['name'],room=row['room'],
+        ip=str(json.loads(row['parameters']).get('ip','')),quantity=quantity,calculated_quantity=quantity,
+        unit=row['unit'],unit_price=money(row['unit_price']),product_id=row['product_id'],sku=row['sku'],
+        manufacturer=row['manufacturer'],description=parameters_text(row['parameters'])[:2000],currency=row['currency'])
+    if row['product_id']:product_snapshot(db,line,db.get(Product,row['product_id']))
+    if row.get('custom_name'):line.name=row['name']
+    return line
 
-    Existing rows keep their identity even when report groups split or merge. This
-    avoids guessing which manual price/discount wins. A read does not rewrite the
-    saved quote, so deleting and undoing plan objects also restores their terms.
+
+def sync_plan_quantities(db,pid,quote,*,update_signatures=False):
+    """Follow existing sources and add new plan objects without replacing terms.
+
+    A snapshot of sources actually shown to the editor distinguishes deliberate
+    row removal from a stale editor that has never seen newly placed objects.
+    Reads remain derived, so plan undo can restore saved commercial conditions.
     """
+    if quote.plan_snapshot_ids is None:
+        stored=db.get(Quotation,pid)
+        if stored:
+            previous=stored.content
+            quote.plan_snapshot_ids=previous.get('plan_snapshot_ids')
+            if quote.plan_snapshot_ids is None:quote.plan_snapshot_ids=sorted({eid for line in previous.get('lines',[]) for eid in line.get('source_ids',[])})
+            quote.excluded_plan_ids=sorted(set(quote.excluded_plan_ids)|set(previous.get('excluded_plan_ids',[])))
+            if quote.plan_sync is None:quote.plan_sync=previous.get('plan_sync')
     linked=[line for line in quote.lines if line.source_key]
-    if not linked:return quote
+    if quote.plan_sync is None:quote.plan_sync=bool(linked) or not quote.lines
+    if not quote.plan_sync:return quote
+    represented={eid for line in linked for eid in line.source_ids}
+    excluded=set(quote.excluded_plan_ids)
+    if quote.plan_snapshot_ids is not None:excluded.update(set(quote.plan_snapshot_ids)-represented)
+    excluded.difference_update(represented);quote.excluded_plan_ids=sorted(excluded)
     from .quotation_rooms import calculated_rows
     rows=calculated_rows(db,pid,quote.room_layout)
     elements={item.id:item for item in db.scalars(select(Element).where(Element.project_id==pid))}
@@ -489,30 +528,35 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False):
     signatures={}
     for line in linked:
         if line.source_signature:signatures.setdefault(line.source_signature,[]).append(line)
-    quantities={};sources={};current_signatures={}
+    quantities={};sources={};current_signatures={};new_rows=[]
     def add(line,value,ids,signature):
         quantities[line.id]=quantities.get(line.id,Decimal(0))+value
         sources.setdefault(line.id,[]).extend(ids)
         current_signatures.setdefault(line.id,set()).add(signature)
+    def amount(ids,unit):
+        key='length' if unit=='м' else 'quantity'
+        return sum((Decimal(str(elements[eid].parameters.get(key,0 if key=='length' else 1))) for eid in ids),Decimal(0)).quantize(Decimal('.001'),rounding=ROUND_HALF_UP)
     for row in rows:
-        ids=row.get('element_ids',[]);signature=source_signature(row)
-        if not ids:
+        signature=source_signature(row)
+        if not row.get('element_ids'):
+            # Frame rows retain their existing explicit import/removal behavior.
             old=frames.get(source_key(row))
             if old:add(old,Decimal(str(row['quantity'])),[],signature)
             continue
+        ids=[eid for eid in row['element_ids'] if eid not in excluded]
+        if not ids:continue
         matches={owners[eid].id:owners[eid] for eid in ids if eid in owners and owners[eid].unit==row['unit'] and owners[eid].type_id in (None,row['type_id'])}
         if not matches and len(signatures.get(signature,[]))==1:
             old=signatures[signature][0];matches[old.id]=old
-        partitions={}
+        partitions={};unassigned=[]
         for eid in ids:
             owner=owners.get(eid)
             if owner and owner.id not in matches:owner=None
             if owner is None and len(matches)==1:owner=next(iter(matches.values()))
             if owner is not None:partitions.setdefault(owner.id,[]).append(eid)
-        def amount(ids):
-            key='length' if row['unit']=='м' else 'quantity'
-            return sum((Decimal(str(elements[eid].parameters.get(key,0 if key=='length' else 1))) for eid in ids),Decimal(0)).quantize(Decimal('.001'),rounding=ROUND_HALF_UP)
-        for line_id,part in partitions.items():add(matches[line_id],amount(part),part,signature)
+            else:unassigned.append(eid)
+        for line_id,part in partitions.items():add(matches[line_id],amount(part,row['unit']),part,signature)
+        if unassigned:new_rows.append((row,unassigned,amount(unassigned,row['unit'])))
     updated=[]
     for original in quote.lines:
         if not original.source_key:updated.append(original);continue
@@ -526,12 +570,17 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False):
         effective=line.quantity_override if line.quantity_override is not None else quantity
         if line.quantity!=effective:line.quantity=Decimal(str(float(effective)))
         updated.append(line)
+    used={line.id for line in updated}
+    for row,ids,quantity in new_rows:
+        if quantity>0:updated.append(_new_plan_line(db,pid,row,ids,quantity,used))
     if len(updated)>5000:raise HTTPException(422,'В КП больше 5000 строк')
     quote.lines=updated
     from .quotation_prices import inherit_prices
     inherit_prices(quote)
     from .plan_products import sync_plan_products
-    return sync_plan_products(db,pid,quote)
+    sync_plan_products(db,pid,quote)
+    quote.plan_snapshot_ids=sorted({eid for line in quote.lines for eid in line.source_ids})
+    return quote
 
 
 def bind_product(db,pid,quote,line_id,product):
@@ -749,6 +798,9 @@ class SkuLine(BaseModel):
 
 
 class SkuInput(BaseModel):
+    plan_sync:bool|None=None
+    plan_snapshot_ids:list[Annotated[int,Field(gt=0)]]|None=Field(default=None,max_length=100000)
+    excluded_plan_ids:list[Annotated[int,Field(gt=0)]]=Field(default_factory=list,max_length=100000)
     room_layout:Literal['combined','rooms','legacy']|None=None
     number:str=Field(default='',max_length=100)
     lines:list[SkuLine]=Field(min_length=1,max_length=5000)
@@ -777,7 +829,7 @@ def draft_sku(body:SkuInput,db:DbSession=Depends(session),scope:tuple=Depends(qu
     # Build a price-free document: financial fields and images are never read.
     stored=db.get(StandaloneQuotation if standalone else Quotation,pid)
     layout=body.room_layout or (stored.content.get('room_layout','legacy') if stored else 'combined')
-    quote=QuoteInput(number=body.number,room_layout=layout,lines=[QuoteLine.model_validate(line.model_dump()) for line in body.lines])
+    quote=QuoteInput(number=body.number,room_layout=layout,plan_sync=body.plan_sync,plan_snapshot_ids=body.plan_snapshot_ids,excluded_plan_ids=body.excluded_plan_ids,lines=[QuoteLine.model_validate(line.model_dump()) for line in body.lines])
     if standalone:validate_standalone(quote)
     else:sync_plan_quantities(db,pid,quote)
     return sku_file(quote)
@@ -802,6 +854,8 @@ def backup_quote(db,pid):
 
 def restore_quote(db,pid,payload,type_map,product_map,element_map):
     quote=QuoteInput.model_validate({'room_layout':'legacy',**payload,'revision':0})
+    if quote.plan_snapshot_ids is not None:quote.plan_snapshot_ids=sorted({element_map[eid].id for eid in quote.plan_snapshot_ids if eid in element_map})
+    quote.excluded_plan_ids=sorted({element_map[eid].id for eid in quote.excluded_plan_ids if eid in element_map})
     for line in quote.lines:
         # Partial project imports remap type/product IDs used in the signature.
         line.source_signature=''

@@ -470,10 +470,10 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
-    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.60 используйте копию данных до обновления.</p></div></div>
+    <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.61 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.60" target="_blank" rel="noreferrer">Открыть релиз v1.0.60</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.61" target="_blank" rel="noreferrer">Открыть релиз v1.0.61</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div id="settings-transfer" tabIndex={-1} className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -486,8 +486,9 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
     </div></div>
   </AppModal>;
 }
-function NomenclatureEditor({types,categories=[],onChanged,onDirtyChange,onBusyChange}:{types:Kind[];categories?:Category[];onChanged:()=>Promise<void>;onDirtyChange?:(dirty:boolean)=>void;onBusyChange?:(busy:boolean)=>void}) {
+function NomenclatureEditor({types,categories=[],onChanged,onDirtyChange,onBusyChange,onCreateProduct}:{types:Kind[];categories?:Category[];onChanged:()=>Promise<void>;onDirtyChange?:(dirty:boolean)=>void;onBusyChange?:(busy:boolean)=>void;onCreateProduct?:(kind:Kind)=>void}) {
   const empty=()=>({id:0,name:"",category:"Электроустановки",unit:"шт",color:"#f97316",wet_min_ip:"",defaults:{quantity:1} as Record<string,unknown>});
+  const [createdKind,setCreatedKind]=useState<Kind|null>(null);
   const [form,setForm]=useState(empty), [search,setSearch]=useState(""), [showDeleted,setShowDeleted]=useState(false),
     [groupFilter,setGroupFilter]=useState(""),
     [message,setMessage]=useState(""), [error,setError]=useState(""), [saving,setSaving]=useState(false), [parameter,setParameter]=useState("ip");
@@ -503,13 +504,14 @@ function NomenclatureEditor({types,categories=[],onChanged,onDirtyChange,onBusyC
   const visible=types.filter(item => (item.active || showDeleted) && (!groupFilter || (item.group ?? item.category)===groupFilter) && `${item.name} ${item.category} ${item.group ?? ""}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
   return <section className="nomenclature-manager" aria-label="Управление номенклатурой">
     {message && <p className="catalog-success" role="status">{message}</p>}
+    {createdKind&&onCreateProduct&&<div className="catalog-success"><p>Номенклатура доступна на плане и учитывается в КП. Чтобы добавить модель с производителем, ценой и фотографией в общую базу, заполните карточку товара.</p><ToolButton type="button" icon="catalog" disabled={saving} onClick={()=>onCreateProduct(createdKind)}>Создать товар для {createdKind.name}</ToolButton></div>}
     {error && <p className="catalog-error" role="alert">{error}</p>}
     <div className="nomenclature-grid">
       <form className="nomenclature-form" onSubmit={event => {
         event.preventDefault();void work(async()=> {
           const body={...form,wet_min_ip:form.wet_min_ip ? Number(form.wet_min_ip) : null,active:true};
-          await api(form.id ? `/types/${form.id}` : "/types",form.id ? "PUT" : "POST",body);
-          await onChanged();setForm(empty());setMessage(form.id ? "Позиция сохранена" : "Позиция добавлена");
+          const saved=await api<Kind>(form.id ? `/types/${form.id}` : "/types",form.id ? "PUT" : "POST",body);
+          await onChanged();setCreatedKind(form.id?null:saved);setForm(empty());setMessage(form.id ? "Позиция сохранена" : "Позиция добавлена в номенклатуру");
         });
       }}>
         <h3>{form.id ? "Редактирование позиции" : "Новая позиция"}</h3>
@@ -524,6 +526,7 @@ function NomenclatureEditor({types,categories=[],onChanged,onDirtyChange,onBusyC
         <button type="button" onClick={()=>setForm({...form,defaults:{...form.defaults,[parameter]:form.defaults[parameter] ?? (["quantity","length","ip","voltage","keys","power_watts","connectors","end_caps"].includes(parameter) ? 1 : "")}})}>Добавить характеристику</button>
         <button className="primary" disabled={saving}>{form.id ? "Сохранить позицию" : "Добавить позицию"}</button>
         {form.id>0 && <button type="button" onClick={()=>setForm(empty())}>Отменить редактирование позиции</button>}
+        {original&&onCreateProduct&&<ToolButton type="button" icon="catalog" disabled={saving||dirty||!original.active} onClick={()=>onCreateProduct(original)}>Создать товар для {original.name}</ToolButton>}
         <p className="hint">Название и цвет обновляются во всех проектах. Для используемой позиции категория и единица измерения защищены.</p>
       </form>
       <div className="nomenclature-list">
@@ -678,7 +681,7 @@ function CatalogManager({
           <button aria-label="Категории" aria-pressed={tab==="categories"} className={tab==="categories"?"active":""} onClick={()=>setTab('categories')}><ActionIcon name="layers"/><span>Категории</span><small aria-hidden="true">{catalog.categories?.length??0}</small></button>
         </nav>
         <div className="catalog-page catalog-page-categories" hidden={tab!=='categories'}><CategoryEditor categories={catalog.categories??[]} onChanged={onChanged} onDirtyChange={setCategoryDirty} onBusyChange={setCategoryBusy}/></div>
-        <div className="catalog-page catalog-page-types" hidden={tab!=='types'}><NomenclatureEditor types={types} categories={catalog.categories} onChanged={onChanged} onDirtyChange={setTypeDirty} onBusyChange={setTypeBusy}/></div>
+        <div className="catalog-page catalog-page-types" hidden={tab!=='types'}><NomenclatureEditor types={types} categories={catalog.categories} onChanged={onChanged} onDirtyChange={setTypeDirty} onBusyChange={setTypeBusy} onCreateProduct={kind=>{if(productDirty&&!confirm('В карточке товара есть несохранённые изменения. Открыть новую карточку?'))return;setDuplicates(null);setForm({...blank,name:kind.name,type_id:kind.id});setProductManufacturer(catalog.manufacturers.find(item=>item.id===blank.manufacturer_id)?.name??'');setDatabaseSearch('');setTab('products');setLocalError('');setMessage('Заполните карточку товара: производитель, артикул, цена и фото. Она будет доступна в общей базе, на плане и в КП.');requestAnimationFrame(()=>document.querySelector<HTMLInputElement>('.catalog-page-products .product-editor input[aria-label="Название"]')?.focus());}}/></div>
         <div className="catalog-page catalog-page-products" hidden={tab!=='products'}>
         <label>Поиск в базе<input type="search" aria-label="Поиск в базе товаров" placeholder="Название, артикул, производитель, категория…" value={databaseSearch} onChange={event=>setDatabaseSearch(event.target.value)}/></label>
         <details className="catalog-admin" open={adminOpen} onToggle={event=>{if(event.currentTarget.open!==adminOpen)setAdminOpen(event.currentTarget.open);}}><summary>Справочники и импорт CSV</summary>
@@ -3964,7 +3967,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.61</span>
+        <span>SMART HOME CALC / 1.0.62</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

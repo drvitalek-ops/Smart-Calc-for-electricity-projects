@@ -789,13 +789,16 @@ def delete_category(category_id:int,db:DbSession=Depends(session)):
 def catalog(db: DbSession = Depends(session)):
     manufacturers=[data(item) for item in db.scalars(select(Manufacturer).order_by(Manufacturer.name))]
     suppliers=[data(item) for item in db.scalars(select(Supplier).order_by(Supplier.name))]
-    maker_names={item['id']:item['name'] for item in manufacturers}
-    supplier_names={item['id']:item['name'] for item in suppliers}
-    kinds={item.id:item for item in db.scalars(select(ElementType))}
     products=[]
-    for product in db.scalars(select(Product).order_by(Product.name)):
-        products.append({**data(product),'type_id':None if untyped_kind(kinds.get(product.type_id)) else product.type_id,'manufacturer':maker_names.get(product.manufacturer_id,''),
-            'supplier':supplier_names.get(product.supplier_id,'')})
+    # Read each product and its metadata in one statement: a concurrent insert
+    # must not expose a hidden type ID or an empty manufacturer name.
+    rows=db.execute(select(Product,ElementType,Manufacturer.name,Supplier.name)
+        .join(ElementType,Product.type_id==ElementType.id)
+        .join(Manufacturer,Product.manufacturer_id==Manufacturer.id)
+        .outerjoin(Supplier,Product.supplier_id==Supplier.id).order_by(Product.name))
+    for product,kind,maker_name,supplier_name in rows:
+        products.append({**data(product),'type_id':None if untyped_kind(kind) else product.type_id,
+            'manufacturer':maker_name,'supplier':supplier_name or ''})
     return {'manufacturers':manufacturers,'suppliers':suppliers,'products':products,'categories':category_rows(db)}
 
 @app.post('/api/manufacturers',status_code=201)

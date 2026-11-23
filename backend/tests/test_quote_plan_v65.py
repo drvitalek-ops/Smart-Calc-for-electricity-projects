@@ -81,3 +81,25 @@ def test_newly_derived_quote_row_can_update_its_unsaved_plan_group(client):
     saved=ok(client.put(path,json=quote))
     assert saved['lines'][0]['quantity_override'] is None
     assert ok(client.get(f'/api/projects/{pid}'))['elements'][0]['parameters']['length']==9
+
+
+def test_catalog_reads_new_product_and_its_optional_type_together(client):
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
+    from app.db import engine
+    from app.models import ElementType,Product,Manufacturer
+    inserted=[]
+    def insert_before_products(connection,cursor,statement,parameters,context,executemany):
+        if inserted or not statement.lstrip().upper().startswith('SELECT') or 'FROM products' not in statement:return
+        inserted.append(True)
+        with Session(engine) as db:
+            kind=ElementType(name='Без номенклатуры · шт',category='Прочее',unit='шт',color='#64748b',seed_key='catalog-untyped:шт',defaults={'_catalog_untyped':True},active=True)
+            maker=Manufacturer(name='Параллельный завод',active=True)
+            db.add_all([kind,maker]);db.flush()
+            db.add(Product(name='Создан во время чтения каталога',sku='',manufacturer_id=maker.id,type_id=kind.id,unit='шт',price=100,currency='RUB',parameters={},active=True));db.commit()
+    event.listen(engine,'before_cursor_execute',insert_before_products)
+    try:catalog=ok(client.get('/api/catalog'))
+    finally:event.remove(engine,'before_cursor_execute',insert_before_products)
+    assert inserted and len(catalog['products'])==1
+    assert catalog['products'][0]['type_id'] is None
+    assert catalog['products'][0]['manufacturer']=='Параллельный завод'

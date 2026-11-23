@@ -131,6 +131,7 @@ jobs:
           node frontend/tests/russian-errors.cjs
           node frontend/tests/sku-word.cjs
           node frontend/tests/quotation-room-layout.cjs
+          node frontend/tests/quotation-grouping.cjs
           node frontend/tests/quotation-export-prices.cjs
           node frontend/tests/popup-drag-scroll.cjs
           node frontend/tests/audit-fixes.cjs

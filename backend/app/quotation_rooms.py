@@ -14,8 +14,10 @@ def calculated_rows(db,pid,layout):
     grouped={}
     for original in rows:
         room=original['room'] if layout=='rooms' else ''
-        row={**original,'room':room}
-        key=json.dumps({key:value for key,value in row.items() if key not in ('element_ids','quantity','total')},ensure_ascii=False,sort_keys=True)
+        parameters=json.loads(original['parameters']);parameters.pop('led_strip',None)
+        row={**original,'room':room,'parameters':json.dumps(parameters,ensure_ascii=False,sort_keys=True)}
+        identity={'room':room,'product_id':row['product_id'],'unit':row['unit'],'custom_name':row['name'] if row.get('custom_name') else ''} if row['product_id'] else {key:value for key,value in row.items() if key not in ('element_ids','quantity','total')}
+        key=json.dumps(identity,ensure_ascii=False,sort_keys=True)
         if key not in grouped:grouped[key]={**row,'element_ids':[],'quantity':Decimal(0)}
         group=grouped[key];group['element_ids'].extend(row.get('element_ids',[]));group['quantity']+=Decimal(str(row['quantity']))
     result=[]

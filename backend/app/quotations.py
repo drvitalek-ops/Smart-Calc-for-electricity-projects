@@ -11,7 +11,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal, Annotated
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request, Query
 from fastapi.responses import StreamingResponse, Response
-from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 from .db import session
@@ -151,6 +151,7 @@ class QuoteStyle(BaseModel):
 
 
 class QuoteInput(BaseModel):
+    _merged_line_ids:dict[str,str]=PrivateAttr(default_factory=dict)
     model_config=ConfigDict(validate_default=True)
     style:QuoteStyle=Field(default_factory=QuoteStyle)
     revision: int = Field(default=0,ge=0)
@@ -234,13 +235,15 @@ def get_quote(db,pid,standalone=False):
         stored=db.get(StandaloneQuotation,pid)
         if stored is None: raise HTTPException(404,'Самостоятельное КП не найдено')
         from .quotation_prices import inherit_prices
-        return inherit_prices(QuoteInput.model_validate({'room_layout':'legacy',**stored.content,'revision':stored.revision}))
+        from .quotation_grouping import merge_identical_lines
+        return merge_identical_lines(inherit_prices(QuoteInput.model_validate({'room_layout':'legacy',**stored.content,'revision':stored.revision})))
     project=require_project(db,pid)
     stored=db.get(Quotation,pid)
     if stored is None:
         return QuoteInput(number=str(pid),title='Коммерческое предложение',customer=project.name)
     from .quotation_prices import inherit_prices
-    return inherit_prices(sync_plan_quantities(db,pid,QuoteInput.model_validate({'room_layout':'legacy',**stored.content,'revision':stored.revision})))
+    from .quotation_grouping import merge_identical_lines
+    return merge_identical_lines(inherit_prices(sync_plan_quantities(db,pid,QuoteInput.model_validate({'room_layout':'legacy',**stored.content,'revision':stored.revision}))))
 
 
 def check_revision(db,pid,revision,standalone=False):
@@ -259,6 +262,8 @@ def persist_quote(db,pid,quote,standalone=False):
     if not standalone:sync_plan_quantities(db,pid,quote,update_signatures=True)
     from .quotation_prices import inherit_prices
     inherit_prices(quote)
+    from .quotation_grouping import merge_identical_lines
+    merge_identical_lines(quote)
     payload=quote.model_dump(mode='json',exclude={'revision'})
     if stored is None:
         if standalone: raise HTTPException(409,'Самостоятельное КП было удалено')
@@ -378,10 +383,12 @@ def totals(quote,mode):
     return {'lines':rows,'totals':{code:{key:str(value) for key,value in sums.items()} for code,sums in currencies.items()}}
 
 
-def present(quote):
+def present(quote,*,with_aliases=False):
     from .quotation_prices import inherit_prices
     inherit_prices(quote)
-    return {**quote.model_dump(mode='json'),'client':totals(quote,'client'),'partner':totals(quote,'partner')}
+    result={**quote.model_dump(mode='json'),'client':totals(quote,'client'),'partner':totals(quote,'partner')}
+    if with_aliases and quote._merged_line_ids:result['merged_line_ids']=quote._merged_line_ids
+    return result
 
 
 def product_snapshot(db,line,product):
@@ -498,7 +505,7 @@ def _new_plan_line(db,pid,row,ids,quantity,used):
     return line
 
 
-def sync_plan_quantities(db,pid,quote,*,update_signatures=False):
+def sync_plan_quantities(db,pid,quote,*,update_signatures=False,coalesce=True):
     """Follow existing sources and add new plan objects without replacing terms.
 
     A snapshot of sources actually shown to the editor distinguishes deliberate
@@ -579,6 +586,9 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False):
     inherit_prices(quote)
     from .plan_products import sync_plan_products
     sync_plan_products(db,pid,quote)
+    if coalesce:
+        from .quotation_grouping import merge_identical_lines
+        merge_identical_lines(quote)
     quote.plan_snapshot_ids=sorted({eid for line in quote.lines for eid in line.source_ids})
     return quote
 
@@ -638,7 +648,7 @@ def save_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends
             if product is None or product.unit!=line.unit or line.type_id!=product.type_id:
                 raise HTTPException(422,'Товар строки не соответствует номенклатуре или единице')
     persist_quote(db,pid,body,standalone);db.commit()
-    return present(body)
+    return present(body,with_aliases=True)
 
 
 @router.post('/api/quotations/{qid}/calculate')
@@ -655,6 +665,8 @@ def preview_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depe
     pid,standalone=scope
     get_quote(db,pid,standalone)
     if standalone: validate_standalone(body)
+    from .quotation_grouping import merge_identical_lines
+    merge_identical_lines(body)
     return present(body)
 
 
@@ -756,6 +768,8 @@ def preview_document(body:QuoteInput,mode:Literal['client','partner']='client',d
     if db.get(StandaloneQuotation if standalone else Project,pid) is None: raise HTTPException(404,"КП или проект не найден")
     if standalone: validate_standalone(body)
     else:sync_plan_quantities(db,pid,body)
+    from .quotation_grouping import merge_identical_lines
+    merge_identical_lines(body)
     from .quotation_prices import inherit_prices
     inherit_prices(body)
     from .quotation_cache import quotation_pdf
@@ -770,6 +784,8 @@ def preview_page(body:QuoteInput,mode:Literal['client','partner']='client',page:
     if db.get(StandaloneQuotation if standalone else Project,pid) is None: raise HTTPException(404,'КП или проект не найден')
     if standalone: validate_standalone(body)
     else:sync_plan_quantities(db,pid,body)
+    from .quotation_grouping import merge_identical_lines
+    merge_identical_lines(body)
     from .quotation_prices import inherit_prices
     inherit_prices(body)
     from .quotation_cache import quotation_page
@@ -778,6 +794,7 @@ def preview_page(body:QuoteInput,mode:Literal['client','partner']='client',page:
 
 
 class SkuLine(BaseModel):
+    room:str=Field(default='',max_length=500)
     manufacturer:str=Field(default='',max_length=500)
     id:str=Field(min_length=1,max_length=80)
     name:str=Field(min_length=1,max_length=500)
@@ -831,7 +848,7 @@ def draft_sku(body:SkuInput,db:DbSession=Depends(session),scope:tuple=Depends(qu
     layout=body.room_layout or (stored.content.get('room_layout','legacy') if stored else 'combined')
     quote=QuoteInput(number=body.number,room_layout=layout,plan_sync=body.plan_sync,plan_snapshot_ids=body.plan_snapshot_ids,excluded_plan_ids=body.excluded_plan_ids,lines=[QuoteLine.model_validate(line.model_dump()) for line in body.lines])
     if standalone:validate_standalone(quote)
-    else:sync_plan_quantities(db,pid,quote)
+    else:sync_plan_quantities(db,pid,quote,coalesce=False)
     return sku_file(quote)
 
 

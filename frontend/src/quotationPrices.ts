@@ -1,9 +1,10 @@
 import {decimalValue} from './DecimalInput';
-type Item={id:string;name:string;sku:string;manufacturer:string;description:string;ip?:string;product_id:number|null;type_id:number|null;unit:string;currency:string;unit_price:string;image:string};
+type Item={id:string;name:string;sku:string;manufacturer:string;description:string;ip?:string;product_id:number|null;type_id:number|null;unit:string;currency:string;unit_price:string;image:string;source_ids?:number[];overrides?:string[]};
 const folded=(value:string)=>value.trim().replace(/\s+/g,' ').toLocaleLowerCase('ru').replaceAll('ё','е');
 export function priceIdentity(line:Item){
  const common=[line.unit,line.currency];
- return JSON.stringify(line.sku.trim()?['sku',folded(line.sku),folded(line.manufacturer),...common]:line.product_id?['product',line.product_id,...common]:['position',line.type_id,folded(line.name),folded(line.manufacturer),folded(line.description),folded(line.ip??'').replace(/^ip\s*/,''),...common]);
+ const description=line.source_ids?.length&&!line.overrides?.includes('description')?line.description.split('\n').filter(part=>!part.startsWith('Питает ленты: ')).join('\n'):line.description;
+ return JSON.stringify(line.sku.trim()?['sku',folded(line.sku),folded(line.manufacturer),...common]:line.product_id?['product',line.product_id,...common]:['position',line.type_id,folded(line.name),folded(line.manufacturer),folded(description),folded(line.ip??'').replace(/^ip\s*/,''),...common]);
 }
 export function priceConflicts(lines:Item[]){
  const prices=new Map<string,Set<number>>();

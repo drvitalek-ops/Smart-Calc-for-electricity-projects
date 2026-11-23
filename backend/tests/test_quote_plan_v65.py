@@ -62,6 +62,9 @@ def test_track_nomenclature_calibrated_polyline_and_components(client):
     power=next(t for t in types if t['name']=='Блок питания трека')
     ok(client.post(f'/api/projects/{pid}/elements',json={**base,'layer_id':layer['id'],'type_id':power['id'],'parameters':{'quantity':1,'power_watts':100}}))
     quote=ok(client.get(f'/api/projects/{pid}/quotation'));assert len(quote['lines'])==2
+    quote['apply_to_plan']=True;line=next(line for line in quote['lines'] if line['type_id']==track['id']);line['quantity_override']='8'
+    quote=ok(client.put(f'/api/projects/{pid}/quotation',json=quote))
+    assert 'manual_length' not in ok(client.get(f'/api/projects/{pid}'))['elements'][0]['parameters']
     quote['apply_to_plan']=True;line=next(line for line in quote['lines'] if line['type_id']==track['id']);line.update(quantity='10',quantity_override='10')
     ok(client.put(f'/api/projects/{pid}/quotation',json=quote));actual=ok(client.get(f'/api/projects/{pid}'))['elements'][0]
     assert actual['geometry']==item['geometry'] and actual['parameters']['length']==10 and actual['parameters']['manual_length']==10

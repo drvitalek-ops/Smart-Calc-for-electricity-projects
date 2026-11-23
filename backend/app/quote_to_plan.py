@@ -58,6 +58,10 @@ def apply_quote_changes(db,pid,quote,baseline=None):
         quantity=line.quantity_override is not None and any(Decimal(str(row.get('quantity_override') or 0))!=line.quantity_override for row in old)
         if not quantity and line.quantity_override is None and line.calculated_quantity is not None:
             quantity=line.quantity!=line.calculated_quantity and any(Decimal(str(row['quantity']))!=line.quantity for row in old)
+        if quantity:
+            key='length' if line.unit=='м' else 'quantity'
+            actual=sum((Decimal(str(item.parameters.get(key,0 if key=='length' else 1))) for item in items),Decimal(0))
+            if actual==line.quantity:line.quantity_override=None;line.calculated_quantity=actual;quantity=False
         amounts=allocate(line.quantity,items,line.unit) if quantity else None
         fields={key:getattr(line,key) for key in commercial if changed(key)}
         for index,item in enumerate(items):

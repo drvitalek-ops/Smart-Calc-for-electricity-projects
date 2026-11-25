@@ -20,7 +20,7 @@ def canonical(value):
     if isinstance(value,dict):
         # Plan synchronization metadata is new in v62. Older applications ignore
         # it; compare all actual rows, sources and commercial terms unchanged.
-        result={key:canonical(item) for key,item in value.items() if key not in ('source_signature','room_layout','plan_sync','plan_snapshot_ids','excluded_plan_ids') and not (key in ('comment','ip') and item=='' or key=='hidden_groups' and item==[] or key=='active' and item is True and set(value).issubset({'id','name','active'}) or key=='style' and item in ({},{'font':'Golos','table_scale':1,'colors':{}}))}
+        result={key:canonical(item) for key,item in value.items() if key not in ('source_signature','room_layout','plan_sync','plan_snapshot_ids','excluded_plan_ids','plan_frame_snapshot_keys','excluded_frame_keys') and not (key in ('comment','ip') and item=='' or key=='hidden_groups' and item==[] or key=='active' and item is True and set(value).issubset({'id','name','active'}) or key=='style' and item in ({},{'font':'Golos','table_scale':1,'colors':{}}))}
         # v46 intentionally replaces the old identical yellow fixture defaults.
         seed=result.get('seed_key') or ''
         if result.get('category')=='Освещение' and seed.startswith('Освещение:') and str(result.get('color','')).lower()=='#facc15':

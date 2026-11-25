@@ -93,6 +93,11 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const [expandedRows,setExpandedRows]=useState<ReadonlySet<string>>(new Set());
   const [draggedId,setDraggedId]=useState<string|null>(null),[dropTarget,setDropTarget]=useState<{id:string;after:boolean}|null>(null);
   const dragSource=useRef<string|null>(null),dragY=useRef<number|null>(null),tableWrap=useRef<HTMLDivElement>(null);
+  useEffect(()=>{
+    const wrap=tableWrap.current,head=wrap?.querySelector('thead');if(!wrap||!head)return;
+    const measure=()=>wrap.style.setProperty('--quotation-table-head-height',head.getBoundingClientRect().height+'px');
+    measure();const observer=new ResizeObserver(measure);observer.observe(head);return()=>observer.disconnect();
+  },[quoteTool,preview,Boolean(doc)]);
   const normalizeRoom=(value:string)=>value.trim()==='Без помещения'?'':value.trim();
   const roomChoices=useMemo(()=>[...new Set([...(doc?.lines.map(line=>normalizeRoom(line.room))??[]),...rooms.map(room=>normalizeRoom(room.name))])].filter(Boolean),[doc?.lines,rooms]);
   const grouped=Boolean(doc?.lines.some(line=>normalizeRoom(line.room)));
@@ -295,7 +300,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   }
   function jumpToError(issue:QuoteNumberIssue){
     if(issue.id!==undefined&&issue.index!==undefined)jumpToLine(issue.id,issue.index,issue.field);
-    else {chooseQuoteTool('details');requestAnimationFrame(()=>document.querySelector<HTMLInputElement>('[aria-label="Общая скидка КП"]')?.focus());}
+    else {chooseQuoteTool('positions');requestAnimationFrame(()=>{const input=document.querySelector<HTMLInputElement>('[aria-label="Общая скидка КП"]');input?.scrollIntoView({block:'nearest',inline:'nearest'});input?.focus({preventScroll:true});});}
   }
   function editCatalogueProduct(lineId:string,id:number){
     const product=catalogue.products.find(item=>item.id===id);if(!product)return;
@@ -423,7 +428,10 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   return <section className="quotation-editor quote-workspace" aria-label="Редактор коммерческого предложения">
     <ToolRail label="Инструменты коммерческого предложения" active={quoteTool} onSelect={chooseQuoteTool} items={tools}/>
     <div className="quotation-content" data-tool={quoteTool}>
-    <div className="quotation-heading"><div><div className="eyebrow">КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div><h2><span className="quote-document-icon" aria-hidden="true"><ActionIcon name="pdf"/></span>КП № {doc.number}</h2><p>{projectName} · {tools.find(tool=>tool.id===quoteTool)?.label}</p><div className="quotation-status" role="status"><StatusBadge tone={busy?"info":dirty?"warning":"success"}>{busy ? "Сохранение…" : dirty ? "Есть несохранённые изменения" : "КП сохранено"}{calculating ? " · Пересчёт итогов…" : ""}</StatusBadge></div></div><div className="quotation-switch">
+    <div className="quotation-heading"><div><div className="eyebrow">КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ</div><h2><span className="quote-document-icon" aria-hidden="true"><ActionIcon name="pdf"/></span>КП № {doc.number}</h2><p>{projectName} · {tools.find(tool=>tool.id===quoteTool)?.label}</p><div className="quotation-status" role="status"><StatusBadge tone={busy?"info":dirty?"warning":"success"}>{busy ? "Сохранение…" : dirty ? "Есть несохранённые изменения" : "КП сохранено"}{calculating ? " · Пересчёт итогов…" : ""}</StatusBadge></div></div><div className="quotation-client-fields" role="group" aria-label="Данные клиента КП">
+      <label>Имя клиента<input aria-label="Клиент КП" maxLength={2000} disabled={busy} value={doc.customer} onChange={e=>change(q=>({...q,customer:e.target.value}))}/></label>
+      <label>Контакт клиента<input aria-label="Контакт клиента КП" maxLength={2000} disabled={busy} value={doc.contact} onChange={e=>change(q=>({...q,contact:e.target.value}))}/></label>
+    </div><div className="quotation-switch">
       <label>Цены<SearchSelect aria-label="Цены предпросмотра КП" value={mode} onChange={event=>setMode(event.target.value as "client"|"partner")}><option value="partner">Партнёр — со скидками</option><option value="client">Клиент — без скидок</option></SearchSelect></label>
     <details className="quotation-help"><summary>Справка по КП</summary><div><p>Количество связанных позиций обновляется из плана при открытии, сохранении и экспорте. «Вручную» сохраняет заданное вами количество.</p><p>Пустая скидка строки использует общую. Индивидуальная скидка, включая 0%, заменяет общую. В клиентском PDF скидки отключены.</p><p>Ctrl+Z — отмена правки. Ctrl+↑/↓ на маркере строки — перемещение позиции.</p></div></details>
     </div></div>
@@ -450,9 +458,6 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
         <label>Номер КП<input aria-label="Номер КП" maxLength={100} value={doc.number} onChange={e=>change(q=>({...q,number:e.target.value}))}/></label>
         <label>Дата<input aria-label="Дата КП" type="date" value={doc.date} onChange={e=>change(q=>({...q,date:e.target.value}))}/></label>
         <label>Срок действия, дней<input aria-label="Срок действия КП" type="number" min="1" max="365" value={doc.valid_days} onChange={e=>change(q=>({...q,valid_days:Number(e.target.value)}))}/></label>
-        <label>Общая скидка, %<DecimalInput aria-label="Общая скидка КП"  min="0" max="100" step=".01" value={doc.global_discount} onChange={e=>change(q=>({...q,global_discount:e.target.value}))}/></label>
-        <label>Кому<input aria-label="Клиент КП" value={doc.customer} onChange={e=>change(q=>({...q,customer:e.target.value}))}/></label>
-        <label>Контакт клиента<input aria-label="Контакт клиента КП" value={doc.contact} onChange={e=>change(q=>({...q,contact:e.target.value}))}/></label>
       </fieldset>
 
 
@@ -465,7 +470,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       </div>}
       {quoteTool==='positions'&&<>{bulkLines.length>0&&<div className="bulk-selection-tools"><span className="bulk-selection-count">Выбрано: {bulkLines.length}</span>{bulkLines.length>0&&<button type="button" onClick={()=>setSelectedLineIds(new Set())}>Снять выделение позиций КП</button>}</div>}{bulkLines.length>0&&<BulkEditor key={base} count={bulkLines.length} fields={bulkFields} mixed={bulkMixed} busy={busy} onApply={applyQuoteProperties} onIssuesChange={setQuoteBulkIssues} onDirtyChange={setQuoteBulkDirty}/>}</>}
       {quoteTool==='positions'&&<div className="quotation-positions-body">
-      <div ref={tableWrap} className="quotation-table-wrap"><table className="quotation-table"><thead><tr><th><label className="quote-select-all" title={"Выбрать все найденные позиции · "+filteredLines.length}><input type="checkbox" aria-label="Выбрать все найденные позиции КП" checked={Boolean(filteredLines.length)&&filteredLines.every(({line})=>selectedLineIds.has(line.id))} disabled={busy} onChange={event=>{const checked=event.target.checked;setSelectedLineIds(current=>{const next=new Set(current);for(const {line} of filteredLines)if(checked)next.add(line.id);else next.delete(line.id);return next;});}}/>Позиция / товар</label></th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Валюта</th><th>Скидка, %</th><th>Сумма</th><th></th></tr></thead>
+      <div ref={tableWrap} className="quotation-table-wrap"><table className="quotation-table"><thead><tr><th><label className="quote-select-all" title={"Выбрать все найденные позиции · "+filteredLines.length}><input type="checkbox" aria-label="Выбрать все найденные позиции КП" checked={Boolean(filteredLines.length)&&filteredLines.every(({line})=>selectedLineIds.has(line.id))} disabled={busy} onChange={event=>{const checked=event.target.checked;setSelectedLineIds(current=>{const next=new Set(current);for(const {line} of filteredLines)if(checked)next.add(line.id);else next.delete(line.id);return next;});}}/>Позиция / товар</label></th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Валюта</th><th className="quotation-discount-heading"><label className="quotation-global-discount" title="Применяется к строкам без индивидуальной скидки. В PDF для клиента скидки отключены."><span className="quotation-discount-label">Скидка, %<small>Общая</small></span><DecimalInput aria-label="Общая скидка КП" disabled={busy} min="0" max="100" step=".01" value={doc.global_discount} onChange={e=>change(q=>({...q,global_discount:e.target.value}))}/></label></th><th>Сумма</th><th></th></tr></thead>
         <tbody>{visibleLines.map(({line,index},visibleIndex)=>{
           const group=normalizeRoom(line.room),showGroup=grouped&&(visibleIndex===0||normalizeRoom(visibleLines[visibleIndex-1].line.room)!==group);
           return <Fragment key={line.id}>{showGroup&&<tr data-quote-group={group}><th colSpan={8}><span>{group||'Без помещения'}</span></th></tr>}

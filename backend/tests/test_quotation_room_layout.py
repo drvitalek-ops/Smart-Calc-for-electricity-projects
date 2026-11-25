@@ -2,6 +2,7 @@
 from decimal import Decimal
 import io
 import pymupdf
+import pytest
 from docx import Document
 from test_workflow import client,setup
 from app import main
@@ -185,3 +186,86 @@ def test_all_plan_categories_distribute_like_specification_without_lights_or_soc
     old=ok(client.get(path));redistributed=ok(client.post(path+'/room-layout',json={'revision':old['revision'],'layout':'rooms'}))
     assert {(line['type_id'],line['room']):(Decimal(line['quantity']),line['unit'],set(line['source_ids'])) for line in redistributed['lines']}==expected
     assert redistributed['partner']['totals']==saved['partner']['totals']
+
+
+def test_frames_created_after_quote_appear_in_rooms_and_export(client):
+    pid,base,room,items=scene(client);path=f'/api/projects/{pid}/quotation'
+    quote=ok(client.get(path));assert not any(line['source_key'].startswith('frame:') for line in quote['lines'])
+    for item in items[2:4]:
+        ok(client.post(f'/api/projects/{pid}/frames',json={'element_ids':[item['id']],'posts':1}))
+    expected={row['room']:Decimal(str(row['quantity'])) for row in ok(client.get(f'/api/projects/{pid}/report'))['rows'] if row['category']=='Рамки'}
+    split=ok(client.post(path+'/room-layout',json={'revision':quote['revision'],'layout':'rooms'}))
+    frames=[line for line in split['lines'] if line['source_key'].startswith('frame:')]
+    assert {line['room']:Decimal(line['quantity']) for line in frames}==expected
+    assert sum(Decimal(line['quantity']) for line in frames)==2
+    assert ok(client.get(path))==split
+    for mode in ('client','partner'):
+        response=client.get(path+'/export.pdf?mode='+mode);assert response.is_success
+        with pymupdf.open(stream=response.content,filetype='pdf') as pdf:
+            assert 'Рамка на 1 пост' in ''.join(page.get_text() for page in pdf)
+    combined=ok(client.post(path+'/room-layout',json={'revision':split['revision'],'layout':'combined'}))
+    assert sum(Decimal(line['quantity']) for line in combined['lines'] if line['source_key'].startswith('frame:'))==2
+
+
+def test_new_room_frames_keep_existing_terms_and_new_sizes_are_separate(client):
+    pid,base,room,items=scene(client);path=f'/api/projects/{pid}/quotation'
+    ok(client.post(f'/api/projects/{pid}/frames',json={'element_ids':[items[2]['id']],'posts':1}))
+    quote=ok(client.get(path));frame=next(line for line in quote['lines'] if line['source_key'].startswith('frame:'))
+    quote=ok(client.post(path+'/product',json={'revision':quote['revision'],'line_id':frame['id'],'name':'Рамка заказная','manufacturer':'Завод','sku':'FRAME-1','unit_price':'250'}))
+    frame=next(line for line in quote['lines'] if line['source_key'].startswith('frame:'));frame.update(discount='10',comment='Согласованная рамка')
+    quote=ok(client.put(path,json=quote));quote=ok(client.post(path+'/room-layout',json={'revision':quote['revision'],'layout':'rooms'}))
+    ok(client.post(f'/api/projects/{pid}/frames',json={'element_ids':[items[3]['id']],'posts':1}))
+    pair=[ok(client.post(f'/api/projects/{pid}/elements',json={**items[2],'x':.4+i*.1})) for i in range(2)]
+    ok(client.post(f'/api/projects/{pid}/frames',json={'element_ids':[e['id'] for e in pair],'posts':2}))
+    current=ok(client.get(path));frames=[line for line in current['lines'] if line['source_key'].startswith('frame:')]
+    singles=[line for line in frames if line['source_key'].endswith(':Рамка на 1 пост')]
+    assert len(singles)==2 and {line['room'] for line in singles}=={'Ванная','Кухня'}
+    assert all(line['sku']=='FRAME-1' and Decimal(line['unit_price'])==250 and Decimal(line['discount'])==10 and line['comment']=='Согласованная рамка' for line in singles)
+    double=next(line for line in frames if line['source_key'].endswith(':Рамка на 2 поста'))
+    assert Decimal(double['quantity'])==1 and Decimal(double['unit_price'])==0 and double['product_id'] is None
+    assert current['client']['totals']['RUB']['total']=='500.00' and current['partner']['totals']['RUB']['total']=='450.00'
+    assert ok(client.get(path))==current
+
+
+def test_frame_omission_survives_layout_changes_exports_and_transfer(client):
+    pid,base,room,items=scene(client);path=f'/api/projects/{pid}/quotation'
+    for item in items[2:4]:ok(client.post(f'/api/projects/{pid}/frames',json={'element_ids':[item['id']],'posts':1}))
+    quote=ok(client.get(path));quote=ok(client.post(path+'/room-layout',json={'revision':quote['revision'],'layout':'rooms'}))
+    quote['lines']=[line for line in quote['lines'] if not (line['source_key'].startswith('frame:') and line['room']=='Кухня')]
+    quote=ok(client.put(path,json=quote))
+    assert quote['excluded_frame_keys']==['frame:Кухня:Рамка на 1 пост']
+    for layout in ('combined','rooms','combined','rooms'):
+        quote=ok(client.post(path+'/room-layout',json={'revision':quote['revision'],'layout':layout}))
+        frames=[line for line in quote['lines'] if line['source_key'].startswith('frame:')]
+        assert sum(Decimal(line['quantity']) for line in frames)==1
+        if layout=='rooms':assert [line['room'] for line in frames]==['Ванная']
+    archive=client.get(f'/api/projects/{pid}/backup');copy=ok(client.post('/api/projects/import',files={'file':('copy.zip',archive.content,'application/zip')}))
+    copied=ok(client.get('/api/projects/'+str(copy['id'])+'/quotation'))
+    assert copied['excluded_frame_keys']==quote['excluded_frame_keys']
+    assert sum(Decimal(line['quantity']) for line in copied['lines'] if line['source_key'].startswith('frame:'))==1
+    # Removing the last frame in an unsaved draft must also affect both exports.
+    quote['lines']=[line for line in quote['lines'] if not line['source_key'].startswith('frame:')]
+    response=client.post(path+'/preview.pdf?mode=client',json=quote);assert response.is_success,response.text
+    with pymupdf.open(stream=response.content,filetype='pdf') as pdf:assert 'Рамка на' not in ''.join(page.get_text() for page in pdf)
+    response=client.post(path+'/sku.docx',json=quote);assert response.is_success,response.text
+    assert not any('Рамка на' in cell.text for row in Document(io.BytesIO(response.content)).tables[0].rows for cell in row.cells)
+    assert any(line['source_key'].startswith('frame:') for line in ok(client.get(path))['lines'])
+    # Explicit reimport restores omissions, unlike switching display modes.
+    restored=ok(client.post(path+'/import',json={'revision':quote['revision']}))
+    assert restored['excluded_frame_keys']==[]
+    assert sum(Decimal(line['quantity']) for line in restored['lines'] if line['source_key'].startswith('frame:'))==2
+
+
+@pytest.mark.parametrize('layout',['combined','rooms','legacy'])
+def test_old_quotes_recover_missing_frame_rows(client,layout):
+    pid,base,room,items=scene(client);path=f'/api/projects/{pid}/quotation'
+    for item in items[2:4]:ok(client.post(f'/api/projects/{pid}/frames',json={'element_ids':[item['id']],'posts':1}))
+    ok(client.get(path))
+    with main.Session() as db:
+        stored=db.get(main.Quotation,pid)
+        content={key:value for key,value in stored.content.items() if key not in ('plan_frame_snapshot_keys','excluded_frame_keys')}
+        content['room_layout']=layout;content['lines']=[line for line in content['lines'] if not line['source_key'].startswith('frame:')]
+        stored.content=content;db.commit()
+    quote=ok(client.get(path));assert sum(Decimal(line['quantity']) for line in quote['lines'] if line['source_key'].startswith('frame:'))==2
+    split=ok(client.post(path+'/room-layout',json={'revision':quote['revision'],'layout':'rooms'}))
+    assert {line['room']:Decimal(line['quantity']) for line in split['lines'] if line['source_key'].startswith('frame:')}=={'Ванная':Decimal(1),'Кухня':Decimal(1)}

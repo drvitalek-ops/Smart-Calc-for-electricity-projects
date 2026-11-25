@@ -9,21 +9,42 @@ from .models import Element
 
 def calculated_rows(db,pid,layout):
     from .main import report_rows
+    from .quotations import source_key
     rows=[row for row in report_rows(db,pid)['rows'] if row['quantity']>0]
+    rows=[{**row,'frame_quantities':{source_key(row):row['quantity']}} if row['category']=='Рамки' and not row.get('element_ids') else row for row in rows]
     if layout=='legacy':return rows
     grouped={}
     for original in rows:
         room=original['room'] if layout=='rooms' else ''
         parameters=json.loads(original['parameters']);parameters.pop('led_strip',None)
         row={**original,'room':room,'parameters':json.dumps(parameters,ensure_ascii=False,sort_keys=True)}
-        identity={'room':room,'product_id':row['product_id'],'unit':row['unit'],'custom_name':row['name'] if row.get('custom_name') else ''} if row['product_id'] else {key:value for key,value in row.items() if key not in ('element_ids','quantity','total')}
+        identity={'room':room,'product_id':row['product_id'],'unit':row['unit'],'custom_name':row['name'] if row.get('custom_name') else ''} if row['product_id'] else {key:value for key,value in row.items() if key not in ('element_ids','quantity','total','frame_quantities')}
         key=json.dumps(identity,ensure_ascii=False,sort_keys=True)
-        if key not in grouped:grouped[key]={**row,'element_ids':[],'quantity':Decimal(0)}
+        if key not in grouped:grouped[key]={**row,'element_ids':[],'quantity':Decimal(0),**({'frame_quantities':{}} if 'frame_quantities' in row else {})}
         group=grouped[key];group['element_ids'].extend(row.get('element_ids',[]));group['quantity']+=Decimal(str(row['quantity']))
+        if 'frame_quantities' in row:group['frame_quantities'].update(row['frame_quantities'])
     result=[]
     for row in grouped.values():
         row['element_ids']=sorted(row['element_ids']);row['quantity']=float(row['quantity'].quantize(Decimal('.001'),rounding=ROUND_HALF_UP))
         row['total']=round(row['quantity']*row['unit_price'],2);result.append(row)
+    return result
+
+
+def represented_frames(lines,keys):
+    """Physical room keys stay stable when the CP switches display modes."""
+    frames={line.source_key for line in lines if line.source_key.startswith('frame:') and not line.source_ids}
+    return {key for key in keys if key in frames or 'frame::'+key.rsplit(':',1)[-1] in frames}
+
+
+def filter_frames(rows,excluded):
+    result=[]
+    for row in rows:
+        if 'frame_quantities' in row:
+            quantities={key:value for key,value in row['frame_quantities'].items() if key not in excluded}
+            if not quantities:continue
+            quantity=float(sum((Decimal(str(value)) for value in quantities.values()),Decimal(0)))
+            row={**row,'frame_quantities':quantities,'quantity':quantity,'total':round(quantity*row['unit_price'],2)}
+        result.append(row)
     return result
 
 
@@ -39,7 +60,7 @@ def regroup_quote(db,pid,quote,target):
         quote.room_layout=target;inherit_prices(quote)
     linked=[line for line in quote.lines if line.source_key]
     if not linked:raise HTTPException(422,'Сначала добавьте позиции с плана кнопкой «Обновить из расчёта»')
-    rows=calculated_rows(db,pid,target)
+    rows=filter_frames(calculated_rows(db,pid,target),set(quote.excluded_frame_keys))
     owners={eid:line for line in linked for eid in line.source_ids}
     frames=defaultdict(list)
     for line in linked:

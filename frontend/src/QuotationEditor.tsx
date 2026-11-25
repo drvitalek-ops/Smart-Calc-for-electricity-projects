@@ -32,7 +32,7 @@ type Prices = {lines:(Line & {total:string;base_total:string;discount_amount:str
   totals:Record<string,{base:string;discount:string;total:string}>};
 type Quote = {
   merged_line_ids?:Record<string,string>;
-  style?:QuoteStyle;revision:number;plan_sync?:boolean|null;plan_snapshot_ids?:number[]|null;excluded_plan_ids?:number[]; room_layout?:'combined'|'rooms'|'legacy'; number:string; date:string; title:string; seller:string; customer:string;
+  style?:QuoteStyle;revision:number;plan_sync?:boolean|null;plan_snapshot_ids?:number[]|null;excluded_plan_ids?:number[];plan_frame_snapshot_keys?:string[]|null;excluded_frame_keys?:string[]; room_layout?:'combined'|'rooms'|'legacy'; number:string; date:string; title:string; seller:string; customer:string;
   contact:string; terms:string; global_discount:string; lines:Line[];
   city:string;phone:string;email:string;website:string;address:string;slogan:string;valid_days:number;
   tax_note:string;logo:string;benefits:{title:string;text:string}[];
@@ -362,7 +362,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       const current=docRef.current;if(!current?.lines.length)throw Error('Добавьте позиции для выгрузки в Word');
       const issues=current.lines.flatMap((line,index)=>{const issue=decimalIssue(line.quantity,.001,1000000,3,true);return issue?['Строка КП № '+(index+1)+' — Количество: '+issue]:[];});
       if(issues.length){focusError.current=true;throw Error(issues.slice(0,50).join('; '));}
-      const payload={number:current.number,room_layout:current.room_layout,plan_sync:current.plan_sync,plan_snapshot_ids:current.plan_snapshot_ids,excluded_plan_ids:current.excluded_plan_ids,lines:current.lines.map(({id,name,manufacturer,room,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override})=>({id,name,manufacturer,room,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override}))};
+      const payload={number:current.number,room_layout:current.room_layout,plan_sync:current.plan_sync,plan_snapshot_ids:current.plan_snapshot_ids,excluded_plan_ids:current.excluded_plan_ids,plan_frame_snapshot_keys:current.plan_frame_snapshot_keys,excluded_frame_keys:current.excluded_frame_keys,lines:current.lines.map(({id,name,manufacturer,room,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override})=>({id,name,manufacturer,room,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override}))};
       const response=await apiFetch('/api'+base+'/sku.docx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');
       link.href=url;link.download='SKU-КП-'+(current.number||'без-номера').replace(/[^a-zа-яё0-9_-]/gi,'-')+'.docx';

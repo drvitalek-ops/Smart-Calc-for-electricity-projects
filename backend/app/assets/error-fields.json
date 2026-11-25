@@ -135,5 +135,7 @@
   "existing_product_id": "Товар в общей базе",
   "product_ids": "Выбранные товары",
   "changes": "Изменяемые свойства",
-  "create": "Новый товар"
+  "create": "Новый товар",
+  "plan_frame_snapshot_keys": "Рамки, показанные в КП",
+  "excluded_frame_keys": "Исключённые рамки"
 }

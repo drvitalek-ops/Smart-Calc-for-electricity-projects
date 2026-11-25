@@ -23,6 +23,19 @@ const frontend=process.env.FRAME_TEST_FRONTEND||'http://127.0.0.1:5174',backend=
  await actions.getByRole('button',{name:'Объединить помещения',exact:true}).click();await waitUntil(async()=>await rows.count()===1,'Combine room rows');
  quote=await checked(await api.get(base+`/projects/${pid}/quotation`));assert.equal(quote.room_layout,'combined');assert.equal(quote.lines[0].room,'');assert.equal(Number(quote.lines[0].quantity),5);assert.equal(quote.partner.totals.RUB.total,'450.00');
  await page.reload();await page.getByLabel('Проект',{exact:true}).selectOption(String(pid));await page.getByRole('button',{name:'КП',exact:true}).click();await actions.waitFor();assert.equal(await rows.count(),1);assert.ok((await actions.textContent()).includes('Общее КП'));
+ // Frames formed after this quote was saved must join both the editor and room totals.
+ const socket=types.find(t=>t.name==='Розетка одинарная');
+ for(let i=0;i<2;i++){
+  const item=await checked(await api.post(base+`/projects/${pid}/elements`,{data:{...body,type_id:socket.id,layer_id:data.layers.find(l=>l.name===socket.category).id,room_id:rooms[i].id,x:.2+i*.4,y:.6,parameters:{quantity:1,ip:20}}}));
+  await checked(await api.post(base+`/projects/${pid}/frames`,{data:{element_ids:[item.id],posts:1}}));
+ }
+ await actions.getByRole('button',{name:'Распределить по помещениям',exact:true}).click();await waitUntil(async()=>await rows.count()===6,'Late frames and sockets appear in both rooms');
+ quote=await checked(await api.get(base+`/projects/${pid}/quotation`));
+ let frameLines=quote.lines.filter(line=>line.source_key.startsWith('frame:'));assert.deepEqual(frameLines.map(line=>[line.room,Number(line.quantity)]),[['Кухня',1],['Спальня',1]]);
+ for(const line of frameLines){const n=quote.lines.findIndex(item=>item.id===line.id)+1;assert.equal(await editor.getByLabel('Наименование строки '+n,{exact:true}).inputValue(),'Рамка на 1 пост');await editor.getByLabel('Цена строки '+n,{exact:true}).fill('250');await editor.getByLabel('Скидка строки '+n,{exact:true}).fill('10');}
+ await editor.getByRole('button',{name:'Сохранить изменения КП',exact:true}).click();await waitUntil(async()=>{const saved=await checked(await api.get(base+`/projects/${pid}/quotation`));return saved.lines.filter(line=>line.source_key.startsWith('frame:')).every(line=>Number(line.unit_price)===250&&Number(line.discount)===10);},'Frame commercial terms saved');
+ await actions.getByRole('button',{name:'Объединить помещения',exact:true}).click();await waitUntil(async()=>await rows.count()===3,'Frames combine without disappearing');quote=await checked(await api.get(base+`/projects/${pid}/quotation`));frameLines=quote.lines.filter(line=>line.source_key.startsWith('frame:'));assert.equal(frameLines.length,1);assert.equal(Number(frameLines[0].quantity),2);assert.equal(Number(frameLines[0].unit_price),250);assert.equal(quote.partner.totals.RUB.total,'900.00');
+ await actions.getByRole('button',{name:'Распределить по помещениям',exact:true}).click();await waitUntil(async()=>await rows.count()===6,'Frame rooms restored');
  // Room distribution must also work when the plan contains no lighting or EUI.
  const other=await checked(await api.post(base+'/projects',{data:{name:'LED and supplies '+Date.now()}})),otherId=other.id;
  const otherPages=await checked(await api.post(base+`/projects/${otherId}/pdf`,{multipart:{file:{name:'other.pdf',mimeType:'application/pdf',buffer:blankPdf()}}})),otherPlan=await checked(await api.get(base+`/projects/${otherId}`));
@@ -43,5 +56,5 @@ const frontend=process.env.FRAME_TEST_FRONTEND||'http://127.0.0.1:5174',backend=
  for(const [typeId,room,quantity,id]of expected){const line=quote.lines.find(l=>l.source_ids.includes(id));assert.ok(line);assert.equal(line.type_id,typeId);assert.equal(line.room,room);assert.equal(Number(line.quantity),quantity);assert.equal(Number(line.unit_price),100);assert.equal(Number(line.discount),10);}
  assert.ok((await editor.textContent()).includes('Все связанные позиции распределены'));assert.ok(!quote.lines.some(l=>l.room==='Общие позиции'));
  await actions.getByRole('button',{name:'Объединить помещения',exact:true}).click();await waitUntil(async()=>await rows.count()===3,'Combine non-EUI rows');assert.equal((await checked(await api.get(base+`/projects/${otherId}/quotation`))).partner.totals.RUB.total,'810.00');
- assert.deepEqual(errors,[]);console.log('PASS: combined CP, one-click room distribution for lighting, tape, power supplies and profiles, exact quantities/metres, preserved prices/discounts/brand, reverse action and persistence');
+ assert.deepEqual(errors,[]);console.log('PASS: combined CP, one-click room distribution for lighting, tape, power supplies and profiles, exact quantities/metres, late frames and their prices/discounts, preserved brand, reverse action and persistence');
 }finally{await browser.close();}})().catch(error=>{console.error(error);process.exitCode=1;});

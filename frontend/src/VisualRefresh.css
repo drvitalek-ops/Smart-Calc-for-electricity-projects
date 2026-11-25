@@ -507,3 +507,18 @@
 .app-shell .report-head>div:last-child{display:none}
 .app-shell .sheet{box-shadow:none}
 .app-shell .viewport{background:white}}
+/* Frequently edited CP fields stay in the working area. PDF styles are separate. */
+.app-shell .quote-workspace .quotation-heading{display:grid;grid-template-columns:minmax(220px,1fr) minmax(290px,420px) auto;align-items:center;gap:12px}
+.app-shell .quotation-client-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;min-width:0}
+.app-shell .quotation-client-fields>label{display:grid;gap:3px;margin:0;min-width:0;font-size:10px;color:var(--ds-color-muted)}
+.app-shell .quotation-client-fields input{width:100%;min-width:0;min-height:30px;margin:0;padding:5px 8px;font-size:12px;background:var(--ds-color-surface);border-color:var(--ds-color-border)}
+.app-shell .quote-workspace .quotation-table-wrap{--quotation-table-head-height:44px;scroll-padding-top:calc(var(--quotation-table-head-height) + 8px)}
+.app-shell .quote-workspace .quotation-table thead th{height:44px}
+.app-shell .quote-workspace [data-quote-group]>th{top:var(--quotation-table-head-height)}
+.app-shell .quotation-discount-label{display:grid;gap:1px;white-space:nowrap}.app-shell .quotation-global-discount small{font-size:9px;font-weight:500;line-height:11px}
+.app-shell .quotation-global-discount{display:flex;align-items:center;gap:6px;margin:0;font-size:10px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--ds-color-label)}
+.app-shell .quote-workspace .quotation-table .quotation-global-discount input{width:60px;min-width:0;min-height:26px;margin:0;font-size:12px}
+@media(max-width:1000px){.app-shell .quote-workspace .quotation-heading{grid-template-columns:minmax(0,1fr) auto}.app-shell .quotation-client-fields{grid-column:1/-1;grid-row:2}}
+@media(max-width:600px){.app-shell .quote-workspace .quotation-heading{grid-template-columns:minmax(0,1fr)}.app-shell .quotation-client-fields{grid-row:auto;grid-template-columns:minmax(0,1fr)}.app-shell .quote-workspace .quotation-heading>.quotation-switch{grid-column:1;min-width:0}}
+
+.app-shell .quotation-global-discount>.decimal-field{width:60px;flex:none;white-space:normal}

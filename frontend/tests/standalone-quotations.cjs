@@ -36,7 +36,7 @@ const backend=process.env.FRAME_TEST_BACKEND||'http://127.0.0.1:8014';
   await editor.getByRole('status').filter({hasText:'Товар создан в каталоге'}).waitFor();
   await editor.getByRole('button',{name:'Инструмент: Реквизиты и условия',exact:true}).click();await editor.getByLabel('Номер КП',{exact:true}).fill('STANDALONE-39');
   await editor.getByRole('button',{name:'Инструмент: Реквизиты и условия',exact:true}).click();await editor.getByLabel('Клиент КП',{exact:true}).fill('Новый клиент');
-  await editor.getByRole('button',{name:'Инструмент: Реквизиты и условия',exact:true}).click();await editor.getByLabel('Общая скидка КП',{exact:true}).fill('15');
+  await editor.getByRole('button',{name:'Редактировать',exact:true}).click();await editor.getByLabel('Общая скидка КП',{exact:true}).fill('15');
   await editor.getByRole('button',{name:'Редактировать',exact:true}).click();await editor.getByLabel('Скидка строки 1',{exact:true}).fill('10');
   const saved=page.waitForResponse(r=>r.url().includes('/api/quotations/')&&r.request().method()==='PUT');
   await editor.getByRole('button',{name:'Сохранить КП',exact:true}).click();const doc=await(await saved).json();

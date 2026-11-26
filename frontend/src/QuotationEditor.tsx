@@ -16,7 +16,7 @@ import SearchInput from "./SearchInput";
 import {quotationColors,quotationColor,type QuoteStyle} from "./quotationTheme";
 import QuotationPreview from "./QuotationPreview";
 import ToolRail, {ActionIcon,ToolButton, type ToolItem} from "./ToolRail";
-import SearchSelect,{matchesSearch,type SearchOption} from "./SearchSelect";
+import SearchSelect,{matchesSearch,matchesArticle,type SearchOption} from "./SearchSelect";
 import usePreference from "./usePreference";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import "./QuotationEditor.css";
@@ -127,16 +127,16 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     const byUnit=new Map<string,SearchOption[]>(),byType=new Map<string,SearchOption[]>(),byId=new Map<number,SearchOption>();
     const add=(map:Map<string,SearchOption[]>,key:string,option:SearchOption)=>{const options=map.get(key)??[{value:'',label:'Без привязки к товару'}];options.push(option);map.set(key,options);};
     for(const product of catalogue.products){
-      const option={value:String(product.id),label:product.name+(product.sku?' · '+product.sku:''),group:product.manufacturer,disabled:!product.active,image:typeof product.parameters.image==='string'?product.parameters.image:undefined};byId.set(product.id,option);
+      const option={value:String(product.id),label:product.name+(product.sku?' · '+product.sku:''),group:product.manufacturer,sku:product.sku,disabled:!product.active,image:typeof product.parameters.image==='string'?product.parameters.image:undefined};byId.set(product.id,option);
       if(product.active){add(byUnit,product.unit,option);add(byType,product.unit+':'+product.type_id,option);if(product.type_id===null)for(const type of types.filter(type=>type.unit===product.unit))add(byType,product.unit+':'+type.id,option);}
     }
     return {byUnit,byType,byId};
   },[catalogue.products]);
   const filteredLines=useMemo(()=>doc?.lines.flatMap((line,index)=>
-    (line.id===editingLineId||(roomFilter===null||normalizeRoom(line.room)===roomFilter)&&(!lineQuery||matchesSearch([line.name,line.sku,line.manufacturer,line.room,line.comment].join(' '),lineQuery)))?[{line,index}]:[])??[],[doc?.lines,lineQuery,roomFilter,editingLineId]);
+    (line.id===editingLineId||(roomFilter===null||normalizeRoom(line.room)===roomFilter)&&(!lineQuery||matchesSearch([line.name,line.sku,line.manufacturer,line.room,line.comment].join(' '),lineQuery)||matchesArticle(line.sku,lineQuery)))?[{line,index}]:[])??[],[doc?.lines,lineQuery,roomFilter,editingLineId]);
   const linePages=Math.max(1,Math.ceil(filteredLines.length/linePageSize)),activePage=Math.min(linePage,linePages-1),visibleLines=filteredLines.slice(activePage*linePageSize,(activePage+1)*linePageSize);
   const insertionAnchor=visibleLines.find(item=>item.line.id===activeLineId)??visibleLines.at(-1);
-  const filteredProducts=useMemo(()=>catalogue.products.filter(product=>product.active&&matchesSearch([product.name,product.sku,product.manufacturer].join(' '),productSearch)),[catalogue.products,productSearch]);
+  const filteredProducts=useMemo(()=>catalogue.products.filter(product=>product.active&&(matchesSearch([product.name,product.sku,product.manufacturer].join(' '),productSearch)||matchesArticle(product.sku,productSearch))),[catalogue.products,productSearch]);
   const docRef=useRef<Quote|null>(doc),dirtyRef=useRef(dirty);docRef.current=doc;dirtyRef.current=dirty;
   const bulkLines=useMemo(()=>doc?.lines.filter(line=>selectedLineIds.has(line.id))??[],[doc?.lines,selectedLineIds]);
   const bulkMixed=new Set(bulkLines.map(line=>types.find(type=>type.id===line.type_id)?.category??'Без категории')).size>1;
@@ -499,7 +499,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
               <SearchInput aria-label={"Бренд строки "+(index+1)} placeholder="Бренд" maxLength={500} title={line.manufacturer||''} options={catalogue.manufacturers.filter(item=>item.active!==false).map(item=>item.name)} value={line.manufacturer} disabled={busy} onChange={manufacturer=>editLine(line.id,{manufacturer})}/></div>
             <details className="quotation-row-details" open={expandedRows.has(line.id)} onToggle={event=>{const open=event.currentTarget.open;if(open!==expandedRows.has(line.id))expandRow(line.id,open);}}><summary aria-label={"Свойства строки "+(index+1)} title="Товар, фото и свойства">Товар, фото и свойства{line.sku?' · '+line.sku:''}{line.source_ids.length?' · На плане: '+line.source_ids.length:''}</summary>
             {expandedRows.has(line.id)&&<>
-            <SearchSelect aria-label={"Товар строки "+(index+1)} value={line.product_id??''} disabled={busy} dataOptions={productOptions(line)} onChange={event=>void bind(line.id,event.target.value)}/>
+            <SearchSelect searchPlaceholder="Название или артикул…" title="Поиск товара по названию или артикулу" aria-label={"Товар строки "+(index+1)} value={line.product_id??''} disabled={busy} dataOptions={productOptions(line)} onChange={event=>void bind(line.id,event.target.value)}/>
             <div className="quotation-inline-actions">{line.product_id&&<><ToolButton icon="edit" disabled={busy} onClick={()=>editCatalogueProduct(line.id,line.product_id!)}>Редактировать товар в базе</ToolButton><ToolButton icon="trash" disabled={busy} onClick={()=>void deleteCatalogueProduct(line.product_id!)}>Удалить товар из базы</ToolButton></>}<button type="button" disabled={busy} onClick={()=>openNewProduct(line)}>＋ Товар в базу</button>
               <ImageField label={"Фото строки "+(index+1)} value={line.image} disabled={busy} onChange={image=>editLine(line.id,{image})}/>
             </div>

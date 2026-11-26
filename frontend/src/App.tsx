@@ -32,7 +32,7 @@ import ImageField,{imagePaste,prepareImage,imageDrop,imageDragOver} from "./Imag
 import SearchInput from "./SearchInput";
 import ToolRail, {ToolButton,ActionIcon} from "./ToolRail";
 import {AppearanceEditor,CustomFieldsEditor,CoordinateEditor,PlanSymbol,PointMarker,appearanceKeys} from "./PlanAppearance";
-import SearchSelect, {matchesSearch,SearchHighlight} from "./SearchSelect";
+import SearchSelect, {matchesSearch,matchesArticle,SearchHighlight} from "./SearchSelect";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import QuotationEditor from "./QuotationLoader";
 import QuotationHub from "./QuotationHub";
@@ -607,7 +607,7 @@ function CatalogManager({
   useEffect(()=>{onDirtyChange(dirty);return()=>onDirtyChange(false);},[dirty,onDirtyChange]);
   useEffect(()=>setProductLimit(100),[databaseSearch]);
   const kindLookup=useMemo(()=>new Map(types.map(kind=>[kind.id,kind])),[types]);
-  const filteredProducts=useMemo(()=>catalog.products.filter(item=>{if(!showArchived&&!item.active)return false;const kind=kindLookup.get(item.type_id??0);return matchesSearch([item.name,item.sku,item.manufacturer,item.supplier,kind?.name,kind?.category].join(' '),databaseSearch);}),[catalog.products,kindLookup,databaseSearch,showArchived]);
+  const filteredProducts=useMemo(()=>catalog.products.filter(item=>{if(!showArchived&&!item.active)return false;const kind=kindLookup.get(item.type_id??0);return matchesSearch([item.name,item.sku,item.manufacturer,item.supplier,kind?.name,kind?.category].join(' '),databaseSearch)||matchesArticle(item.sku,databaseSearch);}),[catalog.products,kindLookup,databaseSearch,showArchived]);
   const selectedProducts=useMemo(()=>catalog.products.filter(item=>productSelection.has(item.id)),[catalog.products,productSelection]);
   const productFields=useMemo(()=>productBulkFields(selectedProducts,catalog),[selectedProducts,catalog]);
   const mixedProducts=categoriesMixed(selectedProducts.map(item=>item.type_id),types);

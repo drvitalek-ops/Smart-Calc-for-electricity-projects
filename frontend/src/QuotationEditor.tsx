@@ -1,6 +1,6 @@
 import ProductCardFields from "./ProductCardFields";
 import BulkEditor,{type BulkField} from "./BulkEditor";
-import IssueBar,{type WorkIssue} from "./IssueBar";
+import IssueBar,{type WorkIssue,type WorkIssueTarget} from "./IssueBar";
 import {rebaseCatalogue} from './catalogueRebase';
 import useCatalogue,{refreshCatalogue,type CatalogueSnapshot} from './catalogueStore';
 import {ManufacturerField,DuplicateProducts,duplicateProducts,type DuplicateProduct} from './CatalogueFields';
@@ -294,9 +294,12 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     return()=>controller.abort();
   },[catalogue,base,busy,Boolean(doc)]);
   function jumpToLine(id:string,index:number,field?:QuoteNumberIssue['field']){
+    const actualIndex=docRef.current?.lines.findIndex(line=>line.id===id)??-1;
+    if(actualIndex<0){setMessage('Эта позиция уже удалена из КП. Список сообщений обновлён.');return;}
+    index=actualIndex;
     chooseQuoteTool('positions');setLineQuery('');setRoomFilter(null);setEditingLineId(null);setLinePage(Math.floor(index/linePageSize));setActiveLineId(id);
     if(!field)expandRow(id);
-    requestAnimationFrame(()=>{const row=document.querySelector<HTMLElement>(`[data-quote-line="${CSS.escape(id)}"]`),prefix=field==='quantity'?'Количество строки ':field==='unit_price'?'Цена строки ':field==='discount'?'Скидка строки ':'';row?.scrollIntoView({block:'nearest'});const control=prefix?row?.querySelector<HTMLInputElement>(`[aria-label^="${prefix}"]`):row?.querySelector<HTMLInputElement>('.quotation-name-input');control?.focus({preventScroll:true});});
+    requestAnimationFrame(()=>{const row=document.querySelector<HTMLElement>(`[data-quote-line="${CSS.escape(id)}"]`),prefix=field==='quantity'?'Количество строки ':field==='unit_price'?'Цена строки ':field==='discount'?'Скидка строки ':'';row?.scrollIntoView({block:'nearest'});const control=prefix?row?.querySelector<HTMLInputElement>(`[aria-label^="${prefix}"]`):row?.querySelector<HTMLInputElement>('.quotation-name-input');control?.scrollIntoView({block:'nearest',inline:'nearest'});control?.focus({preventScroll:true});});
   }
   function jumpToError(issue:QuoteNumberIssue){
     if(issue.id!==undefined&&issue.index!==undefined)jumpToLine(issue.id,issue.index,issue.field);
@@ -396,11 +399,23 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   const visiblePrices=calculated[mode];
   const rowPrices=new Map(visiblePrices.lines.map(line=>[line.id,line]));
   const issues=exportIssues(doc.lines),conflicts=priceConflicts(doc.lines);
-  const bulkNotices:WorkIssue[]=validationIssues.map((issue,index)=>({id:'number'+index,group:'Числовые поля',title:issue.label,detail:issue.message,severity:'error',action:()=>jumpToError(issue)}));
+  const lineIndices=new Map(doc.lines.map((line,index)=>[line.id,index])),kindCategories=new Map(types.map(type=>[type.id,type.category]));
+  const positionTarget=(line:Line,field?:QuoteNumberIssue['field']):WorkIssueTarget=>({id:line.id,label:'№ '+((lineIndices.get(line.id)??0)+1)+' · '+line.name,
+    detail:[kindCategories.get(line.type_id??0)??'Без категории',line.unit,line.room||'Без помещения',line.sku,field==='unit_price'?'Цена: '+line.unit_price.replace('.',',')+' '+line.currency:''].filter(Boolean).join(' · '),
+    action:()=>jumpToLine(line.id,lineIndices.get(line.id)??0,field)});
+  const bulkNotices:WorkIssue[]=validationIssues.map((issue,index)=>({id:'number'+index,group:'Числовые поля',title:issue.label+(issue.id?' · '+(doc.lines[issue.index??-1]?.name??''):''),detail:issue.message,severity:'error',action:()=>jumpToError(issue),actionLabel:'Перейти к полю'}));
   bulkNotices.push(...quoteBulkIssues);
   if(error)bulkNotices.unshift({id:'runtime',group:'Ошибка',title:'Не удалось завершить действие',detail:error,severity:'error'});
-  if(bulkMixed)bulkNotices.unshift({id:'mixed',group:'Выбраны разные объекты',title:'Общие свойства позиций КП',detail:'Выбраны разные категории. Индивидуальные номенклатуры и единицы сохранятся. Количество доступно только при одинаковых единицах.',severity:'info'});
-  if(conflicts.length)bulkNotices.push({id:'prices',group:'Разные цены',title:'Есть одинаковые позиции с разными ценами',detail:'Проверьте цены одинакового товара в общем КП. Изменение цены применяется ко всем одинаковым позициям.',severity:'warning'});
+  if(bulkMixed){
+    const categories=[...new Set(bulkLines.map(line=>kindCategories.get(line.type_id??0)??'Без категории'))],units=[...new Set(bulkLines.map(line=>line.unit))];
+    bulkNotices.unshift({id:'mixed',group:'Выбраны разные объекты',title:'Смешанное выделение позиций КП',
+      detail:'Это уведомление о выделении, а не ошибка в позициях. Выбрано позиций: '+bulkLines.length+'. Категории: '+categories.slice(0,8).join(', ')+(categories.length>8?' и ещё '+(categories.length-8):'')+'. Массовая правка меняет только отмеченные общие свойства. Номенклатура и единица каждой строки сохранятся. '+(units.length===1?'Единица у всех выбранных позиций — «'+units[0]+'», поэтому количество можно изменить совместно.':'Выбраны разные единицы: '+units.join(', ')+'. Для общей правки количества выделите только строки с одной единицей.'),
+      severity:'info',targets:bulkLines.map(line=>positionTarget(line))});
+  }
+  if(conflicts.length){
+    const keys=new Set(conflicts.map(priceIdentity));
+    bulkNotices.push({id:'prices',group:'Разные цены',title:'Есть одинаковые позиции с разными ценами',detail:'Для одинакового товара найдены разные цены, поэтому нулевая цена не подставлена автоматически. Откройте связанные строки и проверьте условия. Изменение цены в общем КП применяется ко всем его одинаковым позициям.',severity:'warning',targets:doc.lines.filter(line=>keys.has(priceIdentity(line))).map(line=>positionTarget(line,'unit_price'))});
+  }
 
 
   const productOptions=(line:Line)=>{

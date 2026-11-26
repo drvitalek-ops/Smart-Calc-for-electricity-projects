@@ -102,3 +102,30 @@ with TestClient(app) as client:
 '''
     result=subprocess.run([sys.executable,'-c',script],env={**os.environ,'DATABASE_URL':f'sqlite:///{database}','AUTO_CREATE_SCHEMA':'1','STORAGE_DIR':str(tmp_path/'storage')},capture_output=True,text=True,timeout=30)
     assert result.returncode==0,result.stderr
+
+
+def test_desktop_adds_project_preferences_without_losing_legacy_projects(tmp_path):
+    import os
+    import subprocess
+    import sys
+    database=tmp_path/'legacy-workspace.db'
+    with sqlite3.connect(database) as db:
+        db.execute('CREATE TABLE projects(id INTEGER PRIMARY KEY,name VARCHAR(200) NOT NULL,created_at DATETIME NOT NULL)')
+        db.execute("INSERT INTO projects VALUES(1,'Существующий проект','2026-01-01 00:00:00')")
+    script='''
+from fastapi.testclient import TestClient
+from app.main import app
+for _ in range(2):
+    with TestClient(app) as client:
+        project=client.get('/api/projects/1').json()
+        assert project['name']=='Существующий проект'
+        assert project['last_worked_page_id'] is None
+        response=client.patch('/api/projects/1/view-settings',json={'symbolScale':.7,'roomLabelsVisible':False})
+        assert response.status_code==200,response.text
+        assert client.get('/api/projects/1').json()['view_settings']=={'symbolScale':.7,'roomLabelsVisible':False}
+'''
+    result=subprocess.run([sys.executable,'-c',script],env={**os.environ,'DATABASE_URL':f'sqlite:///{database}','AUTO_CREATE_SCHEMA':'1','STORAGE_DIR':str(tmp_path/'storage')},capture_output=True,text=True,timeout=30)
+    assert result.returncode==0,result.stderr
+    with sqlite3.connect(database) as db:
+        assert db.execute('SELECT name FROM projects').fetchone()==('Существующий проект',)
+        assert {'last_worked_page_id','view_settings'} <= {row[1] for row in db.execute('PRAGMA table_info(projects)')}

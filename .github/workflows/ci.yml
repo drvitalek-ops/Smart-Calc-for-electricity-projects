@@ -123,6 +123,7 @@ jobs:
           node frontend/tests/workbench.cjs
           node frontend/tests/plan-drag.cjs
           node frontend/tests/workbench-next.cjs
+          FRAME_TEST_FRONTEND=http://127.0.0.1:5175 node frontend/tests/project-workspace.cjs
           node frontend/tests/large-quotation.cjs
           node frontend/tests/quotation-workbench.cjs
           node frontend/tests/quotation-fields.cjs

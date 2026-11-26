@@ -146,6 +146,8 @@ export type Item = {
 };
 export type Project = {
   history?:{undo:number;redo:number};
+  last_worked_page_id?:number|null;
+  view_settings?:Record<string,unknown>;
   id: number;
   name: string;
   pages: Page[];
@@ -447,6 +449,12 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
   const [info,setInfo]=useState<AppSettings|null>(null),[error,setError]=useState(""),[message,setMessage]=useState(""),[opening,setOpening]=useState(false);
   useEffect(()=>{onBusyChange(opening);return()=>onBusyChange(false);},[opening,onBusyChange]);
   useEffect(()=> {let active=true;api<AppSettings>("/settings").then(info=> {if(active)setInfo(info);}).catch(error=> {if(active)setError(errorMessage(error,"Не удалось загрузить настройки"));});return()=>{active=false;};},[]);
+  async function downloadBackup(compact:boolean){
+    if(!info)return;setOpening(true);setError('');setMessage(compact?'Подготовка компактной копии…':'Подготовка полной копии…');
+    try{const backup=await api<{url:string;filename:string;size:number;optimization?:{omitted_cache_files:number;omitted_cache_bytes:number;database_bytes_before:number;database_bytes_after:number}}>('/settings/backups'+(compact?'?compact=true':''),'POST',{instance:info.instance});const link=document.createElement('a');link.href=backup.url;link.download=backup.filename;link.click();const mb=(bytes:number)=>(bytes/1024/1024).toLocaleString('ru-RU',{maximumFractionDigits:1});setMessage('Копия готова: '+mb(backup.size)+' МБ.'+(backup.optimization?' Исключён восстанавливаемый кэш: '+mb(backup.optimization.omitted_cache_bytes)+' МБ ('+backup.optimization.omitted_cache_files+' файлов). База в копии: '+mb(backup.optimization.database_bytes_before)+' → '+mb(backup.optimization.database_bytes_after)+' МБ.':'')+' Дождитесь загрузки ZIP перед закрытием приложения.');}
+    catch(error){setMessage('');setError(errorMessage(error,'Не удалось подготовить копию'));}
+    finally{setOpening(false);}
+  }
   return <AppModal title="Настройки" onClose={onClose} returnFocus={returnFocus} busy={opening} className="settings-modal">
     <div className="settings-layout"><nav className="settings-nav" aria-label="Разделы настроек">{[['data','folder','Данные'],['workspace','palette','Рабочая область'],['backup','save','Резервная копия'],['rollback','undo','Откат версии'],['transfer','link','Перенос на ПК']].map(([id,icon,label])=><a key={id} href={'#settings-'+id} onClick={event=>{event.preventDefault();const target=document.getElementById('settings-'+id);target?.scrollIntoView({block:'start'});target?.focus({preventScroll:true});}}><ActionIcon name={icon}/><span>{label}</span></a>)}</nav><div className="settings-body">
     <section id="settings-data" className="settings-data-section" tabIndex={-1}><div className="settings-heading"><ToolIcon name="folder"/><div><h3>Данные и перенос на другой компьютер</h3><p>Здесь хранятся все проекты, общий каталог, PDF-планы и изображения.</p></div></div>
@@ -463,19 +471,16 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
     {message && <p className="catalog-success" role="status">{message}</p>}
     </section><section id="settings-workspace" tabIndex={-1} className="settings-backup"><h3>Рабочая область</h3><label className="check"><input type="checkbox" checked={adaptiveLabels} onChange={event=>setAdaptiveLabels(event.target.checked)}/>Автоматически упрощать большие планы</label><p className="hint">При отдалении плана или более чем 500 видимых объектах остаются компактные цветные контуры; подробности и подписи видны у выбранных элементов. При увеличении детали возвращаются.</p><label className="check"><input type="checkbox" checked={showGrid} onChange={event=>setShowGrid(event.target.checked)}/>Фоновая сетка рабочей области</label></section>
     <section id="settings-backup" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="save"/><div><h3>Полная резервная копия</h3><p>Все проекты, каталог, товары с фотографиями, коммерческие предложения и планы — в одном ZIP.</p></div></div>
-      <button type="button" className="tool-action" disabled={opening||!info?.can_backup_all||backupBlocked} onClick={()=>void(async()=>{
-        if(!info)return;setOpening(true);setError('');setMessage('Подготовка полной копии…');
-        try{const backup=await api<{url:string;filename:string;size:number}>('/settings/backups','POST',{instance:info.instance});const link=document.createElement('a');link.href=backup.url;link.download=backup.filename;link.click();setMessage('Копия готова: '+(backup.size/1024/1024).toLocaleString('ru-RU',{maximumFractionDigits:1})+' МБ. Дождитесь загрузки ZIP перед закрытием приложения.');}
-        catch(error){setMessage('');setError(errorMessage(error,'Не удалось подготовить копию'));}
-        finally{setOpening(false);}
-      })()}><ActionIcon name="save"/><span>{opening?'Подготовка…':'Скачать полную копию ZIP'}</span></button>
+      <button type="button" className="tool-action" disabled={opening||!info?.can_backup_all||backupBlocked} onClick={()=>void downloadBackup(false)}><ActionIcon name="save"/><span>{opening?'Подготовка…':'Скачать полную копию ZIP'}</span></button>
+      <button type="button" className="tool-action" disabled={opening||!info?.can_backup_all||backupBlocked} onClick={()=>void downloadBackup(true)}><ActionIcon name="download"/><span>Компактный ZIP для переноса</span></button>
+      <p className="hint">Компактная копия сохраняет все проекты, товары, фотографии и исходные PDF. В копии уплотняется база и исключается только кэш планов для разных масштабов — он создастся заново. Исходные данные не меняются. Размер зависит от состава базы; фотографии не пересжимаются.</p>
       {backupBlocked&&<p className="hint">Сохраните КП или завершите редактирование плана перед созданием полной копии. Копия включает сохранённые данные.</p>}
       {!info?.can_backup_all&&<p className="hint">Полная копия доступна в автономной Windows-версии. Для переноса также можно скопировать папку данных целиком.</p>}
     </section>
     <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.64 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.68" target="_blank" rel="noreferrer">Открыть релиз v1.0.68</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.69" target="_blank" rel="noreferrer">Открыть релиз v1.0.69</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div id="settings-transfer" tabIndex={-1} className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -1284,7 +1289,8 @@ export default function App() {
     clearObjectPreview();
     const p = await refresh(id);
     setSymbolScale(savedSymbolScale(id));
-    setPageId(p.pages.some(page=>page.id===readProjectView(id).lastPage)?readProjectView(id).lastPage!:p.pages[0]?.id ?? null);
+    const lastViewed=readProjectView(id).lastPage;
+    setPageId(p.pages.find(page=>page.id===p.last_worked_page_id)?.id??p.pages.find(page=>page.id===lastViewed)?.id??p.pages[0]?.id??null);
     setLayerId(p.layers[0]?.id ?? null);
     setRoomId(null);
     setLibraryGroup("");
@@ -2080,9 +2086,9 @@ export default function App() {
   const pageRooms=useMemo(()=>project?.rooms.filter(room=>room.page_id===pageId&&room.polygon&&room.polygon.length>=3)??[],[project?.rooms,pageId]);
   const unframedItems=useMemo(()=>project?.elements.filter(item=>isElectrical(typeMap.get(item.type_id))&&!item.parameters.frame_group)??[],[project?.elements,typeMap]);
   const unframedSet=useMemo(()=>new Set(highlightUnframed?unframedItems.map(item=>item.id):[]),[highlightUnframed,unframedItems]);
-  useProjectView({projectId:project?.id??null,pageId,active:view==='plan',zoom,setZoom,viewport:viewportRef,sheet:sheetRef,
+  useProjectView({projectId:project?.id??null,pageId,active:view==='plan',zoom,setZoom,viewport:viewportRef,sheet:sheetRef,initialSettings:project?.view_settings,onSaveError:setError,
     settings:{symbolScale,labelsVisible,roomLabelsVisible,showRoomContours,elementsVisible,objectSnap,ortho,adaptiveLabels,showGrid,roomSnap,elementLayersExpanded,highlightUnframed,leftExpanded,rightExpanded,leftTool,rightTool},
-    restore:value=>{if(typeof value.symbolScale==='number'&&Number.isFinite(value.symbolScale)&&value.symbolScale>=.1&&value.symbolScale<=2)setSymbolScale(value.symbolScale);for(const [key,set] of [['labelsVisible',setLabelsVisible],['roomLabelsVisible',setRoomLabelsVisible],['showRoomContours',setShowRoomContours],['elementsVisible',setElementsVisible],['objectSnap',setObjectSnap],['ortho',setOrtho],['adaptiveLabels',setAdaptiveLabels],['showGrid',setShowGrid],['roomSnap',setRoomSnap],['elementLayersExpanded',setElementLayersExpanded],['highlightUnframed',setHighlightUnframed],['leftExpanded',setLeftExpanded],['rightExpanded',setRightExpanded]] as const)if(typeof value[key]==='boolean')set(value[key] as boolean);if(['objects','list','properties','style','frames','rooms'].includes(String(value.leftTool)))setLeftTool(String(value.leftTool));if(['layers','pages'].includes(String(value.rightTool)))setRightTool(String(value.rightTool));}});
+    restore:value=>{if(typeof value.symbolScale==='number'&&Number.isFinite(value.symbolScale)&&value.symbolScale>=.1&&value.symbolScale<=2)setSymbolScale(value.symbolScale);for(const [key,set] of [['labelsVisible',setLabelsVisible],['roomLabelsVisible',setRoomLabelsVisible],['showRoomContours',setShowRoomContours],['elementsVisible',setElementsVisible],['objectSnap',setObjectSnap],['ortho',setOrtho],['adaptiveLabels',setAdaptiveLabels],['showGrid',setShowGrid],['roomSnap',setRoomSnap],['elementLayersExpanded',setElementLayersExpanded],['highlightUnframed',setHighlightUnframed],['leftExpanded',setLeftExpanded],['rightExpanded',setRightExpanded]] as const)if(typeof value[key]==='boolean')set(value[key] as boolean);if(value.leftTool===null)setLeftTool(null);else if(['objects','list','properties','style','frames','rooms'].includes(String(value.leftTool)))setLeftTool(String(value.leftTool));if(value.rightTool===null)setRightTool(null);else if(['layers','pages'].includes(String(value.rightTool)))setRightTool(String(value.rightTool));}});
   const protectedPageIds = useMemo(()=>new Set(
     project?.elements
       .filter((item) => {
@@ -4008,7 +4014,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.69</span>
+        <span>SMART HOME CALC / 1.0.70</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

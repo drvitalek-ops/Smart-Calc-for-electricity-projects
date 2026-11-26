@@ -77,7 +77,21 @@ def preserve_before_upgrade(root,current):
         if temporary.exists():shutil.rmtree(temporary)
 
 
-def create_full_archive(root,version):
+def _derived_cache_files(snapshot,storage):
+    """Only omit cache levels the application can rebuild from an included PDF."""
+    cache=set()
+    with closing(sqlite3.connect(snapshot)) as database:
+        if not database.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pages'").fetchone():return cache
+        fields={row[1] for row in database.execute('PRAGMA table_info(pages)')}
+        if not {'image_path','pdf_path'}<=fields:return cache
+        for image,pdf in database.execute('SELECT image_path,pdf_path FROM pages'):
+            image,pdf=Path(image).resolve(),Path(pdf).resolve()
+            if not image.is_relative_to(storage) or not pdf.is_relative_to(storage) or not image.is_file() or not pdf.is_file():continue
+            cache.update(image.with_name(f'{image.stem}-q{edge}.png') for edge in (1024,2048,4096,8192))
+    return cache
+
+
+def create_full_archive(root,version,*,compact=False):
     """Return a temporary ZIP path. The caller deletes it after the download.
     SQLite's backup API includes committed WAL data while the app is open.
     """
@@ -89,8 +103,15 @@ def create_full_archive(root,version):
         with tempfile.TemporaryDirectory(prefix='smart-home-calc-snapshot-') as temporary:
             snapshot=Path(temporary)/'smart-home-calc.db'
             _copy_database(root/'smart-home-calc.db',snapshot)
+            database_size_before=snapshot.stat().st_size
+            if compact:
+                with closing(sqlite3.connect(snapshot)) as database:
+                    database.execute('VACUUM')
+                    if database.execute('PRAGMA quick_check').fetchall()!=[('ok',)]:raise ValueError('Не удалось проверить компактную копию базы')
+            omitted=_derived_cache_files(snapshot,root/'storage') if compact else set()
+            skipped_count=0;skipped_bytes=0
             files=[]
-            with zipfile.ZipFile(archive_path,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=1,allowZip64=True) as archive:
+            with zipfile.ZipFile(archive_path,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6 if compact else 1,allowZip64=True) as archive:
                 def add(source,name):
                     digest=hashlib.sha256();size=0
                     with source.open('rb') as original,archive.open(name,'w',force_zip64=True) as target:
@@ -102,8 +123,11 @@ def create_full_archive(root,version):
                 if storage.is_dir():
                     for source in sorted(storage.rglob('*')):
                         if source.is_symlink():raise ValueError('Нельзя включить символическую ссылку в резервную копию')
-                        if source.is_file():add(source,'data/storage/'+source.relative_to(storage).as_posix())
+                        if source.is_file():
+                            if source in omitted:skipped_count+=1;skipped_bytes+=source.stat().st_size;continue
+                            add(source,'data/storage/'+source.relative_to(storage).as_posix())
                 manifest={'format':'smart-home-calc-full-backup','format_version':1,'application_version':version,'created_at':datetime.now(timezone.utc).isoformat(),'files':files}
+                if compact:manifest['optimization']={'mode':'compact','database_bytes_before':database_size_before,'database_bytes_after':snapshot.stat().st_size,'omitted_cache_files':skipped_count,'omitted_cache_bytes':skipped_bytes}
                 archive.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False,indent=2))
                 archive.writestr('Восстановление.txt',RESTORE_INSTRUCTIONS)
                 archive.writestr('restore-data.ps1',RESTORE_SCRIPT.encode('utf-8-sig'))

@@ -274,8 +274,12 @@ try {
             throw "Full backup lost layer group visibility"
         }
         $restoredQuote = Invoke-RestMethod -Uri $quoteUrl -TimeoutSec 10
-        if ($restoredProject.elements.Count -ne 1 -or $restoredQuote.partner.totals.RUB.total -ne "190.00") {
+        if ($restoredProject.elements.Count -ne (1 + $frameMembers.Count) -or $restoredQuote.partner.totals.RUB.total -ne "190.00") {
             throw "Full backup lost plan objects or quotation prices"
+        }
+        $restoredFrameMembers = @($restoredProject.elements | Where-Object {$_.parameters.frame_group -eq $physicalFrame.frame_group})
+        if ($restoredFrameMembers.Count -ne 2 -or @($restoredFrameMembers | Where-Object {$_.parameters.frame_plan_color -ne "#5b21b6" -or $_.parameters.frame_color -ne "White"}).Count -ne 0) {
+            throw "Full backup lost physical frame membership or colors"
         }
         Invoke-WebRequest -Uri "http://127.0.0.1:5173/api/pages/$($planPages[0].id)/image" -OutFile (Join-Path $workDirectory "restored-plan.png") -TimeoutSec 20
         Invoke-WebRequest -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/pages/$($planPages[0].id)/export.pdf" -OutFile (Join-Path $workDirectory "restored-plan.pdf") -TimeoutSec 20

@@ -1,11 +1,24 @@
 """Properties belong to a physical frame, separately from its devices."""
 import json
+import re
+from pathlib import Path
 from collections import defaultdict
 from fastapi import HTTPException
 from sqlalchemy import select
 from .models import Element,ElementType,Layer,Product
 
-FRAME_KEYS={'frame_group','frame_posts','frame_product_id','frame_color'}
+FRAME_KEYS={'frame_group','frame_posts','frame_product_id','frame_color','frame_plan_color'}
+
+
+PALETTE=json.loads((Path(__file__).parent/'assets'/'frame-colors.json').read_text(encoding='utf-8'))
+
+
+def plan_color(parameters,product_color=''):
+    explicit=parameters.get('frame_plan_color','')
+    if isinstance(explicit,str) and re.fullmatch('#[0-9a-fA-F]{6}',explicit):return explicit.lower()
+    value=normalized_color(str(parameters.get('frame_color') or product_color or '')).lower().replace('ё','е')
+    if re.fullmatch('#[0-9a-f]{6}',value):return value
+    return next((color for name,color in PALETTE['colors'].items() if value==name or value.startswith(name+' ')),PALETTE['default'])
 
 
 def normalized_color(value):
@@ -77,3 +90,23 @@ def apply_properties(db,pid,groups,changes):
         for item,parameters in pending:item.parameters=parameters
         db.flush()
     return {'frame_groups':sorted(groups),'changed':len(pending)}
+
+
+def draw_frames(sheet,page,rows,db):
+    """Render the same frame finish/outline as the interactive plan."""
+    groups=defaultdict(list)
+    for element,kind,_ in rows:
+        if kind.category=='Электроустановки' and element.parameters.get('frame_group'):groups[element.parameters['frame_group']].append(element)
+    product_ids={item.parameters['frame_product_id'] for members in groups.values() for item in members if item.parameters.get('frame_product_id') is not None}
+    products={item.id:item for item in db.scalars(select(Product).where(Product.id.in_(product_ids)))} if product_ids else {}
+    import pymupdf
+    unit=page.width/1000
+    for members in groups.values():
+        if len(members)!=int(members[0].parameters.get('frame_posts',0)) or len({item.room_id for item in members})!=1:continue
+        parameters=members[0].parameters;product=products.get(parameters.get('frame_product_id'))
+        color=plan_color(parameters,product.parameters.get('color','') if product else '')
+        rgb=tuple(int(color[index:index+2],16)/255 for index in (1,3,5))
+        rect=pymupdf.Rect(min(item.x for item in members)*page.width-20*unit,min(item.y for item in members)*page.height-20*unit,max(item.x for item in members)*page.width+20*unit,max(item.y for item in members)*page.height+20*unit)
+        rect=rect & sheet.rect
+        if .2126*rgb[0]+.7152*rgb[1]+.0722*rgb[2]>.745:sheet.draw_rect(rect,color=(.39,.45,.55),width=4)
+        sheet.draw_rect(rect,color=rgb,fill=rgb,fill_opacity=.06,width=1.5)

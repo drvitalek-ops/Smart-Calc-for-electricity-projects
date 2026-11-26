@@ -178,3 +178,32 @@ def test_legacy_omission_migrates_even_when_excluded_frame_changes_finish(client
     quote=ok(client.get(qpath));assert sum(Decimal(line['quantity']) for line in frames(quote))==3
     assert groups[2] in quote['excluded_frame_ids']
     assert all(groups[2] not in line['source_frame_ids'] for line in quote['lines'])
+
+
+def test_frame_graphic_color_is_separate_from_cp_grouping_and_exported_to_plan(client):
+    pid,groups,_,_=scene(client);path=f'/api/projects/{pid}';qpath=path+'/quotation'
+    for group,color in zip(groups,['#5b21b6','#dc2626','#16a34a','#2563eb']):ok(client.patch(path+'/frames/'+group,json={'color':'Белый','plan_color':color}))
+    quote=ok(client.get(qpath));assert sorted(Decimal(line['quantity']) for line in frames(quote))==[1,3]
+    assert {line['frame_variant'] for line in frames(quote)}=={'color:2:белый','color:1:белый'}
+    report=ok(client.get(path+'/report'));assert all('frame_plan_color' not in row['parameters'] for row in report['rows'])
+    plan=ok(client.get(path));page=plan['pages'][0]
+    response=client.get(path+'/pages/'+str(page['id'])+'/export.pdf');assert response.status_code==200
+    with pymupdf.open(stream=response.content,filetype='pdf') as doc:
+        colors=[drawing.get('color') for drawing in doc[0].get_drawings()]
+        for expected in [(91/255,33/255,182/255),(220/255,38/255,38/255)]:assert any(color and all(abs(a-b)<.001 for a,b in zip(color,expected)) for color in colors)
+    assert client.patch(path+'/frames/'+groups[0],json={'plan_color':'not-a-color'}).status_code==422
+    assert ok(client.get(path))['elements']==plan['elements']
+    # One Undo restores the whole last frame, including the graphic color.
+    ok(client.post(path+'/elements/undo'));actual=ok(client.get(path))['elements']
+    assert all('frame_plan_color' not in item['parameters'] for item in actual if item['parameters'].get('frame_group')==groups[-1])
+    backup=client.get(path+'/backup');copied=ok(client.post('/api/projects/import',files={'file':('colors.zip',backup.content,'application/zip')}))
+    restored=ok(client.get('/api/projects/'+str(copied['id'])))
+    assert {item['parameters'].get('frame_plan_color') for item in restored['elements']}=={None,'#5b21b6','#dc2626','#16a34a'}
+
+
+def test_manual_frame_color_names_are_resolved_consistently(client):
+    from app.frame_goods import plan_color
+    assert plan_color({'frame_color':'Чёрный матовый'})=='#20262c'
+    assert plan_color({'frame_color':' Белый  '})=='#f8fafc'
+    assert plan_color({'frame_plan_color':'#5B21B6','frame_color':'Белый'})=='#5b21b6'
+    assert plan_color({},'Графит')=='#475569'

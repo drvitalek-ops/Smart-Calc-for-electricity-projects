@@ -82,7 +82,10 @@ try {
         if (-not $servedScripts.Contains("workbench-2026") -or -not $servedStyles.Contains("--ds-color-shell") -or -not $servedStyles.Contains("catalog-workspace")) {
             throw "Packaged frontend does not contain the applied visual refresh"
         }
-        Write-Host "Verified refreshed frontend assets served by the packaged EXE"
+        if (-not $servedScripts.Contains("frame-properties-section") -or -not $servedScripts.Contains("frame_plan_color")) {
+            throw "Packaged frontend does not contain frame selection and outline editing"
+        }
+        Write-Host "Verified refreshed frontend and frame editing assets served by the packaged EXE"
         $settings = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/settings" -TimeoutSec 5
         $expectedDataDirectory = Join-Path $workDirectory "SmartHomeCalc\data"
         if (-not $settings.can_open_data_folder -or $settings.instance -ne $smokeToken -or $settings.data_directory -ne $expectedDataDirectory) {
@@ -122,6 +125,22 @@ try {
         $layerFilter = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/layers/$($planLayer.id)" -Method Patch -ContentType "application/json; charset=utf-8" -Body (@{hidden_groups=@("type:Движение")} | ConvertTo-Json) -TimeoutSec 10
         if ($layerFilter.hidden_groups.Count -ne 1 -or $layerFilter.hidden_groups[0] -ne "type:Движение") {
             throw "Packaged layer group visibility did not persist"
+        }
+        # Verify physical frame properties and their palette inside the frozen EXE.
+        $frameKind = $planKinds | Where-Object {$_.name -eq "Розетка одинарная"} | Select-Object -First 1
+        $frameLayer = $planProject.layers | Where-Object {$_.name -eq $frameKind.category} | Select-Object -First 1
+        $frameMembers = @()
+        foreach ($frameX in @(0.35,0.45)) {
+            $frameBody = @{page_id=$planPages[0].id;layer_id=$frameLayer.id;type_id=$frameKind.id;x=$frameX;y=0.4;parameters=@{quantity=1}} | ConvertTo-Json -Depth 10
+            $frameMembers += Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/elements" -Method Post -ContentType "application/json; charset=utf-8" -Body $frameBody -TimeoutSec 10
+        }
+        $frameBody = @{element_ids=@($frameMembers | ForEach-Object {$_.id});posts=2} | ConvertTo-Json
+        $physicalFrame = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/frames" -Method Post -ContentType "application/json" -Body $frameBody -TimeoutSec 10
+        $null = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/frames/$($physicalFrame.frame_group)" -Method Patch -ContentType "application/json; charset=utf-8" -Body '{"color":"White","plan_color":"#5b21b6"}' -TimeoutSec 10
+        $framePlan = Invoke-RestMethod -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)" -TimeoutSec 10
+        $savedMembers = @($framePlan.elements | Where-Object {$_.parameters.frame_group -eq $physicalFrame.frame_group})
+        if ($savedMembers.Count -ne 2 -or @($savedMembers | Where-Object {$_.parameters.frame_plan_color -ne "#5b21b6"}).Count -ne 0) {
+            throw "Packaged frame properties did not persist for the whole frame"
         }
         $planPdf = Join-Path $workDirectory "manual-plan-smoke.pdf"
         Invoke-WebRequest -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/pages/$($planPages[0].id)/export.pdf" -OutFile $planPdf -TimeoutSec 20
@@ -255,8 +274,12 @@ try {
             throw "Full backup lost layer group visibility"
         }
         $restoredQuote = Invoke-RestMethod -Uri $quoteUrl -TimeoutSec 10
-        if ($restoredProject.elements.Count -ne 1 -or $restoredQuote.partner.totals.RUB.total -ne "190.00") {
+        if ($restoredProject.elements.Count -ne (1 + $frameMembers.Count) -or $restoredQuote.partner.totals.RUB.total -ne "190.00") {
             throw "Full backup lost plan objects or quotation prices"
+        }
+        $restoredFrameMembers = @($restoredProject.elements | Where-Object {$_.parameters.frame_group -eq $physicalFrame.frame_group})
+        if ($restoredFrameMembers.Count -ne 2 -or @($restoredFrameMembers | Where-Object {$_.parameters.frame_plan_color -ne "#5b21b6" -or $_.parameters.frame_color -ne "White"}).Count -ne 0) {
+            throw "Full backup lost physical frame membership or colors"
         }
         Invoke-WebRequest -Uri "http://127.0.0.1:5173/api/pages/$($planPages[0].id)/image" -OutFile (Join-Path $workDirectory "restored-plan.png") -TimeoutSec 20
         Invoke-WebRequest -Uri "http://127.0.0.1:5173/api/projects/$($smokeProject.id)/pages/$($planPages[0].id)/export.pdf" -OutFile (Join-Path $workDirectory "restored-plan.pdf") -TimeoutSec 20

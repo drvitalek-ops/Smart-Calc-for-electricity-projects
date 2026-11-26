@@ -13,7 +13,7 @@ export function planBulkFields(items:Item[],project:Project,types:Kind[],catalog
  const kinds=items.map(i=>types.find(t=>t.id===i.type_id));
 
  {
-  const omit=new Set([...appearanceKeys,'frame_group','frame_posts','frame_product_id','frame_color','led_strip_id','led_strip_ids','length','manual_length','measured_length']);
+  const omit=new Set([...appearanceKeys,'frame_group','frame_posts','frame_product_id','frame_color','frame_plan_color','led_strip_id','led_strip_ids','length','manual_length','measured_length']);
   const records=items.map((item,index)=>({...kinds[index]?.defaults,...item.parameters}));
   const common=Object.keys(records[0]??{}).filter(key=>!omit.has(key)&&records.every(record=>Object.hasOwn(record,key)&&typeof record[key]===typeof records[0][key]&&['number','string','boolean'].includes(typeof record[key])));
   for(const key of common){const values=records.map(record=>String(record[key])),numeric=records.every(record=>typeof record[key]==='number');fields.push({key:'parameters.'+key,label:({quantity:'Количество, шт',ip:'IP',power_watts:'Мощность, Вт',connectors:'Коннекторы',end_caps:'Заглушки'} as Record<string,string>)[key]??key.replace(/^custom:/,''),values,type:numeric?'decimal':records.every(record=>typeof record[key]==='boolean')?'select':'text',options:records.every(record=>typeof record[key]==='boolean')?[{value:'true',label:'Да'},{value:'false',label:'Нет'}]:undefined,min:key==='power_watts'?.001:0,max:key==='ip'?69:1e6,places:['quantity','ip','connectors','end_caps'].includes(key)?0:3});}

@@ -3,4 +3,4 @@
 .plan-product-assignment h4{margin:0 0 9px;font-size:12px;font-weight:650}.product-card-fields .quote-file{display:inline-flex;align-items:center;cursor:pointer;padding:7px 10px;border:1px solid var(--ds-color-control-border);border-radius:6px;background:var(--ds-color-brand-soft);color:var(--ds-color-brand-text)}
 .frame-product-editor{padding:12px;border:1px solid var(--line,#cbd5e1);border-radius:10px;margin:12px 0;background:var(--surface,#fff)}
 .frame-product-editor label{display:grid;gap:6px;margin:10px 0}.frame-product-preview{display:flex;gap:8px;align-items:center;overflow-wrap:anywhere}.frame-product-preview img{width:54px;height:54px;object-fit:contain;border-radius:6px}.frame-product-preview p{font-size:12px;margin:4px 0}
-.frame-group-outline[role="button"]{pointer-events:stroke;cursor:pointer}.frame-group-outline[role="button"]:focus-visible{outline:none;stroke:#0f766e;stroke-width:5}
+.frame-group-outline[role="button"]{cursor:pointer}.frame-group-outline[role="button"]:focus-visible{outline:2px solid var(--ds-color-brand,#0f766e);outline-offset:3px}.frame-properties-section input[type="color"]{height:36px;width:100%;padding:3px}

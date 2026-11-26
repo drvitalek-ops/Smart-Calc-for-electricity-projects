@@ -1,3 +1,4 @@
+import {framePlanColor,frameContrast} from "./frameAppearance";
 import FrameProductEditor from "./FrameProductEditor";
 import PlanProductAssignment from "./PlanProductAssignment";
 import BulkEditor from "./BulkEditor";
@@ -474,7 +475,7 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
     <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.64 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.67" target="_blank" rel="noreferrer">Открыть релиз v1.0.67</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.68" target="_blank" rel="noreferrer">Открыть релиз v1.0.68</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div id="settings-transfer" tabIndex={-1} className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -1972,7 +1973,7 @@ export default function App() {
     if (!previous || previous.id !== item.id || now - previous.time > 450)
       return false;
     lastObjectClick.current = null;
-    selectSameType(item);
+    if(item.parameters.frame_group)void run(()=>openPhysicalFrame(String(item.parameters.frame_group)));else selectSameType(item);
     return true;
   }
   function changeSelectedType(typeId: number) {
@@ -1991,7 +1992,7 @@ export default function App() {
         "plan_icon",
         "plan_color",
         "frame_group",
-        "frame_posts","frame_product_id","frame_color",
+        "frame_posts","frame_product_id","frame_color","frame_plan_color",
       ]) {
         if (key in selected.parameters)
           parameters[key] = selected.parameters[key];
@@ -2035,12 +2036,23 @@ export default function App() {
   async function removeFrame() {
     await changeFrame("/remove");
   }
+  async function openPhysicalFrame(group:string,focus=false){
+    await saveDraftBeforeNavigation();
+    const members=project?.elements.filter(item=>item.parameters.frame_group===group)??[];
+    if(!members.length)throw new Error('Рамка не найдена. Обновите план.');
+    setSelectedIds(members.map(item=>item.id));setSelected(members[0]);setFramePosts(Number(members[0].parameters.frame_posts));
+    setPlacing(false);setLeftPanelVisible(true);setLeftTool('frames');setLeftExpanded(true);setObjectMenu(null);
+    if(window.innerWidth<1100)setRightExpanded(false);
+    if(focus)focusItem(members[0]);
+    requestAnimationFrame(()=>{const panel=document.querySelector<HTMLElement>('.objects-panel .tool-panel-content');if(panel)panel.scrollTop=0;});
+  }
   const sceneContextMenu=useStableCallback((item:Item,event:React.MouseEvent<SVGGElement>)=>{if(leftTool==='frames'&&!isElectrical(typeMap.get(item.type_id))){event.preventDefault();event.stopPropagation();return;}showObjectMenu(item,event);});
-  const sceneDoubleClick=useStableCallback((item:Item)=>{if(!supplyLinking&&(leftTool!=="frames"||isElectrical(typeMap.get(item.type_id))))selectSameType(item);});
+  const sceneDoubleClick=useStableCallback((item:Item)=>{if(!supplyLinking&&(leftTool!=="frames"||isElectrical(typeMap.get(item.type_id)))){if(item.parameters.frame_group)void run(()=>openPhysicalFrame(String(item.parameters.frame_group)));else selectSameType(item);}});
   const scenePointerDown=useStableCallback((item:Item,event:React.PointerEvent<SVGGElement>)=>{
     if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}
     if(supplyLinking){if(isLedStrip(typeMap.get(item.type_id)))toggleSupplyStrip(item.id);return;}
     if(leftTool==="frames"&&!isElectrical(typeMap.get(item.type_id)))return;
+    if(leftTool==='frames'&&item.parameters.frame_group&&!event.ctrlKey&&!event.metaKey){void run(()=>openPhysicalFrame(String(item.parameters.frame_group)));return;}
     if(objectDoubleClick(item))return;
     choose(item,event.ctrlKey||event.metaKey);
     if(!item.geometry?.points?.length&&!event.ctrlKey&&!event.metaKey&&!layerMap.get(item.layer_id)?.locked&&!busy){
@@ -2107,9 +2119,9 @@ export default function App() {
       const points=members.map(item=>pagePoint(item,item.page_id)),padding=20*symbolScale;
       const x1=Math.min(...points.map(item=>item.x*1000))-padding,x2=Math.max(...points.map(item=>item.x*1000))+padding;
       const y1=Math.min(...points.map(item=>item.y*1000))-padding,y2=Math.max(...points.map(item=>item.y*1000))+padding;
-      return [{group,members,x:x1,y:y1,width:Math.max(40*symbolScale,x2-x1),height:Math.max(40*symbolScale,y2-y1),opacity:Math.min(...members.map(item=>pageMap.get(item.page_id)?.opacity??1))}];
+      return [{group,members,x:x1,y:y1,width:Math.max(40*symbolScale,x2-x1),height:Math.max(40*symbolScale,y2-y1),opacity:Math.min(...members.map(item=>pageMap.get(item.page_id)?.opacity??1)),color:framePlanColor(members[0].parameters,catalog.products.find(product=>product.id===Number(members[0].parameters.frame_product_id))?.parameters.color)}];
     });
-  },[visibleElements,pageMap,symbolScale]);
+  },[visibleElements,pageMap,symbolScale,catalog.products]);
   return (
     <div className="app-shell" data-design="workbench-2026" data-grid={showGrid} onDragEnterCapture={event=> {
       if(Array.from(event.dataTransfer.items).some(item=>item.type.startsWith('image/')))return;
@@ -2475,6 +2487,10 @@ export default function App() {
                       <button disabled={busy}>Добавить</button>
                     </form>
                   </details>}
+                  </section><section data-tool-section={leftTool==='frames'?'frames':'properties'} className="frame-properties-section">
+                  {(leftTool==='frames'||Boolean(selected?.parameters.frame_group))&&<PanelHeading title="Свойства рамки" caption="Товар, цвет и обозначение на плане" icon="frame"/>}
+                  {leftTool==='frames'&&<label>Рамка на плане<SearchSelect aria-label="Рамка на плане" value={String(selected?.parameters.frame_group??'')} disabled={busy||frameDirty} searchPlaceholder="Помещение, товар или цвет…" onChange={event=>{if(event.target.value)void run(()=>openPhysicalFrame(event.target.value,true));}}><option value="">Выберите рамку по помещению</option>{frameVisuals.map((frame,index)=><option key={frame.group} value={frame.group}>{project.rooms.find(room=>room.id===frame.members[0].room_id)?.name??'Без помещения'} · {Number(frame.members[0].parameters.frame_posts)} пост. · {catalog.products.find(product=>product.id===Number(frame.members[0].parameters.frame_product_id))?.name||String(frame.members[0].parameters.frame_color||'Без цвета')} · №{index+1}</option>)}</SearchSelect></label>}
+                  {Boolean(selected?.parameters.frame_group)&&selected&&<FrameProductEditor key={String(selected.parameters.frame_group)} projectId={project.id} item={selected} members={project.elements.filter(item=>item.parameters.frame_group===selected.parameters.frame_group)} types={types} catalog={catalog} busy={actionBusy||planProductBusy} locked={project.elements.some(item=>item.parameters.frame_group===selected.parameters.frame_group&&layerMap.get(item.layer_id)?.locked)} onBefore={async()=>{await saveDraftBeforeNavigation(true);await elementSaveQueue.current;}} onSaved={async()=>{const next=await refresh(project.id);setSelected(current=>current?next.elements.find(item=>item.id===current.id)??null:null);setError('');}} onDirtyChange={setFrameDirty} onBusyChange={setFrameBusy}/>}
                   </section><section data-tool-section="frames"><PanelHeading title="Рамки ЭУИ" caption="Выбор только электроустановок" icon="frame"/>
                   <label className="check"><input type="checkbox" checked={highlightUnframed} onChange={event=>setHighlightUnframed(event.target.checked)}/>Подсветить ЭУИ без рамок</label>
                   {highlightUnframed&&<div className="unframed-audit" role="region" aria-label="Электроустановки без рамок"><strong>Без рамки: {unframedItems.length}</strong><p className="hint">Двойной щелчок — перейти к объекту на плане.</p><ul>{unframedItems.map(item=><li key={item.id}><button type="button" onDoubleClick={()=>void run(()=>focusUnframed(item))} onKeyDown={event=>{if(event.key==='Enter')void run(()=>focusUnframed(item));}}>{typeMap.get(item.type_id)?.name} · {project.rooms.find(room=>room.id===item.room_id)?.name??'Без помещения'} · #{item.id}</button></li>)}</ul></div>}
@@ -2531,9 +2547,9 @@ export default function App() {
                       Выделите объекты рамкой мыши или кликами с зажатым Ctrl.
                     </p>
                   )}
-                  {Boolean(selected?.parameters.frame_group)&&selected&&<button type="button" disabled={busy} onClick={()=>{setLeftTool('properties');setLeftExpanded(true);}}>Товар и цвет выбранной рамки</button>}
+                  {Boolean(selected?.parameters.frame_group)&&selected&&<button type="button" disabled={busy} onClick={()=>void run(()=>openPhysicalFrame(String(selected.parameters.frame_group)))}>Товар и цвет выбранной рамки</button>}
                   </section><section data-tool-section="properties"><PanelHeading title="Свойства объекта" caption="Параметры и оформление" icon="edit"/><ToolButton icon="back" aria-label="Вернуться к плану" onClick={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()}>Вернуться к плану</ToolButton>
-                  {Boolean(selected?.parameters.frame_group)&&selected&&<FrameProductEditor key={String(selected.parameters.frame_group)} projectId={project.id} item={selected} members={project.elements.filter(item=>item.parameters.frame_group===selected.parameters.frame_group)} types={types} catalog={catalog} busy={actionBusy||planProductBusy} locked={project.elements.some(item=>item.parameters.frame_group===selected.parameters.frame_group&&layerMap.get(item.layer_id)?.locked)} onBefore={async()=>{await saveDraftBeforeNavigation(true);await elementSaveQueue.current;}} onSaved={async()=>{const next=await refresh(project.id);setSelected(current=>current?next.elements.find(item=>item.id===current.id)??null:null);setError('');}} onDirtyChange={setFrameDirty} onBusyChange={setFrameBusy}/>}
+
                   {/* Keep the captured product draft mounted when visibility refreshes clear selection. */}
                   <PlanProductAssignment key={project.id} projectId={project.id} items={selected&&selectedIds.length===1?[selected]:bulkPlanItems} types={types} catalog={catalog} busy={actionBusy||frameDirty||frameBusy} locked={bulkPlanItems.some(item=>layerMap.get(item.layer_id)?.locked)} onBefore={async()=>{await saveDraftBeforeNavigation();await elementSaveQueue.current;}} onAssigned={async()=>{const next=await refresh(project.id);setSelected(current=>current?next.elements.find(item=>item.id===current.id)??null:null);setError('');}} onRefine={ids=>void run(async()=>{await saveDraftBeforeNavigation();setSelectedIds(ids);setSelected(ids.length?elementMap.get(ids[0])??null:null);})} onError={setError} onDirtyChange={setPlanProductDirty} onBusyChange={setPlanProductBusy}/>
                   {selected && selectedIds.length === 1 ? (
@@ -2631,7 +2647,7 @@ export default function App() {
                           ([key]) =>
                             ![
                               ...appearanceKeys,"_quotation","manual_length","measured_length",
-                              "frame_posts","frame_product_id","frame_color",
+                              "frame_posts","frame_product_id","frame_color","frame_plan_color",
                               "frame_group",
                               "plan_icon",
                               "plan_color",
@@ -3409,12 +3425,15 @@ export default function App() {
                           </g>
                         )}
                         {frameVisuals.map((frame) => (
+                          <g key={frame.group}>
+                          <rect x={frame.x} y={frame.y} width={frame.width} height={frame.height} rx={8*symbolScale} fill="none" stroke={frameContrast(frame.color)} strokeWidth={5} opacity={frame.opacity} vectorEffect="non-scaling-stroke" pointerEvents="none"/>
                           <rect
-                            className="frame-group-outline"
+                            className="frame-group-outline" data-frame-group={frame.group}
+                            style={{stroke:frame.color,fill:frame.color,strokeWidth:selectedIds.some(id=>frame.members.some(item=>item.id===id))?3:1.5,pointerEvents:roomMode||calibrating||placing||supplyLinking?'none':'all'}}
                             role="button" tabIndex={0} aria-label={"Свойства рамки "+frame.group.slice(0,8)}
                             onPointerDown={event=>event.stopPropagation()}
-                            onClick={event=>{event.stopPropagation();void run(async()=>{await saveDraftBeforeNavigation();setSelectedIds(frame.members.map(item=>item.id));setSelected(frame.members[0]);setLeftTool('properties');setLeftExpanded(true);});}}
-                            onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();void run(async()=>{await saveDraftBeforeNavigation();setSelectedIds(frame.members.map(item=>item.id));setSelected(frame.members[0]);setLeftTool('properties');setLeftExpanded(true);});}}}
+                            onClick={event=>{event.stopPropagation();if(!busy&&!roomMode&&!calibrating&&!placing&&!supplyLinking)void run(()=>openPhysicalFrame(frame.group));}}
+                            onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();if(!busy&&!roomMode&&!calibrating&&!placing&&!supplyLinking)void run(()=>openPhysicalFrame(frame.group));}}}
                             key={frame.group}
                             x={frame.x}
                             y={frame.y}
@@ -3434,6 +3453,7 @@ export default function App() {
                             opacity={frame.opacity}
                             vectorEffect="non-scaling-stroke"
                           />
+                          </g>
                         ))}
                         {supplyLinking && displayedPageIds.has(Number(supplyLinking.body.page_id)) && (()=> {
                           const point=pagePoint({x:Number(supplyLinking.body.x),y:Number(supplyLinking.body.y)},Number(supplyLinking.body.page_id));
@@ -3988,7 +4008,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.68</span>
+        <span>SMART HOME CALC / 1.0.69</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

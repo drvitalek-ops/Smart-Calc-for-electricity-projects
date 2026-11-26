@@ -97,9 +97,10 @@ jobs:
         run: |
           DATABASE_URL=sqlite:////tmp/quotation-browser.sqlite STORAGE_DIR=/tmp/quotation-browser-storage AUTO_CREATE_SCHEMA=1 PYTHONPATH=backend uvicorn app.main:app --host 127.0.0.1 --port 8014 >/tmp/quotation-api.log 2>&1 &
           npm run dev --prefix frontend -- --host 127.0.0.1 --port 5174 >/tmp/quotation-ui.log 2>&1 &
+          python -m http.server 5175 --bind 127.0.0.1 --directory frontend/dist >/tmp/quotation-built-ui.log 2>&1 &
           python - <<'PY'
           import time,urllib.request
-          for address in ('http://127.0.0.1:8014/api/health','http://127.0.0.1:5174'):
+          for address in ('http://127.0.0.1:8014/api/health','http://127.0.0.1:5174','http://127.0.0.1:5175'):
               for attempt in range(60):
                   try:
                       urllib.request.urlopen(address,timeout=2).read()
@@ -129,6 +130,7 @@ jobs:
           node frontend/tests/quotation-diagnostic-links.cjs
           node frontend/tests/product-sku-search.cjs
           node frontend/tests/frame-products.cjs
+          FRAME_TEST_FRONTEND=http://127.0.0.1:5175 node frontend/tests/frame-selection.cjs
           node frontend/tests/photos-categories.cjs
           node frontend/tests/plan-symbols-layers.cjs
           node frontend/tests/quotation-plan-quantities.cjs

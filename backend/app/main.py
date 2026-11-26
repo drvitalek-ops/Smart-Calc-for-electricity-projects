@@ -127,7 +127,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.68'
+APP_VERSION = '1.0.69'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 from .errors import install_error_handlers, exception_message
 install_error_handlers(app)
@@ -583,6 +583,7 @@ def validate_element(db, project_id, body, check_locked=True, existing_type_id=N
     if parameters.get('frame_product_id') is not None:
         from .frame_goods import validate_product
         validate_product(db,parameters['frame_product_id'],int(parameters.get('frame_posts',0)),True)
+    if parameters.get('frame_plan_color') is not None and (not isinstance(parameters['frame_plan_color'],str) or not re.fullmatch('#[0-9a-fA-F]{6}',parameters['frame_plan_color'])):raise HTTPException(422,'Цвет контура рамки должен быть в формате #RRGGBB')
     if 'frame_color' in parameters and (not isinstance(parameters['frame_color'],str) or len(parameters['frame_color'])>100):raise HTTPException(422,'Цвет рамки — текст не длиннее 100 символов')
     if 'frame_group' in parameters and (not isinstance(parameters['frame_group'],str) or len(parameters['frame_group'])>64):
         raise HTTPException(422,'Некорректная группа рамки')
@@ -1681,6 +1682,7 @@ def assign_frame(pid: int, body: FrameAssignment, db: DbSession = Depends(sessio
 class FrameProperties(BaseModel):
     product_id:int|None=Field(default=None,gt=0)
     color:str|None=Field(default=None,max_length=100)
+    plan_color:str|None=Field(default=None,pattern='^#[0-9a-fA-F]{6}$')
 
 @app.patch('/api/projects/{pid}/frames/{group}')
 def edit_frame_properties(pid:int,group:str,body:FrameProperties,db:DbSession=Depends(session)):
@@ -1689,6 +1691,7 @@ def edit_frame_properties(pid:int,group:str,body:FrameProperties,db:DbSession=De
     changes={}
     if 'product_id' in body.model_fields_set:changes['frame_product_id']=body.product_id
     if 'color' in body.model_fields_set:changes['frame_color']=normalized_color(body.color or '')
+    if 'plan_color' in body.model_fields_set:changes['frame_plan_color']=body.plan_color.lower() if body.plan_color else None
     result=apply_properties(db,pid,[group],changes);db.commit();return result
 
 @app.post('/api/projects/{pid}/frames/remove')
@@ -1890,7 +1893,10 @@ def export_plan(pid: int, page_id: int, db: DbSession = Depends(session)):
     label_font=pymupdf.Font(fontfile=str(pdf_font_path()))
     query=(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id)
            .join(Layer,Element.layer_id==Layer.id).where(Element.page_id==page_id,Layer.export.is_(True)))
-    for element,typ,layer in db.execute(query):
+    rows=list(db.execute(query))
+    from .frame_goods import draw_frames
+    draw_frames(sheet,page,rows,db)
+    for element,typ,layer in rows:
         plan_color=element.parameters.get('plan_color',typ.color)
         color=tuple(int(plan_color[index:index+2],16)/255 for index in (1,3,5))
         points=geometry_points(element.geometry or {})

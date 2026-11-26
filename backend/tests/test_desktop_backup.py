@@ -31,11 +31,12 @@ def test_upgrade_snapshot_keeps_deleted_storage_and_original_database(tmp_path):
     assert previous_version(root,'1.0.43')==previous
 
 
-def test_archive_includes_live_wal_commits_and_verified_files(tmp_path):
+@pytest.mark.parametrize('compact',[False,True])
+def test_archive_includes_live_wal_commits_and_verified_files(tmp_path,compact):
     root,_=desktop_data(tmp_path)
     database=sqlite3.connect(root/'smart-home-calc.db');database.execute('PRAGMA journal_mode=WAL')
     database.execute("INSERT INTO projects VALUES(2,'Добавлен в WAL')");database.commit()
-    path=create_full_archive(root,'1.0.43')
+    path=create_full_archive(root,'1.0.43',compact=compact)
     try:
         with zipfile.ZipFile(path) as archive:
             manifest=json.loads(archive.read('manifest.json'))
@@ -78,3 +79,95 @@ def test_ticket_expiry_and_replacement_remove_unused_archives(tmp_path):
     assert tickets.take(second)==(two,'two.zip')
     assert tickets.take(second) is None
     two.unlink()
+
+
+def test_compact_archive_keeps_data_and_photos_but_omits_only_rebuildable_cache(tmp_path):
+    root,_=desktop_data(tmp_path);storage=root/'storage';image=storage/'plan.png';pdf=storage/'plan.pdf'
+    image.write_bytes(b'original plan image');pdf.write_bytes(b'%PDF immutable source')
+    cache=storage/'plan-q1024.png';cache.write_bytes(b'cached-render'*1000)
+    unknown=storage/'other-q1024.png';unknown.write_bytes(b'not registered as a cache')
+    photo=b'unchanged product photo';database=root/'smart-home-calc.db'
+    with sqlite3.connect(database) as db:
+        db.execute('CREATE TABLE pages(image_path TEXT,pdf_path TEXT)');db.execute('INSERT INTO pages VALUES(?,?)',(str(image),str(pdf)))
+        db.execute('CREATE TABLE products(id INTEGER PRIMARY KEY,photo BLOB)');db.execute('INSERT INTO products VALUES(1,?)',(photo,))
+        db.execute('CREATE TABLE disposable(payload BLOB)');db.executemany('INSERT INTO disposable VALUES(?)',[(b'x'*10000,)]*100);db.execute('DELETE FROM disposable')
+    original=hashlib.sha256(database.read_bytes()).hexdigest();archive_path=create_full_archive(root,'1.0.70',compact=True)
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            assert 'data/storage/plan-q1024.png' not in archive.namelist()
+            assert archive.read('data/storage/other-q1024.png')==unknown.read_bytes()
+            assert archive.read('data/storage/plan.png')==image.read_bytes()
+            assert archive.read('data/storage/plan.pdf')==pdf.read_bytes()
+            manifest=json.loads(archive.read('manifest.json'));details=manifest['optimization']
+            assert details['omitted_cache_files']==1 and details['omitted_cache_bytes']==cache.stat().st_size
+            assert details['database_bytes_after']<details['database_bytes_before']
+            for item in manifest['files']:assert hashlib.sha256(archive.read(item['path'])).hexdigest()==item['sha256']
+            destination=tmp_path/'restored-compact';archive.extractall(destination)
+        with sqlite3.connect(destination/'data'/'smart-home-calc.db') as restored:
+            assert restored.execute('SELECT photo FROM products').fetchone()[0]==photo
+            assert restored.execute('SELECT name FROM projects').fetchone()[0]=='Проект с рамками'
+            assert restored.execute('PRAGMA quick_check').fetchone()[0]=='ok'
+            assert restored.execute('PRAGMA freelist_count').fetchone()[0]==0
+        assert hashlib.sha256(database.read_bytes()).hexdigest()==original
+        assert cache.is_file() and unknown.is_file()
+    finally:archive_path.unlink()
+
+
+def test_compact_archive_keeps_cache_when_original_pdf_is_missing(tmp_path):
+    root,_=desktop_data(tmp_path);storage=root/'storage';image=storage/'scan.png';image.write_bytes(b'original image')
+    cache=storage/'scan-q2048.png';cache.write_bytes(b'only cached image')
+    with sqlite3.connect(root/'smart-home-calc.db') as db:
+        db.execute('CREATE TABLE pages(image_path TEXT,pdf_path TEXT)');db.execute('INSERT INTO pages VALUES(?,?)',(str(image),str(storage/'missing.pdf')))
+    path=create_full_archive(root,'1.0.70',compact=True)
+    try:
+        with zipfile.ZipFile(path) as archive:assert archive.read('data/storage/scan-q2048.png')==cache.read_bytes()
+    finally:path.unlink()
+
+
+def test_desktop_compact_backup_endpoint_preserves_workspace_and_guards(tmp_path):
+    import subprocess
+    import sys
+    root=tmp_path/'data';root.mkdir()
+    script='''
+import io,json,sqlite3,zipfile
+from pathlib import Path
+from types import SimpleNamespace
+import pymupdf
+from fastapi.testclient import TestClient
+from app.main import app
+import app.desktop_settings as desktop
+root=Path(__import__('os').environ['SMART_HOME_CALC_DATA_DIR'])
+desktop.sys=SimpleNamespace(platform='win32')
+desktop.os.startfile=lambda *args:None
+with TestClient(app) as client:
+    project=client.post('/api/projects',json={'name':'Компактный перенос проекта'}).json()
+    pid=project['id']
+    pdf=pymupdf.open();pdf.new_page()
+    client.post(f'/api/projects/{pid}/pdf',files={'file':('plan.pdf',pdf.tobytes(),'application/pdf')})
+    settings={'symbolScale':.7,'roomLabelsVisible':False,'savedAt':1000}
+    assert client.patch(f'/api/projects/{pid}/view-settings',json=settings).status_code==200
+    with sqlite3.connect(root/'smart-home-calc.db') as db:
+        image=Path(db.execute('SELECT image_path FROM pages').fetchone()[0])
+    cache=image.with_name(image.stem+'-q1024.png');cache.write_bytes(b'rebuildable cache')
+    endpoint='/api/settings/backups?compact=true'
+    assert client.post(endpoint,json={'instance':'wrong'}).status_code==403
+    assert client.post(endpoint,headers={'Origin':'https://outside.example'},json={'instance':'backup-test'}).status_code==403
+    response=client.post(endpoint,json={'instance':'backup-test'})
+    assert response.status_code==200,response.text
+    result=response.json()
+    assert result['optimization']['omitted_cache_files']==1
+    assert result['filename'].endswith('-compact.zip')
+    download=client.get(result['url']);assert download.status_code==200
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        manifest=json.loads(archive.read('manifest.json'))
+        assert manifest['optimization']==result['optimization']
+        copy=root.parent/'snapshot.db';copy.write_bytes(archive.read('data/smart-home-calc.db'))
+    with sqlite3.connect(copy) as db:
+        name,preferences=db.execute('SELECT name,view_settings FROM projects WHERE id=?',(pid,)).fetchone()
+        assert name=='Компактный перенос проекта'
+        assert json.loads(preferences)==settings
+    assert cache.is_file()
+    assert client.get(result['url']).status_code==404
+'''
+    result=subprocess.run([sys.executable,'-c',script],env={**os.environ,'DATABASE_URL':f'sqlite:///{root}/smart-home-calc.db','AUTO_CREATE_SCHEMA':'1','STORAGE_DIR':str(root/'storage'),'SMART_HOME_CALC_DATA_DIR':str(root),'SMART_HOME_CALC_INSTANCE_TOKEN':'backup-test'},capture_output=True,text=True,timeout=30)
+    assert result.returncode==0,result.stderr

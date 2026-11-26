@@ -21,7 +21,7 @@ from fastapi import FastAPI, Depends, HTTPException, UploadFile, Query, Form, Re
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
-from pydantic import BaseModel, Field, model_validator, ValidationError
+from pydantic import BaseModel, Field, model_validator, field_serializer, ValidationError
 from sqlalchemy import delete, inspect, select, text
 from sqlalchemy.orm import Session as DbSession
 from .db import Base, engine, session, Session
@@ -86,6 +86,12 @@ async def lifespan(app):
         if 'hidden_groups' not in {column['name'] for column in inspect(engine).get_columns('layers')}:
             with engine.begin() as connection:
                 connection.execute(text("ALTER TABLE layers ADD COLUMN hidden_groups JSON NOT NULL DEFAULT '[]'"))
+        project_columns={column['name'] for column in inspect(engine).get_columns('projects')}
+        with engine.begin() as connection:
+            if 'last_worked_page_id' not in project_columns:
+                connection.execute(text('ALTER TABLE projects ADD COLUMN last_worked_page_id INTEGER'))
+            if 'view_settings' not in project_columns:
+                connection.execute(text("ALTER TABLE projects ADD COLUMN view_settings JSON NOT NULL DEFAULT '{}'"))
         page_columns={column['name'] for column in inspect(engine).get_columns('pages')}
         page_upgrades={
             'overlay_visible':'BOOLEAN NOT NULL DEFAULT 0',
@@ -127,7 +133,7 @@ async def lifespan(app):
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.69'
+APP_VERSION = '1.0.70'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 from .errors import install_error_handlers, exception_message
 install_error_handlers(app)
@@ -365,7 +371,11 @@ class BackupElement(BaseModel):
     geometry: dict
     comment: str = Field(default='',max_length=2000)
 
+from .project_workspace import ViewSettings, last_worked_page
+
 class BackupManifest(BaseModel):
+    last_worked_page_backup_id: int | None = None
+    view_settings: ViewSettings = Field(default_factory=ViewSettings)
     version: Literal[1]
     project_name: str = Field(min_length=1,max_length=200)
     layers: list[BackupLayer] = Field(max_length=500)
@@ -375,6 +385,10 @@ class BackupManifest(BaseModel):
     pages: list[BackupPage] = Field(max_length=1000)
     elements: list[BackupElement] = Field(max_length=100000)
     quotation: dict | None = None
+
+    @field_serializer('view_settings')
+    def serialize_view_settings(self,value):
+        return value.model_dump(exclude_unset=True)
 
 def catalog_product(db, product):
     row=data(product)
@@ -626,7 +640,7 @@ def open_settings_rollback(body:OpenDataFolderInput,request:Request):
 
 
 @app.post('/api/settings/backups')
-def export_all_data(body:OpenDataFolderInput,request:Request):
+def export_all_data(body:OpenDataFolderInput,request:Request,compact:bool=False):
     check_desktop_origin(request)
     from .desktop_settings import verify_instance,data_directory
     from .desktop_backup import create_full_archive
@@ -635,10 +649,13 @@ def export_all_data(body:OpenDataFolderInput,request:Request):
     if engine.dialect.name!='sqlite':raise HTTPException(409,'Полная копия доступна для автономной SQLite-версии')
     if not BACKUP_DOWNLOADS.build_lock.acquire(blocking=False):raise HTTPException(409,'Резервная копия уже формируется')
     try:
-        path=create_full_archive(data_directory(),APP_VERSION)
-        filename='SmartHomeCalc-data-v'+APP_VERSION+'.zip'
+        path=create_full_archive(data_directory(),APP_VERSION,compact=compact)
+        filename='SmartHomeCalc-data-v'+APP_VERSION+('-compact' if compact else '')+'.zip'
+        optimization={}
+        if compact:
+            with zipfile.ZipFile(path) as archive:optimization=json.loads(archive.read('manifest.json')).get('optimization',{})
         ticket=BACKUP_DOWNLOADS.add(path,filename)
-        return {'url':'/api/settings/backups/'+ticket+'.zip','filename':filename,'size':path.stat().st_size}
+        return {'url':'/api/settings/backups/'+ticket+'.zip','filename':filename,'size':path.stat().st_size,**({'optimization':optimization} if compact else {})}
     except (OSError,ValueError) as exc:
         logging.exception('Full backup failed')
         raise HTTPException(500,'Не удалось создать резервную копию. Проверьте свободное место и повторите попытку') from exc
@@ -1053,6 +1070,7 @@ def backup_project(pid: int, db: DbSession = Depends(session)):
             pdf_files[str(path)]=f'pdf/{len(pdf_files)+1}.pdf'
     manifest=BackupManifest(
         version=1,project_name=project.name,quotation=quotation,
+        last_worked_page_backup_id=last_worked_page(db,project),view_settings=project.view_settings,
         layers=[BackupLayer(backup_id=item.id,name=item.name,seed_key=item.seed_key,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity,hidden_groups=item.hidden_groups) for item in layers],
         rooms=[BackupRoom(
             backup_id=item.id,name=item.name,wet=item.wet,
@@ -1119,6 +1137,8 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
             raise ValueError('manifest.json больше 5 МБ')
         manifest=BackupManifest.model_validate_json(archive.read(manifest_info))
         page_specs=backup_id_map(manifest.pages)
+        if manifest.last_worked_page_backup_id is not None and manifest.last_worked_page_backup_id not in page_specs:
+            raise ValueError('Рабочий лист отсутствует в резервной копии')
         layer_specs=backup_id_map(manifest.layers)
         room_specs=backup_id_map(manifest.rooms)
         type_specs=backup_id_map(manifest.types)
@@ -1169,7 +1189,7 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
         if 'archive' in locals(): archive.close()
     paths=[]
     try:
-        project=Project(name=manifest.project_name); db.add(project); db.flush()
+        project=Project(name=manifest.project_name,view_settings=manifest.view_settings.model_dump(exclude_unset=True)); db.add(project); db.flush()
         layer_map={}
         for item in manifest.layers:
             obj=Layer(project_id=project.id,name=item.name,seed_key=item.seed_key,visible=item.visible,locked=item.locked,export=item.export,opacity=item.opacity,hidden_groups=item.hidden_groups)
@@ -1220,6 +1240,8 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
                 pdf_path=str(stored_pdfs[item.pdf_file]),image_path=str(image),
             )
             document.close(); db.add(obj); db.flush(); page_map[item.backup_id]=obj
+        if manifest.last_worked_page_backup_id is not None:
+            project.last_worked_page_id=page_map[manifest.last_worked_page_backup_id].id
         room_map={}
         for item in manifest.rooms:
             obj=Room(
@@ -1272,11 +1294,22 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
 
 @app.get('/api/projects/{pid}')
 def project(pid: int, db: DbSession = Depends(session)):
-    p = data(require(db,Project,pid))
+    target=require(db,Project,pid)
+    p = data(target)
+    p['last_worked_page_id']=last_worked_page(db,target)
     for key, model in [('pages',Page),('rooms',Room),('layers',Layer),('elements',Element)]:
         p[key] = [data(x) for x in db.scalars(select(model).where(model.project_id==pid).order_by(model.id))]
     p['history']=history_state(pid)
     return p
+
+@app.patch('/api/projects/{pid}/view-settings')
+def save_project_view_settings(pid:int,body:ViewSettings,db:DbSession=Depends(session)):
+    project=require(db,Project,pid)
+    if body.savedAt is not None and body.savedAt < (project.view_settings.get('savedAt') or 0):
+        return project.view_settings
+    project.view_settings={**project.view_settings,**body.model_dump(exclude_unset=True)}
+    db.commit()
+    return project.view_settings
 
 @app.delete('/api/projects/{pid}')
 def remove_project(pid: int, db: DbSession = Depends(session)):
@@ -1400,6 +1433,8 @@ def delete_project_pages(db: DbSession, project_id: int, page_ids: list[int]):
     for room in db.scalars(select(Room).where(Room.project_id==project_id,Room.page_id.in_(unique_ids))):
         db.delete(room)
     for element in elements: db.delete(element)
+    project=require(db,Project,project_id)
+    if project.last_worked_page_id in unique_ids:project.last_worked_page_id=None
     for page in pages: db.delete(page)
     db.flush()
     remaining=list(db.scalars(select(Page).where(Page.project_id==project_id).order_by(Page.number,Page.id)))
@@ -1602,7 +1637,9 @@ def add_element(pid: int, body: ElementInput, db: DbSession = Depends(session)):
     automatic_room=room_at_point(db,pid,body.page_id,body.x,body.y)
     if automatic_room: values['room_id']=automatic_room.id
     remember_elements(db,pid)
-    e=Element(project_id=pid,**values); db.add(e); db.commit(); return data(e)
+    e=Element(project_id=pid,**values); db.add(e)
+    require(db,Project,pid).last_worked_page_id=body.page_id
+    db.commit(); return data(e)
 
 @app.put('/api/elements/{eid}')
 def edit_element(eid: int, body: ElementInput, db: DbSession = Depends(session)):
@@ -1626,6 +1663,7 @@ def edit_element(eid: int, body: ElementInput, db: DbSession = Depends(session))
     if old_frame_group and old_frame_group!=new_frame_group:
         clear_frame_groups(db,e.project_id,{old_frame_group})
     for key,value in values.items(): setattr(e,key,value)
+    require(db,Project,e.project_id).last_worked_page_id=body.page_id
     db.commit(); return data(e)
 
 @app.delete('/api/elements/{eid}',status_code=204)

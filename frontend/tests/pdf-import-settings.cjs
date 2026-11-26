@@ -67,16 +67,21 @@ const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKM
   // Exercise settings in a desktop-shaped environment without opening a host file manager in the test.
   let available=true,failOpen=false;const opened=[];
   const directory='C:\\Users\\Тест\\AppData\\Local\\SmartHomeCalc\\data';
-  await page.route('**/api/settings',route=>route.fulfill({json:{version:'1.0.69',can_open_data_folder:available,data_directory:available?directory:null,instance:available?'desktop-test-instance':''}}));
+  await page.route('**/api/settings',route=>route.fulfill({json:{version:'1.0.70',can_open_data_folder:available,can_backup_all:available,data_directory:available?directory:null,instance:available?'desktop-test-instance':''}}));
   await page.route('**/api/settings/open-data-folder',route=> {opened.push(route.request().postDataJSON());return route.fulfill({status:failOpen?500:200,json:failOpen?{detail:'Не удалось открыть Проводник'}:{opened:true}});});
   const kinds=await (await api.get(base+'/types')).json(),kind=kinds.find(kind=>kind.name==='Розетка одинарная');
   const element=await api.post(base+`/projects/${created.id}/elements`,{data:{page_id:current.pages[0].id,layer_id:current.layers[0].id,type_id:kind.id,x:.4,y:.4,parameters:{quantity:1}}});assert.equal(element.status(),201);
+  const backups=[];
+  await page.route('**/api/settings/backups*',route=>{backups.push({url:route.request().url(),body:route.request().postDataJSON()});return route.fulfill({json:{url:'/api/test-backup.zip',filename:'compact.zip',size:1048576,optimization:{omitted_cache_files:2,omitted_cache_bytes:2097152,database_bytes_before:4194304,database_bytes_after:1048576}}});});
+  await page.route('**/api/test-backup.zip',route=>route.fulfill({body:Buffer.from('PK test'),headers:{'Content-Type':'application/zip','Content-Disposition':'attachment; filename="compact.zip"'}}));
   const settingsButton=page.getByRole('button',{name:'Настройки',exact:true});await settingsButton.click();
   const settings=page.getByRole('dialog',{name:'Настройки',exact:true});await settings.waitFor();
   assert.equal(await settings.getByLabel('Папка всех данных',{exact:true}).inputValue(),directory);
   await settings.getByRole('button',{name:'Открыть папку данных',exact:true}).click();
   await settings.getByRole('status').filter({hasText:'открыта в Проводнике'}).waitFor();
   assert.deepEqual(opened,[{instance:'desktop-test-instance'}]);
+  const download=page.waitForEvent('download');await settings.getByRole('button',{name:'Компактный ZIP для переноса',exact:true}).click();await download;
+  await settings.getByRole('status').filter({hasText:'Исключён восстанавливаемый кэш'}).waitFor();assert.equal(backups.length,1);assert.ok(backups[0].url.endsWith('/settings/backups?compact=true'));assert.deepEqual(backups[0].body,{instance:'desktop-test-instance'});
   await page.keyboard.press('Control+z');
   assert.equal((await (await api.get(base+`/projects/${created.id}`)).json()).elements.length,1,'Settings shortcuts must not undo objects behind the dialogue');
   if(process.env.IMPORT_SETTINGS_SCREENSHOT)await page.screenshot({path:process.env.IMPORT_SETTINGS_SCREENSHOT,fullPage:true});
@@ -87,6 +92,7 @@ const pdf=Buffer.from('JVBERi0xLjcKJcK1wrYKJSBXcml0dGVuIGJ5IE11UERGIDEuMjguMgoKM
   assert.equal(await settingsButton.evaluate(element=>element===document.activeElement),true);
   available=false;await settingsButton.click();await settings.waitFor();
   assert.equal(await settings.getByRole('button',{name:'Открыть папку данных',exact:true}).isDisabled(),true);
+  assert.equal(await settings.getByRole('button',{name:'Компактный ZIP для переноса',exact:true}).isDisabled(),true);
   assert.equal(await settings.getByLabel('Папка всех данных',{exact:true}).count(),0);
   await page.keyboard.press('Escape');
   assert.deepEqual(errors,[]);

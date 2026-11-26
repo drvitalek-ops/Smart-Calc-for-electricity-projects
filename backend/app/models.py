@@ -10,6 +10,8 @@ class User(Base):
 
 class Project(Base):
     __tablename__ = 'projects'
+    last_worked_page_id: Mapped[int | None] = mapped_column(default=None)
+    view_settings: Mapped[dict] = mapped_column(JSON, default=dict, server_default='{}')
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

@@ -15,7 +15,7 @@ def summarize_categories(rows):
     for row in rows:
         if row['quantity'] <= 0:
             continue
-        grouped[row['category']][(row['name'], row['unit'])] += row['quantity']
+        grouped[row['category']][(row.get('product') or row['name'] if row['category']=='Рамки' else row['name'], row['unit'])] += row['quantity']
         if row['category'] == 'Рамки':
             posts += int(json.loads(row['parameters'])['frame_posts']) * row['quantity']
     categories = []

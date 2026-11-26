@@ -23,7 +23,7 @@ import "./QuotationEditor.css";
 
 export type QuotationKind = { id:number; name:string; category:string; unit:string; active:boolean };
 type Line = {
-  id:string; source_key:string; source_signature?:string; source_ids:number[]; type_id:number|null; product_id:number|null;
+  id:string; source_key:string; source_signature?:string; source_ids:number[]; source_frame_ids?:string[]; frame_variant?:string; type_id:number|null; product_id:number|null;
   name:string; sku:string; manufacturer:string; ip?:string; room:string; description:string; comment?:string; quantity:string;
   quantity_override?:string|null; calculated_quantity?:string|null; overrides?:string[];
   unit:"шт"|"м"; unit_price:string; currency:string; discount:string|null; image:string;
@@ -370,7 +370,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
       const current=docRef.current;if(!current?.lines.length)throw Error('Добавьте позиции для выгрузки в Word');
       const issues=current.lines.flatMap((line,index)=>{const issue=decimalIssue(line.quantity,.001,1000000,3,true);return issue?['Строка КП № '+(index+1)+' — Количество: '+issue]:[];});
       if(issues.length){focusError.current=true;throw Error(issues.slice(0,50).join('; '));}
-      const payload={number:current.number,room_layout:current.room_layout,plan_sync:current.plan_sync,plan_snapshot_ids:current.plan_snapshot_ids,excluded_plan_ids:current.excluded_plan_ids,plan_frame_snapshot_keys:current.plan_frame_snapshot_keys,excluded_frame_keys:current.excluded_frame_keys,lines:current.lines.map(({id,name,manufacturer,room,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override})=>({id,name,manufacturer,room,quantity,unit,type_id,source_key,source_signature,source_ids,quantity_override}))};
+      const payload={number:current.number,room_layout:current.room_layout,plan_sync:current.plan_sync,plan_snapshot_ids:current.plan_snapshot_ids,excluded_plan_ids:current.excluded_plan_ids,plan_frame_snapshot_keys:current.plan_frame_snapshot_keys,excluded_frame_keys:current.excluded_frame_keys,lines:current.lines.map(({id,name,manufacturer,room,quantity,unit,type_id,source_key,source_signature,source_ids,source_frame_ids,frame_variant,quantity_override})=>({id,name,manufacturer,room,quantity,unit,type_id,source_key,source_signature,source_ids,source_frame_ids,frame_variant,quantity_override}))};
       const response=await apiFetch('/api'+base+'/sku.docx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const url=URL.createObjectURL(await response.blob()),link=document.createElement('a');
       link.href=url;link.download='SKU-КП-'+(current.number||'без-номера').replace(/[^a-zа-яё0-9_-]/gi,'-')+'.docx';
@@ -507,7 +507,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
               <label>Комментарий<textarea className="quotation-row-comment" aria-label={"Комментарий строки "+(index+1)} placeholder="Комментарий" rows={2} maxLength={2000} value={line.comment??''} disabled={busy} onChange={event=>editLine(line.id,{comment:event.target.value})}/></label></div>
             <label>IP<input aria-label={"IP строки "+(index+1)} placeholder="IP44" maxLength={16} value={line.ip??''} disabled={busy} onChange={event=>editLine(line.id,{ip:event.target.value})}/></label>
             <label>Номенклатура<SearchSelect aria-label={"Номенклатура строки "+(index+1)} disabled={busy||Boolean(line.source_ids.length)} value={line.type_id??''} onChange={event=>{const type=types.find(type=>type.id===Number(event.target.value));editLine(line.id,{type_id:type?.id??null,product_id:null});}}><option value="">Без категории</option>{types.filter(type=>type.active&&type.unit===line.unit).map(type=><option key={type.id} value={type.id}>{type.category} · {type.name}</option>)}</SearchSelect></label>
-            <ToolButton icon="copy" type="button" disabled={busy} aria-label={"Дублировать строку "+(index+1)+" в КП"} onClick={()=>appendLine({...line,id:crypto.randomUUID(),source_key:'',source_ids:[],quantity_override:null,calculated_quantity:null,overrides:[]})}>Ручная копия строки</ToolButton>
+            <ToolButton icon="copy" type="button" disabled={busy} aria-label={"Дублировать строку "+(index+1)+" в КП"} onClick={()=>appendLine({...line,id:crypto.randomUUID(),source_key:'',source_ids:[],source_frame_ids:[],frame_variant:'',quantity_override:null,calculated_quantity:null,overrides:[]})}>Ручная копия строки</ToolButton>
             <ToolButton icon="list" type="button" disabled={busy} aria-label={'Переместить строку '+(index+1)+' на номер'} onClick={()=>moveToPosition(line.id)}>Переместить на №…</ToolButton>
             <textarea aria-label={"Описание строки "+(index+1)} placeholder="Описание товара" value={line.description} disabled={busy} onChange={e=>editLine(line.id,{description:e.target.value})}/>
             </>}</details>

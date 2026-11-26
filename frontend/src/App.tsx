@@ -1,3 +1,4 @@
+import FrameProductEditor from "./FrameProductEditor";
 import PlanProductAssignment from "./PlanProductAssignment";
 import BulkEditor from "./BulkEditor";
 import IssueBar,{type WorkIssue} from "./IssueBar";
@@ -975,6 +976,7 @@ export default function App() {
   const [planBulkIssues,setPlanBulkIssues]=useState<WorkIssue[]>([]);
   const [batchStyle,setBatchStyle]=useState<Record<string,unknown>>({});
   function selectLeftTool(id:string){
+    if(frameDirty&&id!=="properties"){setError("Сначала сохраните или отмените свойства рамки");return;}
     if(roomMode&&id!=="rooms"){setError("Сначала завершите или отмените контур помещения");return;}
     if(placing&&id!=="objects"&&linePoints.length){setError("Сначала завершите или отмените линию");return;}
     const activate=()=>{
@@ -1009,6 +1011,7 @@ export default function App() {
         rooms: [],
       },
     });
+  const [frameDirty,setFrameDirty]=useState(false),[frameBusy,setFrameBusy]=useState(false);
   const [planProductDirty,setPlanProductDirty]=useState(false),[planProductBusy,setPlanProductBusy]=useState(false);
   const [settingsOpen,setSettingsOpen]=useState(false),[draggingPdf,setDraggingPdf]=useState(false),
     [pdfImport,setPdfImport]=useState<{file:File;name:string}|null>(null),[pdfImportError,setPdfImportError]=useState("");
@@ -1026,7 +1029,7 @@ export default function App() {
     [calibrating, setCalibrating] = useState(false),
     [catalogOpen, setCatalogOpen] = useState(false),
     [view, setView] = useState<"plan" | "report" | "quote" | "quotations">("plan");
-  const busy=actionBusy||planProductBusy;
+  const busy=actionBusy||planProductBusy||frameBusy;
   const [quoteDirty,setQuoteDirty]=useState(false),[quoteBusy,setQuoteBusy]=useState(false),[settingsBusy,setSettingsBusy]=useState(false),[catalogBusy,setCatalogBusy]=useState(false),[catalogDirty,setCatalogDirty]=useState(false);
   const [alignPageId, setAlignPageId] = useState<number | null>(null);
   const [alignOriginal, setAlignOriginal] = useState<{
@@ -1183,7 +1186,7 @@ export default function App() {
 
   const linkedStripSet=useMemo(()=>new Set(supplyLinking?.stripIds??[]),[supplyLinking?.stripIds]);
   const pendingDraft=Boolean(view==='plan'&&selected&&elementMap.get(selected.id)&&!sameItem(selected,elementMap.get(selected.id)!));
-  const unsavedWorkbench=quoteDirty||catalogDirty||planProductDirty||pendingDraft||objectDragging||Boolean(roomMode&&roomPoints.length||placing&&linePoints.length||supplyLinking);
+  const unsavedWorkbench=quoteDirty||catalogDirty||planProductDirty||frameDirty||pendingDraft||objectDragging||Boolean(roomMode&&roomPoints.length||placing&&linePoints.length||supplyLinking);
   useDesktopState(unsavedWorkbench,busy||quoteBusy||settingsBusy||catalogBusy);
   const availableTypes=useMemo(()=>types.filter(item=>item.active),[types]);
   const libraryTypes=useMemo(()=>availableTypes.filter(item=>!libraryGroup || (item.group ?? item.category)===libraryGroup),[availableTypes,libraryGroup]);
@@ -1205,11 +1208,13 @@ export default function App() {
     }
   }
   function openCatalog(){
+    if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}
     if(planProductDirty){setError('Сначала сохраните или закройте форму товара с плана');return;}
     void run(async()=>{await saveDraftBeforeNavigation();await refreshCatalogue();setCatalogOpen(true);});
   }
-  function openSettings(){if(planProductDirty){setError('Сначала сохраните или закройте форму товара с плана');return;}settingsTrigger.current=document.activeElement as HTMLElement|null;void run(async()=>{await saveDraftBeforeNavigation();setSettingsOpen(true);});}
+  function openSettings(){if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}if(planProductDirty){setError('Сначала сохраните или закройте форму товара с плана');return;}settingsTrigger.current=document.activeElement as HTMLElement|null;void run(async()=>{await saveDraftBeforeNavigation();setSettingsOpen(true);});}
   function canLeaveQuote() {
+    if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return false;}
     if(planProductDirty){setError('Сначала сохраните или закройте форму товара с плана');return false;}
     return !["quote","quotations"].includes(view) || !quoteDirty || confirm("В КП есть несохранённые изменения. Выйти без сохранения?");
   }
@@ -1223,7 +1228,8 @@ export default function App() {
     dragPreview.current=item;
     if(planPreview.current)planPreview.current.update(item);else setSelected(item);
   }
-  async function saveDraftBeforeNavigation(){
+  async function saveDraftBeforeNavigation(allowFrame=false){
+    if(frameDirty&&!allowFrame)throw new Error("Сначала сохраните или отмените свойства рамки");
     if(view!=="plan"||!selected||selectedIds.length!==1)return;
     const item=(drag.current||nodeDrag.current)?takeObjectPreview():selected;
     const stored=project?.elements.find(current=>current.id===item?.id);
@@ -1242,7 +1248,7 @@ export default function App() {
     if(busy || quoteBusy) {setError("Дождитесь завершения сохранения или загрузки");return;}
     if(["quote","quotations"].includes(view) && quoteDirty){setError("Сначала сохраните изменения КП");return;}
     if(supplyLinking){setError("Сначала завершите или отмените привязку LED-лент");return;}
-    if(settingsOpen || catalogOpen || pdfImport || deletingProject || planProductDirty) {setError("Закройте открытое окно перед импортом PDF");return;}
+    if(settingsOpen || catalogOpen || pdfImport || deletingProject || planProductDirty || frameDirty) {setError("Закройте открытое окно перед импортом PDF");return;}
     if(files.length!==1) {setError("Перетащите один PDF-файл проекта");return;}
     const file=files[0];
     if(!/\.pdf$/i.test(file.name) && file.type!=="application/pdf") {setError("Для нового проекта нужен PDF-файл");return;}
@@ -1356,6 +1362,7 @@ export default function App() {
     return `LED-линия №${item.id} · ${room?.name ?? "Без помещения"} · ${Number(item.parameters.length ?? 0).toLocaleString("ru-RU")} м · ${sheet?.name || `Лист ${sheet?.number}`}`;
   }
   async function removeSelected() {
+    if(frameDirty)throw new Error("Сначала сохраните или отмените свойства рамки");
     clearObjectPreview();
     const ids = selectedIds.length ? selectedIds : selected ? [selected.id] : [];
     // Remove dependent supplies before their strips when both are selected.
@@ -1428,7 +1435,7 @@ export default function App() {
     );
   }
   useEffect(() => {
-    if (!selected || objectDragging || selectedIds.length!==1 || !project || busy || planProductDirty || ["quote","quotations"].includes(view) || deletingProject || drag.current || nodeDrag.current)
+    if (!selected || objectDragging || selectedIds.length!==1 || !project || busy || planProductDirty || frameDirty || ["quote","quotations"].includes(view) || deletingProject || drag.current || nodeDrag.current)
       return;
     const stored = project.elements.find((item) => item.id === selected.id);
     if (!stored || sameItem(selected, stored)) return;
@@ -1437,11 +1444,11 @@ export default function App() {
       600,
     );
     return () => window.clearTimeout(timeout);
-  }, [selected, selectedIds.length, project, busy, planProductDirty, deletingProject, view, objectDragging]);
+  }, [selected, selectedIds.length, project, busy, planProductDirty, frameDirty, deletingProject, view, objectDragging]);
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
       // A dialog is visible before its child's effect reports modal state to App.
-      if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject || catalogOpen || planProductDirty || (event.target as HTMLElement|null)?.closest('[role="dialog"],[data-search-popup]') || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      if (["quote","quotations"].includes(view) || settingsOpen || pdfImport || deletingProject || catalogOpen || planProductDirty || frameDirty&&!frameBusy || (event.target as HTMLElement|null)?.closest('[role="dialog"],[data-search-popup]') || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       if(supplyLinking) {
         if((event.target as HTMLElement|null)?.matches('input,textarea,[contenteditable="true"]'))return;
         const modifier=event.ctrlKey || event.metaKey,key=event.key.toLowerCase();
@@ -1510,7 +1517,7 @@ export default function App() {
     }
     window.addEventListener("keydown", keydown);
     return () => window.removeEventListener("keydown", keydown);
-  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport, deletingProject, view,catalogOpen,planProductDirty,elementMap,elementsVisible,zoom]);
+  }, [selected, selectedIds, busy, project, alignPageId, roomMode, calibrationStart, placing, kind, linePoints, lineRedo, supplyLinking, settingsOpen, pdfImport, deletingProject, view,catalogOpen,planProductDirty,frameDirty,frameBusy,elementMap,elementsVisible,zoom]);
   useEffect(() => {
     if (!busy && !["quote","quotations"].includes(view) && !deletingProject && pendingHistory.current.length) {
       const redo = pendingHistory.current.shift()!;
@@ -1571,6 +1578,7 @@ export default function App() {
     await refresh(project!.id);
   }
   function changeLayerGroups(layer:Layer,hidden:string[]){
+    if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}
     if(!project)return;
     const pid=project.id,value=[...new Set(hidden)];groupDrafts.current.set(layer.id,value);groupPending.current.set(layer.id,value);
     setProject(current=>current?{...current,layers:current.layers.map(item=>item.id===layer.id?{...item,hidden_groups:value}:item)}:current);
@@ -1872,6 +1880,7 @@ export default function App() {
     event.preventDefault();
     event.stopPropagation();
     if(supplyLinking)return;
+    if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}
     if (!selectedIds.includes(item.id)) {
       setSelectedIds([item.id]);
       setFramePosts(1);
@@ -1887,6 +1896,7 @@ export default function App() {
     setRoomPointMenu(null);
   }
   function choose(item: Item, additive: boolean) {
+    if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}
     if(leftTool==="frames"&&!isElectrical(typeMap.get(item.type_id)))return;
     const stored=selected&&project?.elements.find(current=>current.id===selected.id);
     if(selected&&stored&&selected.id!==item.id&&!sameItem(selected,stored))void run(()=>save({...selected}));
@@ -1943,6 +1953,7 @@ export default function App() {
     }, 50);
   }
   function selectSameType(item: Item) {
+    if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}
     if (!project) return;
     window.getSelection()?.removeAllRanges();
     const ids = project.elements
@@ -1980,7 +1991,7 @@ export default function App() {
         "plan_icon",
         "plan_color",
         "frame_group",
-        "frame_posts",
+        "frame_posts","frame_product_id","frame_color",
       ]) {
         if (key in selected.parameters)
           parameters[key] = selected.parameters[key];
@@ -1999,6 +2010,7 @@ export default function App() {
     setSelected({ ...selected, type_id: typeId, product_id: null, parameters });
   }
   async function changeFrame(path: string, posts?: number) {
+    if(frameDirty)throw new Error("Сначала сохраните или отмените свойства рамки");
     if (!project) return;
     // Flush pending property edits before changing server-managed frame data.
     const stored =
@@ -2026,6 +2038,7 @@ export default function App() {
   const sceneContextMenu=useStableCallback((item:Item,event:React.MouseEvent<SVGGElement>)=>{if(leftTool==='frames'&&!isElectrical(typeMap.get(item.type_id))){event.preventDefault();event.stopPropagation();return;}showObjectMenu(item,event);});
   const sceneDoubleClick=useStableCallback((item:Item)=>{if(!supplyLinking&&(leftTool!=="frames"||isElectrical(typeMap.get(item.type_id))))selectSameType(item);});
   const scenePointerDown=useStableCallback((item:Item,event:React.PointerEvent<SVGGElement>)=>{
+    if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}
     if(supplyLinking){if(isLedStrip(typeMap.get(item.type_id)))toggleSupplyStrip(item.id);return;}
     if(leftTool==="frames"&&!isElectrical(typeMap.get(item.type_id)))return;
     if(objectDoubleClick(item))return;
@@ -2036,7 +2049,7 @@ export default function App() {
     }
   });
   const sceneNodeDrag=useStableCallback((item:Item,index:number,point:Point,event:React.PointerEvent<SVGElement>)=>{
-    if(busy)return;choose(item,false);event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);dragPreview.current=null;nodeDrag.current={index,point};setObjectDragging(true);
+    if(busy||frameDirty)return;choose(item,false);event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);dragPreview.current=null;nodeDrag.current={index,point};setObjectDragging(true);
   });
   const previewPoints =
       (lineCursor && linePoints.length ? [...linePoints,lineCursor]:linePoints).map(point=>page?pagePoint(point,page.id):point),
@@ -2518,11 +2531,13 @@ export default function App() {
                       Выделите объекты рамкой мыши или кликами с зажатым Ctrl.
                     </p>
                   )}
+                  {Boolean(selected?.parameters.frame_group)&&selected&&<button type="button" disabled={busy} onClick={()=>{setLeftTool('properties');setLeftExpanded(true);}}>Товар и цвет выбранной рамки</button>}
                   </section><section data-tool-section="properties"><PanelHeading title="Свойства объекта" caption="Параметры и оформление" icon="edit"/><ToolButton icon="back" aria-label="Вернуться к плану" onClick={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()}>Вернуться к плану</ToolButton>
+                  {Boolean(selected?.parameters.frame_group)&&selected&&<FrameProductEditor key={String(selected.parameters.frame_group)} projectId={project.id} item={selected} members={project.elements.filter(item=>item.parameters.frame_group===selected.parameters.frame_group)} types={types} catalog={catalog} busy={actionBusy||planProductBusy} locked={project.elements.some(item=>item.parameters.frame_group===selected.parameters.frame_group&&layerMap.get(item.layer_id)?.locked)} onBefore={async()=>{await saveDraftBeforeNavigation(true);await elementSaveQueue.current;}} onSaved={async()=>{const next=await refresh(project.id);setSelected(current=>current?next.elements.find(item=>item.id===current.id)??null:null);setError('');}} onDirtyChange={setFrameDirty} onBusyChange={setFrameBusy}/>}
                   {/* Keep the captured product draft mounted when visibility refreshes clear selection. */}
-                  <PlanProductAssignment key={project.id} projectId={project.id} items={selected&&selectedIds.length===1?[selected]:bulkPlanItems} types={types} catalog={catalog} busy={actionBusy} locked={bulkPlanItems.some(item=>layerMap.get(item.layer_id)?.locked)} onBefore={async()=>{await saveDraftBeforeNavigation();await elementSaveQueue.current;}} onAssigned={async()=>{const next=await refresh(project.id);setSelected(current=>current?next.elements.find(item=>item.id===current.id)??null:null);setError('');}} onRefine={ids=>void run(async()=>{await saveDraftBeforeNavigation();setSelectedIds(ids);setSelected(ids.length?elementMap.get(ids[0])??null:null);})} onError={setError} onDirtyChange={setPlanProductDirty} onBusyChange={setPlanProductBusy}/>
+                  <PlanProductAssignment key={project.id} projectId={project.id} items={selected&&selectedIds.length===1?[selected]:bulkPlanItems} types={types} catalog={catalog} busy={actionBusy||frameDirty||frameBusy} locked={bulkPlanItems.some(item=>layerMap.get(item.layer_id)?.locked)} onBefore={async()=>{await saveDraftBeforeNavigation();await elementSaveQueue.current;}} onAssigned={async()=>{const next=await refresh(project.id);setSelected(current=>current?next.elements.find(item=>item.id===current.id)??null:null);setError('');}} onRefine={ids=>void run(async()=>{await saveDraftBeforeNavigation();setSelectedIds(ids);setSelected(ids.length?elementMap.get(ids[0])??null:null);})} onError={setError} onDirtyChange={setPlanProductDirty} onBusyChange={setPlanProductBusy}/>
                   {selected && selectedIds.length === 1 ? (
-                    <fieldset disabled={busy||project.layers.find(layer=>layer.id===selected.layer_id)?.locked} style={{border:0,padding:0}}>
+                    <fieldset disabled={busy||frameDirty||project.layers.find(layer=>layer.id===selected.layer_id)?.locked} style={{border:0,padding:0}}>
                       <div className="object-title">
                         <button
                           type="button"
@@ -2616,7 +2631,7 @@ export default function App() {
                           ([key]) =>
                             ![
                               ...appearanceKeys,"_quotation","manual_length","measured_length",
-                              "frame_posts",
+                              "frame_posts","frame_product_id","frame_color",
                               "frame_group",
                               "plan_icon",
                               "plan_color",
@@ -2684,7 +2699,7 @@ export default function App() {
                     </p>
                   )}
                 </section><section data-tool-section="style"><h3>Оформление на плане</h3>
-                  {selected&&selectedIds.length===1 ? <fieldset disabled={busy||project.layers.find(layer=>layer.id===selected.layer_id)?.locked} style={{border:0,padding:0}}><AppearanceEditor kind={selectedKind} value={selected.parameters} onChange={parameters=>setSelected({...selected,parameters})} color={selectedKind?.color??'#38bdf8'} power={isPowerSupply(selectedKind)} line={selectedKind?.unit==='м'} electrical={isElectrical(selectedKind)} allowName={false}/><p className="autosave-note">Изменения сохраняются автоматически</p></fieldset> : selectedIds.length>1 ? <>
+                  {selected&&selectedIds.length===1 ? <fieldset disabled={busy||frameDirty||project.layers.find(layer=>layer.id===selected.layer_id)?.locked} style={{border:0,padding:0}}><AppearanceEditor kind={selectedKind} value={selected.parameters} onChange={parameters=>setSelected({...selected,parameters})} color={selectedKind?.color??'#38bdf8'} power={isPowerSupply(selectedKind)} line={selectedKind?.unit==='м'} electrical={isElectrical(selectedKind)} allowName={false}/><p className="autosave-note">Изменения сохраняются автоматически</p></fieldset> : selectedIds.length>1 ? <>
                     <p>Выбрано объектов: {selectedIds.length}. Применятся только изменённые настройки.</p><AppearanceEditor partial value={batchStyle} onChange={setBatchStyle} color="#38bdf8" line allowName={false}/>
                     <div className="appearance-actions"><ToolButton icon="save" disabled={busy||!Object.keys(batchStyle).length} onClick={()=>void run(async()=>{await api(`/projects/${project.id}/elements/appearance`,"PATCH",{element_ids:selectedIds,changes:batchStyle});setBatchStyle({});const updated=await refresh(project.id);setSelected(current=>current?updated.elements.find(item=>item.id===current.id)??null:null);})}>Применить к выбранным</ToolButton>
                     <ToolButton icon="refresh" disabled={busy} onClick={()=>void run(async()=>{await api(`/projects/${project.id}/elements/appearance`,"PATCH",{element_ids:selectedIds,changes:Object.fromEntries(appearanceKeys.filter(key=>key!=='display_name').map(key=>[key,null]))});setBatchStyle({});const updated=await refresh(project.id);setSelected(current=>current?updated.elements.find(item=>item.id===current.id)??null:null);})}>Сбросить оформление выбранных</ToolButton></div></> : <p className="hint">Выберите объект на плане или несколько объектов с Ctrl.</p>}
@@ -3052,6 +3067,7 @@ export default function App() {
                           }
                         }}
                         onPointerDown={(e) => {
+                          if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}
                           if (e.button !== 0 || e.target !== e.currentTarget)
                             return;
                           if(supplyLinking)return;
@@ -3395,6 +3411,10 @@ export default function App() {
                         {frameVisuals.map((frame) => (
                           <rect
                             className="frame-group-outline"
+                            role="button" tabIndex={0} aria-label={"Свойства рамки "+frame.group.slice(0,8)}
+                            onPointerDown={event=>event.stopPropagation()}
+                            onClick={event=>{event.stopPropagation();void run(async()=>{await saveDraftBeforeNavigation();setSelectedIds(frame.members.map(item=>item.id));setSelected(frame.members[0]);setLeftTool('properties');setLeftExpanded(true);});}}
+                            onKeyDown={event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();event.stopPropagation();void run(async()=>{await saveDraftBeforeNavigation();setSelectedIds(frame.members.map(item=>item.id));setSelected(frame.members[0]);setLeftTool('properties');setLeftExpanded(true);});}}}
                             key={frame.group}
                             x={frame.x}
                             y={frame.y}

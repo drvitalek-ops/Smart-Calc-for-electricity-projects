@@ -54,6 +54,8 @@ class QuoteLine(BaseModel):
     source_key: str = Field(default='',max_length=2000)
     source_signature: str = Field(default='',max_length=64)
     source_ids: list[int] = Field(default_factory=list,max_length=100000)
+    source_frame_ids:list[Annotated[str,Field(min_length=1,max_length=64)]]=Field(default_factory=list,max_length=100000)
+    frame_variant:str=Field(default='',max_length=200)
     type_id: int | None = Field(default=None,gt=0)
     product_id: int | None = Field(default=None,gt=0)
     name: str = Field(min_length=1,max_length=500)
@@ -296,7 +298,7 @@ def quote_scope(request:Request):
 def validate_standalone(quote):
     quote.plan_sync=False;quote.plan_snapshot_ids=[];quote.excluded_plan_ids=[]
     quote.plan_frame_snapshot_keys=[];quote.excluded_frame_keys=[]
-    if any(line.source_ids or line.source_key for line in quote.lines):
+    if any(line.source_ids or line.source_frame_ids or line.source_key for line in quote.lines):
         raise HTTPException(422,'Самостоятельное КП не может содержать привязки к плану')
 
 
@@ -359,7 +361,7 @@ def attach_standalone(qid:int,body:QuoteAttachment,db:DbSession=Depends(session)
     archived_id=None
     if previous.revision:
         detached=previous.model_copy(deep=True)
-        for line in detached.lines: line.source_ids=[];line.source_key=''
+        for line in detached.lines: line.source_ids=[];line.source_frame_ids=[];line.frame_variant='';line.source_key=''
         archived_id=new_standalone(db,detached).id
     quote.revision=previous.revision
     try:
@@ -421,6 +423,7 @@ def source_signature(row):
 
 def source_key(row):
     if row.get('element_ids'): return 'elements:'+hashlib.sha256(','.join(map(str,sorted(row['element_ids']))).encode()).hexdigest()
+    if row.get('frame_ids'):return 'frame:'+hashlib.sha256(','.join(sorted(row['frame_ids'])).encode()).hexdigest()+':'+row['name']
     return 'frame:'+row['room']+':'+row['name']
 
 
@@ -441,9 +444,9 @@ def import_lines(db,pid,quote):
     for row in calculated:
         key=source_key(row)
         old=previous.get(key)
-        if old is None and row.get('element_ids'):
-            current_ids=set(row['element_ids'])
-            matches=[candidate for candidate in previous.values() if current_ids.intersection(candidate.source_ids)]
+        if old is None and (row.get('element_ids') or row.get('frame_ids')):
+            current_ids=set(row.get('element_ids',[]) or row['frame_ids'])
+            matches=[candidate for candidate in previous.values() if current_ids.intersection(candidate.source_ids if row.get('element_ids') else candidate.source_frame_ids)]
             if len(matches)==1: old=matches[0]
             elif len(matches)>1:
                 if any(candidate.quantity_override is not None for candidate in matches):
@@ -466,7 +469,7 @@ def import_lines(db,pid,quote):
         used_ids.add(line_id)
         order_hints[line_id]=previous_order[old.id] if old else len(quote.lines)+len(lines)
         line=QuoteLine(id=line_id,source_key=key,source_signature=source_signature(row),
-            source_ids=row.get('element_ids',[]),type_id=row.get('type_id'),
+            source_ids=row.get('element_ids',[]),source_frame_ids=row.get('frame_ids',[]),frame_variant=row.get('frame_variant',''),type_id=row.get('type_id'),
             name=row['product'] or row['name'],room=row['room'],ip=str(json.loads(row['parameters']).get('ip','')),
             quantity=str(row['quantity']),calculated_quantity=str(row['quantity']),quantity_override=old.quantity_override if old else None,overrides=old.overrides if old else [],unit=row['unit'],unit_price=str(money(row['unit_price'])),
             product_id=row['product_id'],sku=row['sku'],manufacturer=row['manufacturer'],
@@ -503,7 +506,7 @@ def _new_plan_line(db,pid,row,ids,quantity,used):
         nonce+=1;line_id='plan-'+hashlib.sha256(f'{seed}:{nonce}:{ids}'.encode()).hexdigest()
     used.add(line_id)
     line=QuoteLine(id=line_id,source_key=source_key({**row,'element_ids':ids}),source_signature=signature,
-        source_ids=ids,type_id=row.get('type_id'),name=row['product'] or row['name'],room=row['room'],
+        source_ids=ids,source_frame_ids=row.get('frame_ids',[]),frame_variant=row.get('frame_variant',''),type_id=row.get('type_id'),name=row['product'] or row['name'],room=row['room'],
         ip=str(json.loads(row['parameters']).get('ip','')),quantity=quantity,calculated_quantity=quantity,
         unit=row['unit'],unit_price=money(row['unit_price']),product_id=row['product_id'],sku=row['sku'],
         manufacturer=row['manufacturer'],description=parameters_text(row['parameters'])[:2000],currency=row['currency'])
@@ -539,22 +542,21 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False,coalesce=True):
     excluded=set(quote.excluded_plan_ids)
     if quote.plan_snapshot_ids is not None:excluded.update(set(quote.plan_snapshot_ids)-represented)
     excluded.difference_update(represented);quote.excluded_plan_ids=sorted(excluded)
-    from .quotation_rooms import calculated_rows,represented_frames,filter_frames,_terms
+    from .quotation_rooms import calculated_rows,represented_frames,filter_frames
     rows=calculated_rows(db,pid,quote.room_layout)
+    from .quotation_frames import attach_legacy,sync_frames
+    attach_legacy(linked,rows,quote.excluded_frame_keys)
+    frame_sources={gid:key for row in rows for gid,key in row.get('frame_sources',{}).items()}
     physical_frames={key for row in rows for key in row.get('frame_quantities',{})}
     snapshot=set(quote.plan_frame_snapshot_keys or [])
-    represented_frame_keys=represented_frames(linked,(physical_frames|snapshot)-set(quote.excluded_frame_keys))
-    excluded_frames=set(quote.excluded_frame_keys)|(snapshot-represented_frame_keys)
+    represented_frame_keys=represented_frames(linked,(physical_frames|snapshot)-set(quote.excluded_frame_keys),frame_sources)
+    excluded_frames=set(quote.excluded_frame_keys)|((snapshot&physical_frames)-represented_frame_keys)
     excluded_frames.difference_update(represented_frame_keys)
     quote.excluded_frame_keys=sorted(excluded_frames)
     rows=filter_frames(rows,excluded_frames)
+    updated_frames=sync_frames(db,pid,quote,rows)
     elements={item.id:item for item in db.scalars(select(Element).where(Element.project_id==pid))}
     owners={eid:line for line in linked for eid in line.source_ids}
-    frames={line.source_key:line for line in linked if not line.source_ids}
-    frame_templates={}
-    for key,line in frames.items():
-        if line.quantity_override is None:
-            frame_templates.setdefault(key.rsplit(':',1)[-1],{}).setdefault(_terms(line),line)
     signatures={}
     for line in linked:
         if line.source_signature:signatures.setdefault(line.source_signature,[]).append(line)
@@ -569,9 +571,6 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False,coalesce=True):
     for row in rows:
         signature=source_signature(row)
         if not row.get('element_ids'):
-            old=frames.get(source_key(row))
-            if old:add(old,Decimal(str(row['quantity'])),[],signature)
-            else:new_rows.append((row,[],Decimal(str(row['quantity']))))
             continue
         ids=[eid for eid in row['element_ids'] if eid not in excluded]
         if not ids:continue
@@ -590,6 +589,7 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False,coalesce=True):
     updated=[]
     for original in quote.lines:
         if not original.source_key:updated.append(original);continue
+        if original.source_key.startswith('frame:') and not original.source_ids:continue
         quantity=quantities.get(original.id,Decimal(0))
         if quantity<=0:continue
         line=original.model_copy(deep=True)
@@ -600,17 +600,14 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False,coalesce=True):
         effective=line.quantity_override if line.quantity_override is not None else quantity
         if line.quantity!=effective:line.quantity=Decimal(str(float(effective)))
         updated.append(line)
+    ranks={line.id:index for index,line in enumerate(quote.lines)}
+    frame_ranks={gid:ranks[line.id] for line in quote.lines for gid in line.source_frame_ids}
+    updated.extend(updated_frames)
+    updated.sort(key=lambda line:ranks.get(line.id,min((frame_ranks[gid] for gid in line.source_frame_ids if gid in frame_ranks),default=len(ranks))))
     used={line.id for line in updated}
     for row,ids,quantity in new_rows:
         if quantity<=0:continue
         line=_new_plan_line(db,pid,row,ids,quantity,used)
-        if not ids:
-            templates=frame_templates.get(row['name'],{})
-            if len(templates)==1:
-                fresh=line;line=next(iter(templates.values())).model_copy(deep=True)
-                for field in ('id','source_key','source_signature','source_ids','room','quantity','calculated_quantity','quantity_override'):
-                    setattr(line,field,getattr(fresh,field))
-                line.overrides=[field for field in line.overrides if field!='room']
         updated.append(line)
     if len(updated)>5000:raise HTTPException(422,'В КП больше 5000 строк')
     quote.lines=updated
@@ -622,7 +619,7 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False,coalesce=True):
         from .quotation_grouping import merge_identical_lines
         merge_identical_lines(quote)
     quote.plan_snapshot_ids=sorted({eid for line in quote.lines for eid in line.source_ids})
-    quote.plan_frame_snapshot_keys=sorted(represented_frames(quote.lines,physical_frames-excluded_frames))
+    quote.plan_frame_snapshot_keys=sorted(represented_frames(quote.lines,physical_frames-excluded_frames,frame_sources))
     return quote
 
 
@@ -646,6 +643,10 @@ def bind_product(db,pid,quote,line_id,product):
         for element in elements:
             if element.product_id!=product.id:element.parameters={key:value for key,value in element.parameters.items() if key!='_quotation'}
             element.product_id=product.id
+    if line.source_frame_ids:
+        from .frame_goods import apply_properties
+        apply_properties(db,pid,line.source_frame_ids,{'frame_product_id':product.id})
+        line.frame_variant='product:'+str(product.id)
     # Product metadata follows the catalogue; the editor's room grouping stays manual.
     line.overrides=[field for field in line.overrides if field=='room']
     product_snapshot(db,line,product)
@@ -747,6 +748,9 @@ def bind_quote(body:QuoteBinding,db:DbSession=Depends(session),scope:tuple=Depen
             from .main import remember_elements
             remember_elements(db,pid)
             for element in elements: element.product_id=None
+        if line.source_frame_ids:
+            from .frame_goods import apply_properties
+            apply_properties(db,pid,line.source_frame_ids,{'frame_product_id':None})
         line.product_id=None
     else:
         product=db.get(Product,body.product_id)
@@ -843,6 +847,8 @@ class SkuLine(BaseModel):
     source_key:str=Field(default='',max_length=2000)
     source_signature:str=Field(default='',max_length=64)
     source_ids:list[int]=Field(default_factory=list,max_length=100000)
+    source_frame_ids:list[Annotated[str,Field(min_length=1,max_length=64)]]=Field(default_factory=list,max_length=100000)
+    frame_variant:str=Field(default='',max_length=200)
     quantity_override:RussianDecimal|None=Field(default=None,gt=0,le=1000000,max_digits=10,decimal_places=3,allow_inf_nan=False)
 
 
@@ -914,11 +920,18 @@ def restore_quote(db,pid,payload,type_map,product_map,element_map):
     quote=QuoteInput.model_validate({'room_layout':'legacy',**payload,'revision':0})
     if quote.plan_snapshot_ids is not None:quote.plan_snapshot_ids=sorted({element_map[eid].id for eid in quote.plan_snapshot_ids if eid in element_map})
     quote.excluded_plan_ids=sorted({element_map[eid].id for eid in quote.excluded_plan_ids if eid in element_map})
+    def remap_frame_key(key):
+        head,sep,product_id=key.rpartition(':product=')
+        if sep and product_id.isdigit() and int(product_id) in product_map:return head+sep+str(product_map[int(product_id)].id)
+        return key
+    if quote.plan_frame_snapshot_keys is not None:quote.plan_frame_snapshot_keys=[remap_frame_key(key) for key in quote.plan_frame_snapshot_keys]
+    quote.excluded_frame_keys=[remap_frame_key(key) for key in quote.excluded_frame_keys]
     for line in quote.lines:
         # Partial project imports remap type/product IDs used in the signature.
         line.source_signature=''
         line.type_id=type_map[line.type_id].id if line.type_id is not None else None
         line.product_id=product_map[line.product_id].id if line.product_id is not None else None
+        if line.frame_variant.startswith('product:') and line.product_id is not None:line.frame_variant='product:'+str(line.product_id)
         line.source_ids=[element_map[eid].id for eid in line.source_ids if eid in element_map]
         if line.source_key.startswith('elements:'):
             line.source_key=source_key({'element_ids':line.source_ids}) if line.source_ids else ''

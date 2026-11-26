@@ -12,7 +12,7 @@ PARAMETER_LABELS = {
     'ip': 'Степень защиты', 'voltage': 'Напряжение, В', 'control': 'Управление',
     'zone': 'Зона', 'strip_type': 'Тип ленты', 'profile': 'Профиль',
     'track_type': 'Тип трека', 'color': 'Цвет', 'mount': 'Монтаж',
-    'connectors': 'Соединители', 'end_caps': 'Заглушки', 'frame_posts': 'Постов в рамке',
+    'connectors': 'Соединители', 'end_caps': 'Заглушки', 'frame_posts': 'Постов в рамке', 'frame_color':'Цвет рамки',
     'length': 'Длина, м', 'quantity': 'Количество',
     'power_watts':'Мощность, Вт','led_strip':'Питает ленты','keys': 'Клавиш', 'contact_type': 'Контакт', 'switch_action': 'Механизм', 'backlight': 'Подсветка',
 }

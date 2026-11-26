@@ -214,7 +214,11 @@ def test_new_room_frames_keep_existing_terms_and_new_sizes_are_separate(client):
     quote=ok(client.post(path+'/product',json={'revision':quote['revision'],'line_id':frame['id'],'name':'Рамка заказная','manufacturer':'Завод','sku':'FRAME-1','unit_price':'250'}))
     frame=next(line for line in quote['lines'] if line['source_key'].startswith('frame:'));frame.update(discount='10',comment='Согласованная рамка')
     quote=ok(client.put(path,json=quote));quote=ok(client.post(path+'/room-layout',json={'revision':quote['revision'],'layout':'rooms'}))
-    ok(client.post(f'/api/projects/{pid}/frames',json={'element_ids':[items[3]['id']],'posts':1}))
+    created=ok(client.post(f'/api/projects/{pid}/frames',json={'element_ids':[items[3]['id']],'posts':1}))
+    # A new physical frame stays unbound until its product is explicitly chosen.
+    unbound=next(line for line in ok(client.get(path))['lines'] if created['frame_group'] in line['source_frame_ids'])
+    assert unbound['product_id'] is None and Decimal(unbound['unit_price'])==0
+    ok(client.patch(f'/api/projects/{pid}/frames/'+created['frame_group'],json={'product_id':frame['product_id']}))
     pair=[ok(client.post(f'/api/projects/{pid}/elements',json={**items[2],'x':.4+i*.1})) for i in range(2)]
     ok(client.post(f'/api/projects/{pid}/frames',json={'element_ids':[e['id'] for e in pair],'posts':2}))
     current=ok(client.get(path));frames=[line for line in current['lines'] if line['source_key'].startswith('frame:')]

@@ -9,20 +9,29 @@ from .models import Element
 
 def calculated_rows(db,pid,layout):
     from .main import report_rows
-    from .quotations import source_key
+    from .frame_goods import physical_key
     rows=[row for row in report_rows(db,pid)['rows'] if row['quantity']>0]
-    rows=[{**row,'frame_quantities':{source_key(row):row['quantity']}} if row['category']=='Рамки' and not row.get('element_ids') else row for row in rows]
+    rows=[{**row,'frame_quantities':{physical_key(row):row['quantity']},'frame_sources':{gid:physical_key(row) for gid in row.get('frame_ids',[])}} if row['category']=='Рамки' and not row.get('element_ids') else row for row in rows]
     if layout=='legacy':return rows
+    frame_labels={}
+    for row in rows:
+        if row.get('frame_variant') and not row['product_id']:
+            first=frame_labels.setdefault(row['frame_variant'],row)
+            row['name']=first['name'];row['parameters']=first['parameters']
     grouped={}
     for original in rows:
         room=original['room'] if layout=='rooms' else ''
         parameters=json.loads(original['parameters']);parameters.pop('led_strip',None)
         row={**original,'room':room,'parameters':json.dumps(parameters,ensure_ascii=False,sort_keys=True)}
-        identity={'room':room,'product_id':row['product_id'],'unit':row['unit'],'custom_name':row['name'] if row.get('custom_name') else ''} if row['product_id'] else {key:value for key,value in row.items() if key not in ('element_ids','quantity','total','frame_quantities')}
+        identity={'room':room,'product_id':row['product_id'],'unit':row['unit'],'custom_name':row['name'] if row.get('custom_name') else ''} if row['product_id'] else {key:value for key,value in row.items() if key not in ('element_ids','quantity','total','frame_quantities','frame_sources','frame_ids','frame_product_explicit')}
+        if row.get('frame_ids'):identity={'room':room,'frame_variant':row['frame_variant']}
         key=json.dumps(identity,ensure_ascii=False,sort_keys=True)
-        if key not in grouped:grouped[key]={**row,'element_ids':[],'quantity':Decimal(0),**({'frame_quantities':{}} if 'frame_quantities' in row else {})}
+        if key not in grouped:grouped[key]={**row,'element_ids':[],'quantity':Decimal(0),**({'frame_quantities':{},'frame_sources':{},'frame_ids':[]} if 'frame_quantities' in row else {})}
         group=grouped[key];group['element_ids'].extend(row.get('element_ids',[]));group['quantity']+=Decimal(str(row['quantity']))
-        if 'frame_quantities' in row:group['frame_quantities'].update(row['frame_quantities'])
+        if 'frame_quantities' in row:
+            for key,value in row['frame_quantities'].items():group['frame_quantities'][key]=group['frame_quantities'].get(key,0)+value
+            group['frame_sources'].update(row['frame_sources']);group['frame_ids'].extend(row['frame_ids'])
+            group['frame_product_explicit']=group['frame_product_explicit'] or row['frame_product_explicit']
     result=[]
     for row in grouped.values():
         row['element_ids']=sorted(row['element_ids']);row['quantity']=float(row['quantity'].quantize(Decimal('.001'),rounding=ROUND_HALF_UP))
@@ -30,10 +39,17 @@ def calculated_rows(db,pid,layout):
     return result
 
 
-def represented_frames(lines,keys):
-    """Physical room keys stay stable when the CP switches display modes."""
-    frames={line.source_key for line in lines if line.source_key.startswith('frame:') and not line.source_ids}
-    return {key for key in keys if key in frames or 'frame::'+key.rsplit(':',1)[-1] in frames}
+def represented_frames(lines,keys,sources=None):
+    """Prefer physical frame IDs; old quotations retain their room-based keys."""
+    sources=sources or {}
+    result=set()
+    for line in lines:
+        if not line.source_key.startswith('frame:') or line.source_ids:continue
+        if line.source_frame_ids:
+            result.update(sources[gid] for gid in line.source_frame_ids if gid in sources and sources[gid] in keys)
+        else:
+            result.update(key for key in keys if key==line.source_key or 'frame::'+key.rsplit(':',1)[-1]==line.source_key)
+    return result
 
 
 def filter_frames(rows,excluded):
@@ -43,7 +59,8 @@ def filter_frames(rows,excluded):
             quantities={key:value for key,value in row['frame_quantities'].items() if key not in excluded}
             if not quantities:continue
             quantity=float(sum((Decimal(str(value)) for value in quantities.values()),Decimal(0)))
-            row={**row,'frame_quantities':quantities,'quantity':quantity,'total':round(quantity*row['unit_price'],2)}
+            sources={gid:key for gid,key in row.get('frame_sources',{}).items() if key in quantities}
+            row={**row,'frame_quantities':quantities,'frame_sources':sources,'frame_ids':sorted(sources),'quantity':quantity,'total':round(quantity*row['unit_price'],2)}
         result.append(row)
     return result
 
@@ -62,6 +79,7 @@ def regroup_quote(db,pid,quote,target):
     if not linked:raise HTTPException(422,'Сначала добавьте позиции с плана кнопкой «Обновить из расчёта»')
     rows=filter_frames(calculated_rows(db,pid,target),set(quote.excluded_frame_keys))
     owners={eid:line for line in linked for eid in line.source_ids}
+    frame_owners={gid:line for line in linked for gid in line.source_frame_ids}
     frames=defaultdict(list)
     for line in linked:
         if line.source_key.startswith('frame:') and not line.source_ids:frames[line.source_key.rsplit(':',1)[-1]].append(line)
@@ -74,7 +92,8 @@ def regroup_quote(db,pid,quote,target):
         if ids:
             matches=list({owners[eid].id:owners[eid] for eid in ids if eid in owners and owners[eid].unit==row['unit'] and owners[eid].type_id in (None,row['type_id'])}.values())
         else:
-            matches=[line for line in frames.get(row['name'],[]) if not row['room'] or line.source_key in (source_key(row),'frame::'+row['name'])]
+            matches=list({frame_owners[gid].id:frame_owners[gid] for gid in row.get('frame_ids',[]) if gid in frame_owners}.values())
+            if not matches:matches=[line for line in frames.get(row['name'],[]) if not row['room'] or line.source_key in (source_key(row),'frame::'+row['name'])]
         for line in matches:hits[line.id]+=1
         if matches:candidates.append((row,matches))
     if target=='rooms' and not candidates:
@@ -98,6 +117,7 @@ def regroup_quote(db,pid,quote,target):
                 amount=sum((Decimal(str(elements[eid].parameters.get(key,0 if key=='length' else 1))) for eid in part.source_ids),Decimal(0)).quantize(Decimal('.001'),rounding=ROUND_HALF_UP)
                 part.source_key=source_key({'element_ids':part.source_ids})
             else:
+                part.source_frame_ids=list(row.get('frame_ids',[]));part.frame_variant=row.get('frame_variant','')
                 amount=Decimal(str(row['quantity']));part.source_ids=[];part.source_key=source_key(row)
             if amount<=0:continue
             if part.id in used:part.id=uuid.uuid4().hex

@@ -31,6 +31,7 @@ from .models import (
 )
 from .shared_catalog import catalogue_write_guard, identity, manufacturer_index, manufacturer_named, resolve_manufacturer, guard_product_duplicate, product_is_used, metadata, propagate_metadata
 from .catalog_types import catalog_type,product_type_id,untyped_kind
+from .frame_goods import FRAME_KEYS
 from .catalog import LAYERS, seed
 from .nomenclature import nomenclature_key, nomenclature_group, nomenclature_group_order
 from .polygons import polygon_error
@@ -579,10 +580,14 @@ def validate_element(db, project_id, body, check_locked=True, existing_type_id=N
         except (ValueError,TypeError):
             raise HTTPException(422,'Некорректная степень IP')
     validate_appearance(parameters)
+    if parameters.get('frame_product_id') is not None:
+        from .frame_goods import validate_product
+        validate_product(db,parameters['frame_product_id'],int(parameters.get('frame_posts',0)),True)
+    if 'frame_color' in parameters and (not isinstance(parameters['frame_color'],str) or len(parameters['frame_color'])>100):raise HTTPException(422,'Цвет рамки — текст не длиннее 100 символов')
     if 'frame_group' in parameters and (not isinstance(parameters['frame_group'],str) or len(parameters['frame_group'])>64):
         raise HTTPException(422,'Некорректная группа рамки')
     if typ.category!='Электроустановки':
-        parameters={key:value for key,value in parameters.items() if key not in ('frame_group','frame_posts')}
+        parameters={key:value for key,value in parameters.items() if key not in FRAME_KEYS}
     return parameters
 
 @app.get('/api/health')
@@ -1029,6 +1034,7 @@ def backup_project(pid: int, db: DbSession = Depends(session)):
     type_ids={item.type_id for item in elements}
     type_ids.update(line['type_id'] for line in quote_lines if line.get('type_id') is not None)
     product_ids={item.product_id for item in elements if item.product_id is not None}
+    product_ids.update(item.parameters['frame_product_id'] for item in elements if item.parameters.get('frame_product_id') is not None)
     product_ids.update(line['product_id'] for line in quote_lines if line.get('product_id') is not None)
     for product_id in product_ids: type_ids.add(require(db,Product,product_id).type_id)
     types=[require(db,ElementType,item_id) for item_id in sorted(type_ids)]
@@ -1239,6 +1245,10 @@ async def restore_project(file: UploadFile, db: DbSession = Depends(session)):
                 if item.backup_id in element_map: raise ValueError('Повторяющийся идентификатор элемента')
                 element_map[item.backup_id]=obj
         for obj in db.scalars(select(Element).where(Element.project_id==project.id)):
+            if obj.parameters.get('frame_product_id') is not None:
+                frame_product=product_map.get(obj.parameters['frame_product_id'])
+                if frame_product is None:raise ValueError('Отсутствует товар рамки в резервной копии')
+                obj.parameters={**obj.parameters,'frame_product_id':frame_product.id}
             typ=require(db,ElementType,obj.type_id)
             if is_power_supply(typ):
                 strips=[element_map.get(strip_id) for strip_id in linked_strip_ids(obj.parameters)]
@@ -1527,7 +1537,7 @@ def edit_element_properties(pid:int,body:AppearanceBatch,db:DbSession=Depends(se
     if not isinstance(params,dict):raise HTTPException(422,'Параметры должны быть заполнены как свойства')
     specific={'quantity','ip','manual_length','length','power_watts','connectors','end_caps'}
     shared=set.intersection(*(set(kinds[item.type_id].defaults)|set(item.parameters) for item in elements))
-    protected={'frame_group','frame_posts','led_strip_id','led_strip_ids','measured_length'}
+    protected=FRAME_KEYS|{'led_strip_id','led_strip_ids','measured_length'}
     if set(params)&protected or any(key not in APPEARANCE_KEYS and key not in specific and key not in shared and not key.startswith('custom:') for key in params):raise HTTPException(422,'Это свойство нельзя менять совместно. Рамки и привязки LED-лент редактируются отдельными инструментами.')
     common=set(shared)
     if all(kind.unit=='м' for kind in kinds.values()):common.update({'manual_length','length'})
@@ -1629,7 +1639,7 @@ def remove_element(eid: int, db: DbSession = Depends(session)):
     if group:
         for member in db.scalars(select(Element).where(Element.project_id==e.project_id)):
             if member.parameters.get('frame_group')==group:
-                member.parameters={key:value for key,value in member.parameters.items() if key not in ('frame_group','frame_posts')}
+                member.parameters={key:value for key,value in member.parameters.items() if key not in FRAME_KEYS}
     db.delete(e); db.commit()
 
 def frame_elements(db, pid, element_ids):
@@ -1652,7 +1662,7 @@ def clear_frame_groups(db, pid, groups):
         return
     for member in db.scalars(select(Element).where(Element.project_id==pid)):
         if member.parameters.get('frame_group') in groups:
-            member.parameters={key:value for key,value in member.parameters.items() if key not in ('frame_group','frame_posts')}
+            member.parameters={key:value for key,value in member.parameters.items() if key not in FRAME_KEYS}
 
 @app.post('/api/projects/{pid}/frames')
 def assign_frame(pid: int, body: FrameAssignment, db: DbSession = Depends(session)):
@@ -1668,6 +1678,19 @@ def assign_frame(pid: int, body: FrameAssignment, db: DbSession = Depends(sessio
     db.commit()
     return {'frame_group':group,'posts':body.posts,'element_ids':[item.id for item in elements]}
 
+class FrameProperties(BaseModel):
+    product_id:int|None=Field(default=None,gt=0)
+    color:str|None=Field(default=None,max_length=100)
+
+@app.patch('/api/projects/{pid}/frames/{group}')
+def edit_frame_properties(pid:int,group:str,body:FrameProperties,db:DbSession=Depends(session)):
+    from .frame_goods import apply_properties,normalized_color
+    if not body.model_fields_set:raise HTTPException(422,'Укажите товар или цвет рамки')
+    changes={}
+    if 'product_id' in body.model_fields_set:changes['frame_product_id']=body.product_id
+    if 'color' in body.model_fields_set:changes['frame_color']=normalized_color(body.color or '')
+    result=apply_properties(db,pid,[group],changes);db.commit();return result
+
 @app.post('/api/projects/{pid}/frames/remove')
 def remove_frames(pid: int, body: ElementSelection, db: DbSession = Depends(session)):
     elements=frame_elements(db,pid,body.element_ids)
@@ -1675,7 +1698,7 @@ def remove_frames(pid: int, body: ElementSelection, db: DbSession = Depends(sess
     groups={item.parameters.get('frame_group') for item in elements if item.parameters.get('frame_group')}
     clear_frame_groups(db,pid,groups)
     for item in elements:
-        item.parameters={key:value for key,value in item.parameters.items() if key not in ('frame_group','frame_posts')}
+        item.parameters={key:value for key,value in item.parameters.items() if key not in FRAME_KEYS}
     db.commit()
     return {'element_ids':[item.id for item in elements]}
 
@@ -1740,7 +1763,8 @@ def report_rows(db,pid):
     group_custom_names={}
     require(db,Project,pid)
     groups=defaultdict(float)
-    frame_groups=defaultdict(float)
+    frame_groups=defaultdict(list)
+    frame_details={}
     frame_members=defaultdict(list)
     warnings=[]
     # Keep referenced rows alive for the whole report. SQLAlchemy's identity map
@@ -1749,8 +1773,10 @@ def report_rows(db,pid):
     element_map={element.id:element for element,_,_ in rows_for_report}
     room_map={room.id:room for room in db.scalars(select(Room).where(Room.project_id==pid))}
     page_map={page.id:page for page in db.scalars(select(Page).where(Page.project_id==pid))}
-    product_ids=select(Element.product_id).where(Element.project_id==pid,Element.product_id.is_not(None))
+    product_ids={e.product_id for e,_,_ in rows_for_report if e.product_id is not None}
+    product_ids.update(e.parameters['frame_product_id'] for e,_,_ in rows_for_report if e.parameters.get('frame_product_id') is not None)
     product_map={product.id:product for product in db.scalars(select(Product).where(Product.id.in_(product_ids)))}
+    frame_type_map={kind.id:kind for kind in db.scalars(select(ElementType).where(ElementType.id.in_({product.type_id for product in product_map.values()})))}
     maker_ids=select(Product.manufacturer_id).where(Product.id.in_(product_ids))
     maker_map={maker.id:maker for maker in db.scalars(select(Manufacturer).where(Manufacturer.id.in_(maker_ids)))}
     supplier_ids=select(Product.supplier_id).where(Product.id.in_(product_ids),Product.supplier_id.is_not(None))
@@ -1762,7 +1788,7 @@ def report_rows(db,pid):
         manufacturer=maker_map.get(product.manufacturer_id) if product else None
         supplier=supplier_map.get(product.supplier_id) if product else None
         commercial=e.parameters.get('_quotation',{})
-        group_parameters={k:v for k,v in e.parameters.items() if k not in APPEARANCE_KEYS | {'_quotation','length','quantity','frame_posts','frame_group','manual_length','measured_length'}}
+        group_parameters={k:v for k,v in e.parameters.items() if k not in APPEARANCE_KEYS | ({'_quotation','length','quantity','manual_length','measured_length'} | FRAME_KEYS)}
         if commercial.get('description'):group_parameters['quotation_description']=commercial['description']
         if is_power_supply(t):
             descriptions=[]
@@ -1798,7 +1824,16 @@ def report_rows(db,pid):
         if expected<1 or expected>6 or len(members)!=expected or len(rooms)!=1:
             warnings.append(f'Рамка {group[:8]}: количество выделенных электроустановок не соответствует количеству постов')
             continue
-        frame_groups[(next(iter(rooms)),expected)]+=1
+        from .frame_goods import normalized_color
+        product_ids={item.parameters.get('frame_product_id') for item,_ in members}
+        colors={normalized_color(str(item.parameters.get('frame_color',''))).casefold().replace('ё','е') for item,_ in members}
+        if len(product_ids)!=1 or len(colors)!=1:
+            warnings.append(f'Рамка {group[:8]}: свойства участников различаются; сохраните свойства рамки заново')
+            continue
+        product_id=next(iter(product_ids));color=normalized_color(str(members[0][0].parameters.get('frame_color','')))
+        key=(next(iter(rooms)),expected,product_id,'' if product_id is not None else next(iter(colors)))
+        frame_groups[key].append(group)
+        frame_details[key]=(color,any('frame_product_id' in item.parameters for item,_ in members))
     rows=[]
     for key,value in sorted(groups.items(),key=lambda item:(item[0][0],item[0][1],item[0][2],item[0][6])):
         quantity=round(value,3); price=key[10]
@@ -1810,14 +1845,22 @@ def report_rows(db,pid):
             currency=key[11],quantity=quantity,total=round(quantity*price,2),
         ))
         if group_custom_names.get(key): rows[-1]['custom_name']=True
-    for (room,posts),quantity in frame_groups.items():
-        ending='пост' if posts==1 else 'поста' if posts < 5 else 'постов'
+    from .frame_goods import base_name,variant
+    for key,frame_ids in frame_groups.items():
+        room,posts,product_id,_=key;color,explicit=frame_details[key];product=product_map.get(product_id)
+        maker=maker_map.get(product.manufacturer_id) if product else None
+        supplier=supplier_map.get(product.supplier_id) if product else None
+        parameters={'frame_posts':posts}
+        display_color=str(product.parameters.get('color','')) if product else color
+        if display_color:parameters['frame_color']=display_color
+        quantity=len(frame_ids);price=product.price if product else 0
         rows.append(dict(
-            element_ids=[],type_id=None,
-            room=room,category='Рамки',name=f'Рамка на {posts} {ending}',unit='шт',
-            parameters=json.dumps({'frame_posts':posts},ensure_ascii=False),product_id=None,
-            product='',sku='',manufacturer='',supplier='',unit_price=0,currency='RUB',
-            quantity=quantity,total=0,
+            element_ids=[],type_id=product.type_id if product and not untyped_kind(frame_type_map[product.type_id]) else None,
+            frame_ids=sorted(frame_ids),frame_variant=variant(posts,color,product_id),frame_product_explicit=explicit,
+            room=room,category='Рамки',name=base_name(posts)+((' · '+color) if color and not product else ''),unit='шт',
+            parameters=json.dumps(parameters,ensure_ascii=False),product_id=product_id,
+            product=product.name if product else '',sku=product.sku if product else '',manufacturer=maker.name if maker else '',supplier=supplier.name if supplier else '',
+            unit_price=price,currency=product.currency if product else 'RUB',quantity=quantity,total=round(quantity*price,2),
         ))
     def row_order(row):
         room_order=(row['room']=='Без помещения',row['room'].casefold())

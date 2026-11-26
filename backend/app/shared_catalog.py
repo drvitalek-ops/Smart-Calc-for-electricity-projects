@@ -86,7 +86,7 @@ def guard_product_duplicate(db,values,item=None,allow_duplicate=False):
 
 
 def product_is_used(db,product_id):
-    if db.scalar(select(Element.id).where(Element.product_id==product_id).limit(1)) is not None:return True
+    if db.scalar(select(Element.id).where((Element.product_id==product_id)|(Element.parameters['frame_product_id'].as_integer()==product_id)).limit(1)) is not None:return True
     return any(any(line.get('product_id')==product_id for line in item.content.get('lines',[]))
         for model in (Quotation,StandaloneQuotation) for item in db.scalars(select(model)))
 

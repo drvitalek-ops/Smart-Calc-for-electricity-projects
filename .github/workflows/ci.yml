@@ -128,6 +128,7 @@ jobs:
           node frontend/tests/quotation-quick-fields.cjs
           node frontend/tests/quotation-diagnostic-links.cjs
           node frontend/tests/product-sku-search.cjs
+          node frontend/tests/frame-products.cjs
           node frontend/tests/photos-categories.cjs
           node frontend/tests/plan-symbols-layers.cjs
           node frontend/tests/quotation-plan-quantities.cjs

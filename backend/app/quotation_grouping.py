@@ -10,7 +10,7 @@ def commercial_description(line):
 
 def merge_key(line):
     # Plan quantities and manual additions must remain independently editable.
-    origin=('elements',) if line.source_ids else ('frame',line.source_key) if line.source_key else ('manual',)
+    origin=('elements',) if line.source_ids else ('frame',line.frame_variant) if line.source_frame_ids else ('frame',line.source_key) if line.source_key else ('manual',)
     generated=bool(line.source_ids and line.product_id and 'description' not in line.overrides)
     return (origin,line.room,line.product_id,line.type_id,line.name,line.sku,line.manufacturer,
         line.unit,line.currency,line.unit_price,line.discount,line.ip,line.comment,line.image,
@@ -40,6 +40,8 @@ def merge_identical_lines(quote):
             merged.calculated_quantity=calculated
             if merged.quantity_override is not None:merged.quantity_override=quantity
             merged.source_ids=sorted({eid for item in members for eid in item.source_ids})
+            merged.source_frame_ids=sorted({gid for item in members for gid in item.source_frame_ids})
+            if merged.source_frame_ids:merged.source_key=source_key({'frame_ids':merged.source_frame_ids,'name':previous.source_key.rsplit(':',1)[-1]})
             if merged.source_ids:merged.source_key=source_key({'element_ids':merged.source_ids});merged.source_signature=''
         if merged.source_ids and merged.product_id and 'description' not in merged.overrides:
             # Retain common product characteristics; connection-specific details

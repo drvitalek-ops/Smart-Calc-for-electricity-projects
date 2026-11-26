@@ -65,6 +65,20 @@ def filter_frames(rows,excluded):
     return result
 
 
+def filter_frame_ids(rows,excluded):
+    result=[]
+    for row in rows:
+        if row.get('frame_ids'):
+            sources={gid:key for gid,key in row['frame_sources'].items() if gid not in excluded}
+            if not sources:continue
+            quantities={}
+            for key in sources.values():quantities[key]=quantities.get(key,0)+1
+            quantity=float(len(sources))
+            row={**row,'frame_ids':sorted(sources),'frame_sources':sources,'frame_quantities':quantities,'quantity':quantity,'total':round(quantity*row['unit_price'],2)}
+        result.append(row)
+    return result
+
+
 def _terms(line):
     fields=('type_id','product_id','name','sku','manufacturer','description','ip','comment','unit','unit_price','currency','discount','image')
     return json.dumps({**{key:getattr(line,key) for key in fields},'overrides':sorted(set(line.overrides)-{'room','unit_price'}),'manual':line.quantity_override is not None},ensure_ascii=False,sort_keys=True,default=lambda value:str(value.normalize()) if isinstance(value,Decimal) else str(value))
@@ -77,7 +91,8 @@ def regroup_quote(db,pid,quote,target):
         quote.room_layout=target;inherit_prices(quote)
     linked=[line for line in quote.lines if line.source_key]
     if not linked:raise HTTPException(422,'Сначала добавьте позиции с плана кнопкой «Обновить из расчёта»')
-    rows=filter_frames(calculated_rows(db,pid,target),set(quote.excluded_frame_keys))
+    rows=calculated_rows(db,pid,target)
+    rows=filter_frames(rows,set(quote.excluded_frame_keys)) if quote.plan_frame_snapshot_ids is None else filter_frame_ids(rows,set(quote.excluded_frame_ids))
     owners={eid:line for line in linked for eid in line.source_ids}
     frame_owners={gid:line for line in linked for gid in line.source_frame_ids}
     frames=defaultdict(list)

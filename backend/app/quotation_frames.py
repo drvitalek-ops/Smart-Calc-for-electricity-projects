@@ -5,10 +5,21 @@ from decimal import Decimal
 from .frame_goods import base_name
 
 
-def attach_legacy(lines,rows,excluded=()):
+def legacy_key(row,physical):
+    name=base_name(int(json.loads(row['parameters'])['frame_posts']))
+    room=physical.rsplit(':product=',1)[0][6:] if ':product=' in physical else physical.split(':'+name,1)[0][6:]
+    return 'frame:'+room+':'+name
+
+
+def legacy_excluded_ids(rows,keys):
+    keys=set(keys)
+    return {gid for row in rows for gid,key in row.get('frame_sources',{}).items() if key in keys or legacy_key(row,key) in keys}
+
+
+def attach_legacy(lines,rows,excluded=(),excluded_ids=()):
     """Upgrade old room/name links in memory; reading does not rewrite saved CPs."""
-    from .quotation_rooms import filter_frames
-    rows=filter_frames(rows,set(excluded))
+    from .quotation_rooms import filter_frames,filter_frame_ids
+    rows=filter_frame_ids(filter_frames(rows,set(excluded)),set(excluded_ids))
     claimed={gid for line in lines for gid in line.source_frame_ids}
     for line in lines:
         if line.source_ids or line.source_frame_ids or not line.source_key.startswith('frame:'):continue
@@ -16,8 +27,7 @@ def attach_legacy(lines,rows,excluded=()):
             if not row.get('frame_ids'):continue
             name=base_name(int(json.loads(row['parameters'])['frame_posts']))
             for gid,physical in row.get('frame_sources',{}).items():
-                room=physical.rsplit(':product=',1)[0][6:] if ':product=' in physical else physical.split(':'+name,1)[0][6:]
-                if gid not in claimed and line.source_key in ('frame:'+room+':'+name,'frame::'+name):
+                if gid not in claimed and line.source_key in (legacy_key(row,physical),'frame::'+name):
                     line.source_frame_ids.append(gid);claimed.add(gid)
         if line.source_frame_ids:
             variants={row['frame_variant'] for row in rows if set(row.get('frame_ids',[]))&set(line.source_frame_ids)}

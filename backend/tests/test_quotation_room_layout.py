@@ -267,7 +267,7 @@ def test_old_quotes_recover_missing_frame_rows(client,layout):
     ok(client.get(path))
     with main.Session() as db:
         stored=db.get(main.Quotation,pid)
-        content={key:value for key,value in stored.content.items() if key not in ('plan_frame_snapshot_keys','excluded_frame_keys')}
+        content={key:value for key,value in stored.content.items() if key not in ('plan_frame_snapshot_keys','excluded_frame_keys','plan_frame_snapshot_ids','excluded_frame_ids')}
         content['room_layout']=layout;content['lines']=[line for line in content['lines'] if not line['source_key'].startswith('frame:')]
         stored.content=content;db.commit()
     quote=ok(client.get(path));assert sum(Decimal(line['quantity']) for line in quote['lines'] if line['source_key'].startswith('frame:'))==2

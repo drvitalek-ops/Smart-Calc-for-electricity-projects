@@ -138,3 +138,43 @@ def test_different_colors_merge_by_explicit_goods_and_guard_manual_count(client)
     assert Decimal(copied_bound['quantity'])==3 and Decimal(copied_bound['unit_price'])==299
     copied_plan=ok(client.get('/api/projects/'+str(copied['id'])))
     assert sum(item['parameters'].get('frame_product_id')==copied_bound['product_id'] for item in copied_plan['elements'])==6
+
+
+def test_omitted_physical_frames_stay_omitted_after_color_change(client):
+    pid,groups,_,_=scene(client);path=f'/api/projects/{pid}';qpath=path+'/quotation'
+    ok(client.patch(path+'/frames/'+groups[0],json={'color':'Белый'}))
+    ok(client.patch(path+'/frames/'+groups[1],json={'color':'Черный'}))
+    quote=ok(client.get(qpath));quote['lines']=[line for line in quote['lines'] if groups[1] not in line['source_frame_ids']]
+    quote=ok(client.put(qpath,json=quote))
+    assert sum(Decimal(line['quantity']) for line in frames(quote))==3
+    ok(client.patch(path+'/frames/'+groups[1],json={'color':'Белый'}))
+    current=ok(client.get(qpath));assert sum(Decimal(line['quantity']) for line in frames(current))==3
+    assert all(groups[1] not in line['source_frame_ids'] for line in current['lines'])
+    # A newly created frame is a new plan source, even with the same finish.
+    plan=ok(client.get(path));template=plan['elements'][0]
+    members=[ok(client.post(path+'/elements',json={**template,'x':.6+i*.1,'parameters':{'quantity':1,'ip':20}})) for i in range(2)]
+    new=ok(client.post(path+'/frames',json={'element_ids':[item['id'] for item in members],'posts':2}))
+    ok(client.patch(path+'/frames/'+new['frame_group'],json={'color':'Белый'}))
+    current=ok(client.get(qpath));assert sum(Decimal(line['quantity']) for line in frames(current))==4
+    assert any(new['frame_group'] in line['source_frame_ids'] for line in current['lines'])
+    split=ok(client.post(qpath+'/room-layout',json={'revision':current['revision'],'layout':'rooms'}))
+    assert sum(Decimal(line['quantity']) for line in frames(split))==4
+    assert all(groups[1] not in line['source_frame_ids'] for line in split['lines'])
+
+
+def test_legacy_omission_migrates_even_when_excluded_frame_changes_finish(client):
+    pid,groups,_,_=scene(client);path=f'/api/projects/{pid}';qpath=path+'/quotation'
+    quote=ok(client.get(qpath));quote=ok(client.post(qpath+'/room-layout',json={'revision':quote['revision'],'layout':'rooms'}))
+    quote['lines']=[line for line in quote['lines'] if groups[2] not in line['source_frame_ids']]
+    ok(client.put(qpath,json=quote))
+    with main.Session() as db:
+        stored=db.get(main.Quotation,pid)
+        content={key:value for key,value in stored.content.items() if key not in ('plan_frame_snapshot_ids','excluded_frame_ids')}
+        content['lines']=[{key:value for key,value in line.items() if key not in ('source_frame_ids','frame_variant')} for line in content['lines']]
+        for line in content['lines']:
+            if line['source_key'].startswith('frame:'):line['source_key']='frame:'+line['room']+':'+line['source_key'].rsplit(':',1)[-1]
+        stored.content=content;db.commit()
+    ok(client.patch(path+'/frames/'+groups[2],json={'color':'Графит'}))
+    quote=ok(client.get(qpath));assert sum(Decimal(line['quantity']) for line in frames(quote))==3
+    assert groups[2] in quote['excluded_frame_ids']
+    assert all(groups[2] not in line['source_frame_ids'] for line in quote['lines'])

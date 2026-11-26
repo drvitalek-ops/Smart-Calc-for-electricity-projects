@@ -165,6 +165,8 @@ class QuoteInput(BaseModel):
     excluded_plan_ids:list[Annotated[int,Field(gt=0)]]=Field(default_factory=list,max_length=100000)
     plan_frame_snapshot_keys:list[Annotated[str,Field(pattern='^frame:',max_length=700)]]|None=Field(default=None,max_length=100000)
     excluded_frame_keys:list[Annotated[str,Field(pattern='^frame:',max_length=700)]]=Field(default_factory=list,max_length=100000)
+    plan_frame_snapshot_ids:list[Annotated[str,Field(min_length=1,max_length=64)]]|None=Field(default=None,max_length=100000)
+    excluded_frame_ids:list[Annotated[str,Field(min_length=1,max_length=64)]]=Field(default_factory=list,max_length=100000)
     number: str = Field(default='',max_length=100)
     date: str = Field(default_factory=lambda:date.today().isoformat(),pattern=r'^\d{4}-\d{2}-\d{2}$')
     title: str = Field(default='Коммерческое предложение',min_length=1,max_length=300)
@@ -297,7 +299,7 @@ def quote_scope(request:Request):
 
 def validate_standalone(quote):
     quote.plan_sync=False;quote.plan_snapshot_ids=[];quote.excluded_plan_ids=[]
-    quote.plan_frame_snapshot_keys=[];quote.excluded_frame_keys=[]
+    quote.plan_frame_snapshot_keys=[];quote.excluded_frame_keys=[];quote.plan_frame_snapshot_ids=[];quote.excluded_frame_ids=[]
     if any(line.source_ids or line.source_frame_ids or line.source_key for line in quote.lines):
         raise HTTPException(422,'Самостоятельное КП не может содержать привязки к плану')
 
@@ -495,6 +497,7 @@ def import_lines(db,pid,quote):
     quote.plan_snapshot_ids=sorted({eid for line in lines for eid in line.source_ids})
     quote.plan_frame_snapshot_keys=sorted({key for row in calculated for key in row.get('frame_quantities',{})})
     quote.excluded_frame_keys=[]
+    quote.plan_frame_snapshot_ids=sorted({gid for line in lines for gid in line.source_frame_ids});quote.excluded_frame_ids=[]
     return quote
 
 
@@ -522,6 +525,11 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False,coalesce=True):
     row removal from a stale editor that has never seen newly placed objects.
     Reads remain derived, so plan undo can restore saved commercial conditions.
     """
+    if quote.plan_frame_snapshot_ids is None:
+        stored=db.get(Quotation,pid)
+        if stored:
+            quote.plan_frame_snapshot_ids=stored.content.get('plan_frame_snapshot_ids')
+            quote.excluded_frame_ids=sorted(set(quote.excluded_frame_ids)|set(stored.content.get('excluded_frame_ids',[])))
     if quote.plan_frame_snapshot_keys is None:
         stored=db.get(Quotation,pid)
         if stored:
@@ -542,10 +550,11 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False,coalesce=True):
     excluded=set(quote.excluded_plan_ids)
     if quote.plan_snapshot_ids is not None:excluded.update(set(quote.plan_snapshot_ids)-represented)
     excluded.difference_update(represented);quote.excluded_plan_ids=sorted(excluded)
-    from .quotation_rooms import calculated_rows,represented_frames,filter_frames
+    from .quotation_rooms import calculated_rows,represented_frames,filter_frame_ids
     rows=calculated_rows(db,pid,quote.room_layout)
-    from .quotation_frames import attach_legacy,sync_frames
-    attach_legacy(linked,rows,quote.excluded_frame_keys)
+    from .quotation_frames import attach_legacy,sync_frames,legacy_excluded_ids
+    legacy_excluded=legacy_excluded_ids(rows,quote.excluded_frame_keys) if quote.plan_frame_snapshot_ids is None else set()
+    attach_legacy(linked,rows,quote.excluded_frame_keys,legacy_excluded)
     frame_sources={gid:key for row in rows for gid,key in row.get('frame_sources',{}).items()}
     physical_frames={key for row in rows for key in row.get('frame_quantities',{})}
     snapshot=set(quote.plan_frame_snapshot_keys or [])
@@ -553,7 +562,17 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False,coalesce=True):
     excluded_frames=set(quote.excluded_frame_keys)|((snapshot&physical_frames)-represented_frame_keys)
     excluded_frames.difference_update(represented_frame_keys)
     quote.excluded_frame_keys=sorted(excluded_frames)
-    rows=filter_frames(rows,excluded_frames)
+    represented_ids={gid for line in linked for gid in line.source_frame_ids}
+    excluded_ids=set(quote.excluded_frame_ids)
+    if quote.plan_frame_snapshot_ids is None:
+        excluded_ids.update(legacy_excluded)
+        excluded_ids.update(gid for gid,key in frame_sources.items() if key in excluded_frames)
+    else:
+        excluded_ids.update((set(quote.plan_frame_snapshot_ids)&set(frame_sources))-represented_ids)
+    excluded_ids.difference_update(represented_ids);quote.excluded_frame_ids=sorted(excluded_ids)
+    rows=filter_frame_ids(rows,excluded_ids)
+    # Keys remain in the payload for old integrations; current exclusions follow
+    # physical frames through color/product changes and never hide new frames.
     updated_frames=sync_frames(db,pid,quote,rows)
     elements={item.id:item for item in db.scalars(select(Element).where(Element.project_id==pid))}
     owners={eid:line for line in linked for eid in line.source_ids}
@@ -619,7 +638,10 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False,coalesce=True):
         from .quotation_grouping import merge_identical_lines
         merge_identical_lines(quote)
     quote.plan_snapshot_ids=sorted({eid for line in quote.lines for eid in line.source_ids})
-    quote.plan_frame_snapshot_keys=sorted(represented_frames(quote.lines,physical_frames-excluded_frames,frame_sources))
+    quote.plan_frame_snapshot_ids=sorted({gid for line in quote.lines for gid in line.source_frame_ids})
+    current_frame_keys=represented_frames(quote.lines,physical_frames,frame_sources)
+    quote.plan_frame_snapshot_keys=sorted(current_frame_keys)
+    quote.excluded_frame_keys=sorted({key for gid,key in frame_sources.items() if gid in excluded_ids}-current_frame_keys)
     return quote
 
 
@@ -865,6 +887,8 @@ class SkuInput(BaseModel):
     excluded_plan_ids:list[Annotated[int,Field(gt=0)]]=Field(default_factory=list,max_length=100000)
     plan_frame_snapshot_keys:list[Annotated[str,Field(pattern='^frame:',max_length=700)]]|None=Field(default=None,max_length=100000)
     excluded_frame_keys:list[Annotated[str,Field(pattern='^frame:',max_length=700)]]=Field(default_factory=list,max_length=100000)
+    plan_frame_snapshot_ids:list[Annotated[str,Field(min_length=1,max_length=64)]]|None=Field(default=None,max_length=100000)
+    excluded_frame_ids:list[Annotated[str,Field(min_length=1,max_length=64)]]=Field(default_factory=list,max_length=100000)
     room_layout:Literal['combined','rooms','legacy']|None=None
     number:str=Field(default='',max_length=100)
     lines:list[SkuLine]=Field(min_length=1,max_length=5000)
@@ -893,7 +917,7 @@ def draft_sku(body:SkuInput,db:DbSession=Depends(session),scope:tuple=Depends(qu
     # Build a price-free document: financial fields and images are never read.
     stored=db.get(StandaloneQuotation if standalone else Quotation,pid)
     layout=body.room_layout or (stored.content.get('room_layout','legacy') if stored else 'combined')
-    quote=QuoteInput(number=body.number,room_layout=layout,plan_sync=body.plan_sync,plan_snapshot_ids=body.plan_snapshot_ids,excluded_plan_ids=body.excluded_plan_ids,plan_frame_snapshot_keys=body.plan_frame_snapshot_keys,excluded_frame_keys=body.excluded_frame_keys,lines=[QuoteLine.model_validate(line.model_dump()) for line in body.lines])
+    quote=QuoteInput(number=body.number,room_layout=layout,plan_sync=body.plan_sync,plan_snapshot_ids=body.plan_snapshot_ids,excluded_plan_ids=body.excluded_plan_ids,plan_frame_snapshot_keys=body.plan_frame_snapshot_keys,excluded_frame_keys=body.excluded_frame_keys,plan_frame_snapshot_ids=body.plan_frame_snapshot_ids,excluded_frame_ids=body.excluded_frame_ids,lines=[QuoteLine.model_validate(line.model_dump()) for line in body.lines])
     if standalone:validate_standalone(quote)
     else:sync_plan_quantities(db,pid,quote,coalesce=False)
     return sku_file(quote)

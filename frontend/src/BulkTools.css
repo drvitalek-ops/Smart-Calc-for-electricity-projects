@@ -3,3 +3,7 @@
 .plan-object-list li{display:flex;align-items:center;gap:7px}.plan-object-list li>button{flex:1;min-width:0}.plan-object-list li>input{order:-1;width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;flex:none}
 
 .quote-select-all{display:inline-flex;align-items:center;gap:7px;margin:0;font:inherit}.quote-select-all input{width:16px!important;height:16px!important;min-height:16px!important;margin:0!important;flex:none}
+.work-issue-targets{margin:0 9px 12px;padding-top:8px;border-top:1px solid var(--ds-color-border);min-width:0}
+.work-issue-targets>p{margin:3px 0 7px;font-size:12px;font-weight:600}.work-issue-targets>label{display:grid;gap:4px;margin:7px 0;font-size:11px}.work-issue-targets input{width:100%;min-width:0;min-height:30px;font-size:12px}
+.work-issue-targets>ul{margin:6px 0}.work-issue-targets li>button{border:0;background:var(--ds-color-surface);border-radius:5px;min-height:36px}.work-issue-targets li>button:hover{background:var(--ds-color-brand-soft)}.work-issue-targets li>button>strong,.work-issue-action{color:var(--ds-color-brand-text);text-decoration:underline;text-underline-offset:2px}.work-issue-targets li>button:focus-visible{outline:2px solid var(--ds-color-focus);outline-offset:1px}
+.quote-workspace .work-issue-panel{max-width:calc(100vw - 110px)}

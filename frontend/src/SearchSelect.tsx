@@ -5,10 +5,12 @@ import {createPortal,flushSync} from 'react-dom';
 import './SearchSelect.css';
 import usePopupPosition from './usePopupPosition';
 
-export type SearchOption={value:string;label:string;group?:string;disabled?:boolean;color?:string;iconKind?:PlanKind;image?:string};
-type Props=React.SelectHTMLAttributes<HTMLSelectElement>&{dataOptions?:readonly SearchOption[];onCreate?:(query:string)=>void};
-type Option={value:string;label:string;group:string;disabled:boolean;search:string;color?:string;iconKind?:PlanKind;image?:string};
+export type SearchOption={value:string;label:string;group?:string;disabled?:boolean;color?:string;iconKind?:PlanKind;image?:string;sku?:string};
+type Props=React.SelectHTMLAttributes<HTMLSelectElement>&{dataOptions?:readonly SearchOption[];onCreate?:(query:string)=>void;searchPlaceholder?:string};
+type Option={value:string;label:string;group:string;disabled:boolean;search:string;skuSearch:string;color?:string;iconKind?:PlanKind;image?:string};
 const fold=(value:string)=>value.toLocaleLowerCase('ru').replaceAll('ё','е');
+const articleKey=(value:string)=>fold(value.normalize('NFKC')).replace(/[\s\-\u00ad\u2010-\u2015\u2212]/g,'');
+export function matchesArticle(article:string,query:string){const needle=articleKey(query);return Boolean(needle&&articleKey(article).includes(needle));}
 
 export const matchesSearch=(text:string,query:string)=>fold(text).includes(fold(query.trim()));
 export function SearchHighlight({text,query}:{text:string;query:string}) {
@@ -20,13 +22,13 @@ export function SearchHighlight({text,query}:{text:string;query:string}) {
 
 /** Native select remains the form control; the searchable picker also supports
  * dynamically rendered optgroups, required fields and existing change handlers. */
-export default function SearchSelect({dataOptions,onCreate,...props}:Props) {
+export default function SearchSelect({dataOptions,onCreate,searchPlaceholder,...props}:Props) {
   const select=useRef<HTMLSelectElement>(null),popup=useRef<HTMLDivElement>(null),input=useRef<HTMLInputElement>(null);
   const [pending,setPending]=useState<SearchOption|null>(null),[limit,setLimit]=useState(200);
   const [open,setOpen]=useState(false),[query,setQuery]=useState(''),[options,setOptions]=useState<Option[]>([]),[active,setActive]=useState(0);
   const position=usePopupPosition(select,popup,open,()=>close());
   const id=useId();
-  const needle=fold(query.trim()),filtered=open?options.filter(option=>option.search.includes(needle)):[];
+  const needle=fold(query.trim()),skuNeedle=articleKey(query),filtered=open?options.filter(option=>option.search.includes(needle)||Boolean(skuNeedle&&option.skuSearch.includes(skuNeedle))):[];
   const [derivedLabel,setDerivedLabel]=useState('');
   const label=props['aria-label'] || derivedLabel || 'Выбор значения';
   useLayoutEffect(()=>{
@@ -40,10 +42,11 @@ export default function SearchSelect({dataOptions,onCreate,...props}:Props) {
     const items=dataOptions?dataOptions.map(option=>({...option,group:option.group??'',disabled:Boolean(option.disabled)})):Array.from(select.current.options).map(option=>({value:option.value,label:option.label,
       group:option.parentElement instanceof HTMLOptGroupElement ? option.parentElement.label : '',
       color:option.dataset.symbolColor,
+      sku:option.dataset.sku,
       iconKind:option.dataset.symbolName?{name:option.dataset.symbolName,category:option.dataset.symbolCategory??'',unit:option.dataset.symbolUnit,seed_key:option.dataset.symbolSeed}:undefined,
       disabled:option.disabled || (option.parentElement instanceof HTMLOptGroupElement && option.parentElement.disabled)}));
     const selectedIndex=items.findIndex(item=>item.value===select.current?.value);
-    setOptions(items.map(option=>({...option,search:fold(option.label+' '+option.group)})));setLimit(200);setQuery(initial);setActive(initial||selectedIndex>=200?0:Math.max(0,selectedIndex));setOpen(true);
+    setOptions(items.map(option=>({...option,search:fold(option.label+' '+option.group),skuSearch:articleKey(option.sku??'')})));setLimit(200);setQuery(initial);setActive(initial||selectedIndex>=200?0:Math.max(0,selectedIndex));setOpen(true);
   }
   useEffect(()=>{if(pending?.value===String(props.value??''))setPending(null);},[props.value,dataOptions]);
   function close(focus=false) {setOpen(false);if(focus)select.current?.focus({preventScroll:true});}
@@ -75,7 +78,7 @@ export default function SearchSelect({dataOptions,onCreate,...props}:Props) {
 
   function highlight(value:string) {return <SearchHighlight text={value} query={query}/>;}
   return <span className="search-select">
-    <select {...props} ref={select} aria-label={label} title={props.title || "Начните вводить название для поиска"} aria-expanded={open} aria-controls={open ? id : undefined} onChange={event=>{close();props.onChange?.(event);}}
+    <select {...props} ref={select} aria-label={label} title={props.title || "Начните вводить значение для поиска"} aria-expanded={open} aria-controls={open ? id : undefined} onChange={event=>{close();props.onChange?.(event);}}
       onPointerDown={event=>{props.onPointerDown?.(event);if(event.button===0&&!event.defaultPrevented){event.preventDefault();select.current?.focus({preventScroll:true});show();}}}
       onPaste={event=>{props.onPaste?.(event);if(event.defaultPrevented)return;const pasted=event.clipboardData.getData('text/plain');if(pasted){event.preventDefault();show(pasted);}}}
       onKeyDown={event=>{props.onKeyDown?.(event);if(event.defaultPrevented)return;
@@ -88,7 +91,7 @@ export default function SearchSelect({dataOptions,onCreate,...props}:Props) {
         if(event.key==='Tab'){event.stopPropagation();close(true);}
       }}>
       <div className="search-select-query"><input ref={input} aria-label={'Поиск в списке: '+label} role="combobox" aria-expanded="true" aria-controls={id}
-        aria-activedescendant={filtered[active] ? id+'-'+active : undefined} autoComplete="off" placeholder="Начните вводить название…" value={query}
+        aria-activedescendant={filtered[active] ? id+'-'+active : undefined} autoComplete="off" placeholder={searchPlaceholder??"Начните вводить значение…"} value={query}
         onChange={event=>{setQuery(event.target.value);setActive(0);setLimit(200);}} onKeyDown={event=>{
           if(event.key==='ArrowDown'||event.key==='ArrowUp'){
             event.preventDefault();event.stopPropagation();setActive(current=>{const step=event.key==='ArrowDown'?1:-1;let next=current+step;while(next>=0&&next<filtered.length&&filtered[next].disabled)next+=step;if(next>=limit)setLimit(next+50);return next>=0&&next<filtered.length ? next : current;});

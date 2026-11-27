@@ -1906,7 +1906,7 @@ export default function App() {
     if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}
     if(leftTool==="frames"&&!isElectrical(typeMap.get(item.type_id)))return;
     const stored=selected&&project?.elements.find(current=>current.id===selected.id);
-    if(selected&&stored&&selected.id!==item.id&&!sameItem(selected,stored))void run(()=>save({...selected}));
+    if(selected&&stored&&(selected.id!==item.id||additive)&&!sameItem(selected,stored))void run(()=>save({...selected}));
     setLeftPanelVisible(true);
     setLeftTool(current=>current==="frames"&&item.parameters.frame_group&&!additive?"properties":current==="frames"||current==="style"?current:"properties");
     if (additive) {

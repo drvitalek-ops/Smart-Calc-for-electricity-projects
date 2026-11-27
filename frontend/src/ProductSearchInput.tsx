@@ -34,7 +34,7 @@ export default function ProductSearchInput({value,productId,options,onChange,onC
   return <span ref={root} className="search-input product-search-input"><input {...props} ref={input} value={value}
     role="combobox" aria-autocomplete="list" autoComplete="off" aria-expanded={open} aria-controls={open?id:undefined}
     aria-activedescendant={open&&filtered[active]?id+'-'+active:undefined}
-    onFocus={event=>{props.onFocus?.(event);show();}} onClick={()=>{if(!open)show();}}
+    onFocus={event=>{props.onFocus?.(event);event.currentTarget.select();show();}} onClick={()=>{if(!open){input.current?.select();show();}}}
     onBlur={event=>{props.onBlur?.(event);setOpen(false);}}
     onChange={event=>{onChange(event.target.value);show(event.target.value);}}
     onKeyDown={event=>{
@@ -45,7 +45,7 @@ export default function ProductSearchInput({value,productId,options,onChange,onC
         if(!open){show();setActive(0);}else setActive(current=>{const next=Math.max(0,Math.min(filtered.length-1,current<0?(event.key==='ArrowDown'?0:filtered.length-1):current+(event.key==='ArrowDown'?1:-1)));setLimit(count=>Math.max(count,next+1));return next;});
       }else if(event.key==='Enter'&&open){event.preventDefault();event.stopPropagation();if(active>=0&&filtered[active])choose(filtered[active]);else setOpen(false);}
     }}/><button type="button" className="search-input-arrow" aria-label={'Найти товар: '+label} disabled={props.disabled}
-      onPointerDown={event=>event.preventDefault()} onClick={()=>{input.current?.focus({preventScroll:true});show();}}>▾</button>
+      onPointerDown={event=>event.preventDefault()} onClick={()=>{input.current?.focus({preventScroll:true});input.current?.select();show();}}>▾</button>
     {open&&createPortal(<div ref={popup} data-search-popup className="search-select-popup product-search-popup" style={position}>
       <div className="search-select-options" role="listbox" aria-label={'Товары: '+label} id={id}>
         {filtered.slice(0,limit).map((option,index)=><button key={option.value} type="button" role="option" id={id+'-'+index}

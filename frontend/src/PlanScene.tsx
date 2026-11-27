@@ -55,7 +55,7 @@ const PlanObject=memo(function PlanObject({item,kind,page,unframed,selected,lock
   const marker=transformPoint(item,page);
   return <g data-element-id={item.id} className={(selected?'selected-point-object ':'')+targetClass} opacity={opacity} transform={`translate(${marker.x*1000},${marker.y*1000}) scale(1,${aspect})`} {...handlers}>
     <title>{planLabel(item,kind)}{locked?' · Слой заблокирован':''}</title>
-    <circle className="point-hit-area" r={hitRadius} fill="transparent" pointerEvents="all"/>
+    <circle className="point-hit-area" r={hitRadius} fill="transparent"/>
     <>{unframed&&<circle className="unframed-halo" r={19*scale} fill="#f59e0b" fillOpacity=".13" stroke="#b45309" strokeWidth="2" strokeDasharray="3 3" vectorEffect="non-scaling-stroke"/>}</><PointMarker details={!simplified} shared kind={kind} parameters={item.parameters} scale={scale} powerSupply={isPowerSupply(kind)} color={color} selected={linking?picked:selected} icon={String(item.parameters.plan_icon??'').trim()}/>
     {label}
   </g>;

@@ -32,7 +32,7 @@ type Prices = {lines:(Line & {total:string;base_total:string;discount_amount:str
   totals:Record<string,{base:string;discount:string;total:string}>};
 type Quote = {
   merged_line_ids?:Record<string,string>;
-  style?:QuoteStyle;revision:number;plan_sync?:boolean|null;plan_snapshot_ids?:number[]|null;excluded_plan_ids?:number[];plan_frame_snapshot_keys?:string[]|null;excluded_frame_keys?:string[];plan_frame_snapshot_ids?:string[]|null;excluded_frame_ids?:string[]; room_layout?:'combined'|'rooms'|'legacy'; number:string; date:string; title:string; seller:string; customer:string;
+  style?:QuoteStyle;revision:number;catalog_links_version?:number;catalog_link_issues?:Record<string,string>;plan_sync?:boolean|null;plan_snapshot_ids?:number[]|null;excluded_plan_ids?:number[];plan_frame_snapshot_keys?:string[]|null;excluded_frame_keys?:string[];plan_frame_snapshot_ids?:string[]|null;excluded_frame_ids?:string[]; room_layout?:'combined'|'rooms'|'legacy'; number:string; date:string; title:string; seller:string; customer:string;
   contact:string; terms:string; global_discount:string; lines:Line[];
   city:string;phone:string;email:string;website:string;address:string;slogan:string;valid_days:number;
   tax_note:string;logo:string;benefits:{title:string;text:string}[];
@@ -348,7 +348,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     await work(async()=>{
       const saved=await saveCurrent();
       const value=await api<Quote>(base+"/bind","POST",{revision:saved.revision,line_id:saved.merged_line_ids?.[lineId]??lineId,product_id:productId ? Number(productId) : null});
-      apply(value);await onChanged();setMessage(standalone ? "Товар привязан к строке КП." : "Товар привязан. Позиции плана обновлены.");
+      apply(value);await onChanged();setMessage(standalone||!value.lines.some(line=>line.id===(saved.merged_line_ids?.[lineId]??lineId)&&(line.source_ids.length||line.source_frame_ids?.length)) ? "Товар привязан к строке КП." : "Товар привязан. Позиции плана обновлены.");
     });
   }
   async function download(target:"client"|"partner") {
@@ -418,6 +418,9 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   }
 
 
+  const pendingCatalogue=standalone?[]:doc.lines.filter(line=>!line.product_id&&line.name.trim()&&line.sku.trim()&&line.manufacturer.trim());
+  if(pendingCatalogue.length)bulkNotices.push({id:'catalog-links',group:'Связи товаров',title:'Реквизиты заполнены, но товар ещё не связан с базой',detail:'Название, артикул и фотография могут храниться только в строке КП. При сохранении новых реквизитов товар добавляется в базу и привязывается к существующим объектам. Если привязка отменена, слой заблокирован или найдено несколько товаров с одним артикулом, выберите позицию и уточните связь.',severity:'info',targets:pendingCatalogue.map(line=>({...positionTarget(line),detail:doc.catalog_link_issues?.[line.id]??'Выберите существующий товар или добавьте эту позицию в базу.'}))});
+
   const productOptions=(line:Line)=>{
     const options=(line.source_ids.length&&line.type_id!==null?productPickers.byType.get(line.unit+':'+line.type_id):productPickers.byUnit.get(line.unit))??[{value:'',label:'Без привязки к товару'}];
     const selected=line.product_id?productPickers.byId.get(line.product_id):null;
@@ -466,6 +469,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     </div>
     <QuotePreflight issues={issues} onSelect={item=>jumpToLine(item.id,item.index)}/>
     <IssueBar label="Проверка КП" issues={bulkNotices}/>
+    {pendingCatalogue.length>0&&<ToolButton icon="link" disabled={busy} onClick={()=>void work(async()=>{const saved=await saveCurrent();const value=await api<Quote&{catalog_recovery:{created:number;matched:number;issues:Record<string,string>}}>(base+'/recover-products','POST',{revision:saved.revision});const {catalog_recovery:result,...document}=value;apply(document);await onChanged();const remaining=Object.keys(result.issues).length;setMessage('Товаров добавлено в базу: '+result.created+', использовано из базы: '+result.matched+'.'+(remaining?' Осталось проверить позиций: '+remaining+'. Откройте «Связи товаров» в проверке КП.':' Связи с существующими объектами плана сохранены.'));})}>Связать товары с базой и планом</ToolButton>}
     </div>
 
     {!preview ? <>

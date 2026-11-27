@@ -127,13 +127,15 @@ async def lifespan(app):
         seed(db)
         migrate_power_links(db)
         recalculate_all_project_lines(db)
+        from .quotation_catalogue import recover_projects
+        recover_projects(db)
         db.commit()
     try:yield
     finally:
         from .backup_downloads import BACKUP_DOWNLOADS
         BACKUP_DOWNLOADS.clear()
 
-APP_VERSION = '1.0.70'
+APP_VERSION = '1.0.71'
 app = FastAPI(title='Smart Home Calc', version=APP_VERSION, lifespan=lifespan)
 from .errors import install_error_handlers, exception_message
 install_error_handlers(app)

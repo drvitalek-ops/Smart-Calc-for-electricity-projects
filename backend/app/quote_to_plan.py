@@ -23,7 +23,7 @@ def allocate(total,items,unit):
     return [float(Decimal(value)/scale) if scale==1000 else value for value in amounts]
 
 
-def apply_quote_changes(db,pid,quote,baseline=None,*,force_product_lines=()):
+def apply_quote_changes(db,pid,quote,baseline=None,*,force_product_lines=(),selected_product_lines=()):
     from .main import ElementInput,require,validate_element,remember_elements
     from .catalog_types import product_type_id
     stored=db.get(Quotation,pid)
@@ -70,13 +70,15 @@ def apply_quote_changes(db,pid,quote,baseline=None,*,force_product_lines=()):
             actual=sum((Decimal(str(item.parameters.get(key,0 if key=='length' else 1))) for item in items),Decimal(0))
             if actual==line.quantity:line.quantity_override=None;line.calculated_quantity=actual;quantity=False
         amounts=allocate(line.quantity,items,line.unit) if quantity else None
-        fields={key:getattr(line,key) for key in commercial if changed(key)}
+        selecting=line.id in selected_product_lines
+        fields={} if selecting else {key:getattr(line,key) for key in commercial if changed(key)}
         for index,item in enumerate(items):
             parameters={**item.parameters};values={key:getattr(item,key) for key in ElementInput.model_fields}
-            item_fields={**fields,'unit_price':line.unit_price,'currency':line.currency} if item.id not in persisted_ids else fields
+            if selecting and item.product_id!=line.product_id:parameters.pop('_quotation',None)
+            item_fields={**fields,'unit_price':line.unit_price,'currency':line.currency} if not selecting and item.id not in persisted_ids else fields
             if item_fields:parameters['_quotation']={**parameters.get('_quotation',{}),**{key:str(value) for key,value in item_fields.items()}}
-            if changed('name'):parameters['display_name']=line.name[:200]
-            if changed('ip'):
+            if not selecting and changed('name'):parameters['display_name']=line.name[:200]
+            if not selecting and changed('ip'):
                 if line.ip.strip():
                     match=re.fullmatch(r'(?:IP\s*)?(\d{1,2})',line.ip.strip(),re.I)
                     if not match or int(match[1])>69:raise HTTPException(422,'Укажите IP числом от 0 до 69, например IP44')

@@ -219,6 +219,7 @@ class QuoteRevision(BaseModel):
 class QuoteBinding(QuoteRevision):
     line_id: str
     product_id: int | None = Field(default=None,gt=0)
+    draft: QuoteInput | None = None
 
 
 class QuoteProduct(QuoteRevision):
@@ -647,7 +648,7 @@ def sync_plan_quantities(db,pid,quote,*,update_signatures=False,coalesce=True):
     return quote
 
 
-def bind_product(db,pid,quote,line_id,product):
+def binding_sources(db,pid,quote,line_id,product):
     line=next((line for line in quote.lines if line.id==line_id),None)
     if line is None: raise HTTPException(404,'Строка КП не найдена')
     if not product.active: raise HTTPException(409,'Товар находится в архиве')
@@ -661,6 +662,18 @@ def bind_product(db,pid,quote,line_id,product):
         if db.get(Layer,element.layer_id).locked:
             raise HTTPException(409,'Слой позиции заблокирован. Разблокируйте его перед привязкой товара.')
         elements.append(element)
+    return line,elements
+
+
+def select_product(db,line,product):
+    if line.source_frame_ids:line.frame_variant='product:'+str(product.id)
+    # Product metadata follows the catalogue; the editor's room grouping stays manual.
+    line.overrides=[field for field in line.overrides if field=='room']
+    product_snapshot(db,line,product)
+
+
+def bind_product(db,pid,quote,line_id,product):
+    line,elements=binding_sources(db,pid,quote,line_id,product)
     if elements:
         from .main import remember_elements
         remember_elements(db,pid)
@@ -670,10 +683,7 @@ def bind_product(db,pid,quote,line_id,product):
     if line.source_frame_ids:
         from .frame_goods import apply_properties
         apply_properties(db,pid,line.source_frame_ids,{'frame_product_id':product.id})
-        line.frame_variant='product:'+str(product.id)
-    # Product metadata follows the catalogue; the editor's room grouping stays manual.
-    line.overrides=[field for field in line.overrides if field=='room']
-    product_snapshot(db,line,product)
+    select_product(db,line,product)
 
 
 @router.get('/api/quotations/{qid}')
@@ -694,11 +704,7 @@ def read_quote(db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
     return present(quote)
 
 
-@router.put('/api/quotations/{qid}')
-@router.put('/api/projects/{pid}/quotation')
-def save_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope),_catalogue=Depends(catalogue_write_guard)):
-    pid,standalone=scope
-    baseline=check_revision(db,pid,body.revision,standalone)
+def validate_quote_goods(db,body,standalone):
     if standalone: validate_standalone(body)
     for line in body.lines:
         if line.type_id is not None and db.get(ElementType,line.type_id) is None:
@@ -707,6 +713,14 @@ def save_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends
             product=db.get(Product,line.product_id)
             if product is None or product.unit!=line.unit or product_type_id(db,product) is not None and line.type_id!=product.type_id:
                 raise HTTPException(422,'Товар строки не соответствует номенклатуре или единице')
+
+
+@router.put('/api/quotations/{qid}')
+@router.put('/api/projects/{pid}/quotation')
+def save_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope),_catalogue=Depends(catalogue_write_guard)):
+    pid,standalone=scope
+    baseline=check_revision(db,pid,body.revision,standalone)
+    validate_quote_goods(db,body,standalone)
     if not standalone and body.apply_to_plan:
         from .quotation_catalogue import materialize
         recovery=materialize(db,pid,body,baseline)
@@ -767,9 +781,30 @@ def change_room_layout(pid:int,body:QuoteRoomLayout,db:DbSession=Depends(session
 
 @router.post('/api/quotations/{qid}/bind')
 @router.post('/api/projects/{pid}/quotation/bind')
-def bind_quote(body:QuoteBinding,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+def bind_quote(body:QuoteBinding,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope),_catalogue=Depends(catalogue_write_guard)):
     pid,standalone=scope
     quote=check_revision(db,pid,body.revision,standalone)
+    if body.draft is not None:
+        # Bind the intended row before saving, materializing query text, or
+        # merging equal rows. Draft and plan changes share one transaction/undo.
+        baseline=quote;quote=body.draft
+        if quote.revision!=body.revision:raise HTTPException(409,'Версия черновика КП изменилась. Откройте сохранённую версию.')
+        line=next((line for line in quote.lines if line.id==body.line_id),None)
+        if line is None:raise HTTPException(404,'Строка КП не найдена')
+        if body.product_id is not None:
+            product=db.get(Product,body.product_id)
+            if product is None:raise HTTPException(404,'Товар не найден')
+            binding_sources(db,pid,quote,body.line_id,product)
+            select_product(db,line,product)
+        else:line.product_id=None
+        validate_quote_goods(db,quote,standalone)
+        if not standalone:
+            from .quotation_catalogue import materialize
+            recovery=materialize(db,pid,quote,baseline,exclude_line_ids={body.line_id})
+            from .quote_to_plan import apply_quote_changes
+            apply_quote_changes(db,pid,quote,baseline,force_product_lines={body.line_id,*recovery['line_ids']},selected_product_lines={body.line_id})
+        persist_quote(db,pid,quote,standalone);db.commit()
+        return present(quote,with_aliases=True)
     if body.product_id is None:
         line=next((line for line in quote.lines if line.id==body.line_id),None)
         if line is None: raise HTTPException(404,'Строка КП не найдена')

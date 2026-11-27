@@ -13,6 +13,7 @@ import {api,apiFetch,errorMessage} from "./errors";
 import {moveQuoteLine,QUOTE_LINE_DRAG} from "./quotationOrder";
 import ImageField,{imagePaste,prepareImage,imageDrop,imageDragOver} from "./ImageField";
 import SearchInput from "./SearchInput";
+import ProductSearchInput from "./ProductSearchInput";
 import {quotationColors,quotationColor,type QuoteStyle} from "./quotationTheme";
 import QuotationPreview from "./QuotationPreview";
 import ToolRail, {ActionIcon,ToolButton, type ToolItem} from "./ToolRail";
@@ -124,14 +125,15 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     return()=>{cancelAnimationFrame(frame);document.removeEventListener('dragover',track,true);};
   },[draggedId]);
   const productPickers=useMemo(()=>{
-    const byUnit=new Map<string,SearchOption[]>(),byType=new Map<string,SearchOption[]>(),byId=new Map<number,SearchOption>();
+    const byUnit=new Map<string,SearchOption[]>(),byType=new Map<string,SearchOption[]>(),byId=new Map<number,SearchOption>(),frames:SearchOption[]=[{value:'',label:'Без привязки к товару'}];
+    const frameTypes=new Set(types.filter(type=>type.category==='Рамки').map(type=>type.id));
     const add=(map:Map<string,SearchOption[]>,key:string,option:SearchOption)=>{const options=map.get(key)??[{value:'',label:'Без привязки к товару'}];options.push(option);map.set(key,options);};
     for(const product of catalogue.products){
       const option={value:String(product.id),label:product.name+(product.sku?' · '+product.sku:''),group:product.manufacturer,sku:product.sku,disabled:!product.active,image:typeof product.parameters.image==='string'?product.parameters.image:undefined};byId.set(product.id,option);
-      if(product.active){add(byUnit,product.unit,option);add(byType,product.unit+':'+product.type_id,option);if(product.type_id===null)for(const type of types.filter(type=>type.unit===product.unit))add(byType,product.unit+':'+type.id,option);}
+      if(product.active){add(byUnit,product.unit,option);add(byType,product.unit+':'+product.type_id,option);if(product.type_id===null)for(const type of types.filter(type=>type.unit===product.unit))add(byType,product.unit+':'+type.id,option);if(product.unit==='шт'&&(product.type_id===null||frameTypes.has(product.type_id)))frames.push(option);}
     }
-    return {byUnit,byType,byId};
-  },[catalogue.products]);
+    return {byUnit,byType,byId,frames};
+  },[catalogue.products,types]);
   const filteredLines=useMemo(()=>doc?.lines.flatMap((line,index)=>
     (line.id===editingLineId||(roomFilter===null||normalizeRoom(line.room)===roomFilter)&&(!lineQuery||matchesSearch([line.name,line.sku,line.manufacturer,line.room,line.comment].join(' '),lineQuery)||matchesArticle(line.sku,lineQuery)))?[{line,index}]:[])??[],[doc?.lines,lineQuery,roomFilter,editingLineId]);
   const linePages=Math.max(1,Math.ceil(filteredLines.length/linePageSize)),activePage=Math.min(linePage,linePages-1),visibleLines=filteredLines.slice(activePage*linePageSize,(activePage+1)*linePageSize);
@@ -344,12 +346,20 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
     if(standalone)return;
     await work(async()=>{const saved=await saveCurrent();apply(await api<Quote>(base+'/room-layout','POST',{revision:saved.revision,layout}));setRoomFilter(null);setLineQuery('');setLinePage(0);setMessage(layout==='rooms'?'Все связанные позиции распределены по помещениям плана, как в спецификации.':'Одинаковые позиции объединены в общее КП.');});
   }
+  const binding=useRef(false);
   async function bind(lineId:string,productId:string) {
+    if(binding.current)return;
+    const current=docRef.current;if(!current)return;
+    binding.current=true;
+    try{
     await work(async()=>{
-      const saved=await saveCurrent();
-      const value=await api<Quote>(base+"/bind","POST",{revision:saved.revision,line_id:saved.merged_line_ids?.[lineId]??lineId,product_id:productId ? Number(productId) : null});
-      apply(value);await onChanged();setMessage(standalone||!value.lines.some(line=>line.id===(saved.merged_line_ids?.[lineId]??lineId)&&(line.source_ids.length||line.source_frame_ids?.length)) ? "Товар привязан к строке КП." : "Товар привязан. Позиции плана обновлены.");
+      const issue=numberError(current);if(issue){focusError.current=true;throw Error(issue);}
+      const linked=current.lines.some(line=>line.id===lineId&&(line.source_ids.length||line.source_frame_ids?.length));
+      const {client,partner,merged_line_ids,...draft}=current;
+      const value=await api<Quote>(base+"/bind","POST",{revision:current.revision,line_id:lineId,product_id:productId ? Number(productId) : null,draft});
+      apply(value);await onChanged();setMessage(standalone||!linked ? "Товар привязан к строке КП." : "Товар привязан. Позиции плана обновлены.");
     });
+    }finally{binding.current=false;}
   }
   async function download(target:"client"|"partner") {
     await work(async()=>{
@@ -422,7 +432,7 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   if(pendingCatalogue.length)bulkNotices.push({id:'catalog-links',group:'Связи товаров',title:'Реквизиты заполнены, но товар ещё не связан с базой',detail:'Название, артикул и фотография могут храниться только в строке КП. При сохранении новых реквизитов товар добавляется в базу и привязывается к существующим объектам. Если привязка отменена, слой заблокирован или найдено несколько товаров с одним артикулом, выберите позицию и уточните связь.',severity:'info',targets:pendingCatalogue.map(line=>({...positionTarget(line),detail:doc.catalog_link_issues?.[line.id]??'Выберите существующий товар или добавьте эту позицию в базу.'}))});
 
   const productOptions=(line:Line)=>{
-    const options=(line.source_ids.length&&line.type_id!==null?productPickers.byType.get(line.unit+':'+line.type_id):productPickers.byUnit.get(line.unit))??[{value:'',label:'Без привязки к товару'}];
+    const options=(line.source_frame_ids?.length?productPickers.frames:line.source_ids.length&&line.type_id!==null?productPickers.byType.get(line.unit+':'+line.type_id):productPickers.byUnit.get(line.unit))??[{value:'',label:'Без привязки к товару'}];
     const selected=line.product_id?productPickers.byId.get(line.product_id):null;
     return selected?.disabled?[...options,selected]:options;
   };
@@ -498,8 +508,8 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
           <td><div className="quotation-line-name"><input className="quote-row-check" type="checkbox" aria-label={"Выбрать строку КП "+(index+1)} disabled={busy} checked={selectedLineIds.has(line.id)} onChange={()=>toggleQuoteLine(line.id)}/><button type="button" className="quote-drag-handle" draggable={!busy} disabled={busy} aria-label={'Перетащить строку '+(index+1)} title="Перетащите для перемещения. Ctrl+↑ / Ctrl+↓ — на одну позицию."
             onDragStart={event=>{if(busy){event.preventDefault();return;}event.stopPropagation();dragSource.current=line.id;dragY.current=event.clientY;setDraggedId(line.id);setActiveLineId(line.id);event.dataTransfer.effectAllowed='move';event.dataTransfer.setData(QUOTE_LINE_DRAG,JSON.stringify({base,id:line.id}));}}
             onDragEnd={endDrag} onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&['ArrowUp','ArrowDown'].includes(event.key)){event.preventDefault();const target=doc.lines[index+(event.key==='ArrowUp'?-1:1)];if(target){moveLine(line.id,target.id,event.key==='ArrowDown');setLinePage(Math.floor((index+(event.key==='ArrowUp'?-1:1))/linePageSize));requestAnimationFrame(()=>document.querySelector<HTMLButtonElement>(`[data-quote-line="${CSS.escape(line.id)}"] .quote-drag-handle`)?.focus());}}}}><ActionIcon name="grip"/><small>{index+1}</small></button>
-            {line.image&&<img src={line.image} alt=""/>}<div><input className="quotation-name-input" title={[line.name,line.sku].filter(Boolean).join(" · ")} aria-label={"Наименование строки "+(index+1)} value={line.name} disabled={busy} onChange={e=>editLine(line.id,{name:e.target.value})}/></div></div>
-            <div className="quotation-row-meta"><input aria-label={"Артикул строки "+(index+1)} placeholder="Артикул" maxLength={200} title={line.sku||''} value={line.sku} disabled={busy} onChange={event=>editLine(line.id,{sku:event.target.value})}/>
+            {line.image&&<img src={line.image} alt=""/>}<div><ProductSearchInput className="quotation-name-input" title="Введите название или артикул и выберите товар из базы" aria-label={"Наименование строки "+(index+1)} value={line.name} productId={line.product_id} options={productOptions(line)} disabled={busy} onChange={name=>editLine(line.id,{name})} onChoose={id=>void bind(line.id,id)}/></div></div>
+            <div className="quotation-row-meta"><ProductSearchInput aria-label={"Артикул строки "+(index+1)} placeholder="Артикул · поиск товара" maxLength={200} title="Введите артикул или название и выберите товар из базы" value={line.sku} productId={line.product_id} options={productOptions(line)} disabled={busy} onChange={sku=>editLine(line.id,{sku})} onChoose={id=>void bind(line.id,id)}/>
               <SearchInput aria-label={"Бренд строки "+(index+1)} placeholder="Бренд" maxLength={500} title={line.manufacturer||''} options={catalogue.manufacturers.filter(item=>item.active!==false).map(item=>item.name)} value={line.manufacturer} disabled={busy} onChange={manufacturer=>editLine(line.id,{manufacturer})}/></div>
             <details className="quotation-row-details" open={expandedRows.has(line.id)} onToggle={event=>{const open=event.currentTarget.open;if(open!==expandedRows.has(line.id))expandRow(line.id,open);}}><summary aria-label={"Свойства строки "+(index+1)} title="Товар, фото и свойства">Товар, фото и свойства{line.sku?' · '+line.sku:''}{line.source_ids.length?' · На плане: '+line.source_ids.length:''}</summary>
             {expandedRows.has(line.id)&&<>

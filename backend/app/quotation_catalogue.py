@@ -24,13 +24,13 @@ def eligible(line):
     return line.product_id is None and all(authored_identity(line))
 
 
-def materialize(db,pid,quote,baseline=None,*,force=False):
+def materialize(db,pid,quote,baseline=None,*,force=False,exclude_line_ids=()):
     """Prepare catalogue IDs; apply_quote_changes owns atomic plan changes/undo."""
     previous={line.id:line for line in baseline.lines} if baseline else {}
     legacy=baseline is None or baseline.catalog_links_version<VERSION
     candidates=[];issues={};created=matched=0;line_ids=[]
     for line in quote.lines:
-        if not eligible(line):continue
+        if line.id in exclude_line_ids or not eligible(line):continue
         old=previous.get(line.id)
         if force or legacy or old is None or authored_identity(old)!=authored_identity(line):candidates.append(line)
         elif line.id in quote.catalog_link_issues:issues[line.id]=quote.catalog_link_issues[line.id]

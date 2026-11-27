@@ -23,7 +23,7 @@ def allocate(total,items,unit):
     return [float(Decimal(value)/scale) if scale==1000 else value for value in amounts]
 
 
-def apply_quote_changes(db,pid,quote,baseline=None):
+def apply_quote_changes(db,pid,quote,baseline=None,*,force_product_lines=()):
     from .main import ElementInput,require,validate_element,remember_elements
     from .catalog_types import product_type_id
     stored=db.get(Quotation,pid)
@@ -58,6 +58,8 @@ def apply_quote_changes(db,pid,quote,baseline=None):
                 current=[derived[eid] for eid in line.source_ids if eid in derived]
                 if current:
                     result=any(Decimal(str(row.get(field,0)))!=value for row in current) if field=='unit_price' else any(row.get(field,'')!=value for row in current)
+            if field=='product_id' and line.id in force_product_lines:
+                result=any(item.product_id!=value for item in items)
             differences[field]=result
             return result
         quantity=line.quantity_override is not None and any(Decimal(str(row.get('quantity_override') or 0))!=line.quantity_override for row in old)
@@ -97,6 +99,19 @@ def apply_quote_changes(db,pid,quote,baseline=None):
             values['parameters']=validate_element(db,pid,ElementInput(**values),existing_type_id=item.type_id,existing_product_id=item.product_id)
             pending.append((item,values))
         if quantity:line.quantity_override=None;line.calculated_quantity=line.quantity
+    # Frame goods belong to physical frames, separately from socket mechanisms.
+    previous_frames={gid:line for line in (baseline.lines if baseline else []) for gid in line.source_frame_ids}
+    by_id={item.id:(item,values) for item,values in pending}
+    from .frame_goods import pending_properties
+    for line in quote.lines:
+        if not line.source_frame_ids:continue
+        old={previous_frames[gid].product_id for gid in line.source_frame_ids if gid in previous_frames}
+        if not old or old=={line.product_id} and line.id not in force_product_lines:continue
+        for item,parameters in pending_properties(db,pid,line.source_frame_ids,{'frame_product_id':line.product_id}):
+            values=by_id.get(item.id,(item,{key:getattr(item,key) for key in ElementInput.model_fields}))[1]
+            values['parameters']={**values['parameters'],'frame_product_id':parameters['frame_product_id']}
+            by_id[item.id]=(item,values)
+    pending=list(by_id.values())
     if pending:
         remember_elements(db,pid)
         for item,values in pending:

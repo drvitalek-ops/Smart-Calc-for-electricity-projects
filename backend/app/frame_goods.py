@@ -57,8 +57,8 @@ def validate_product(db,product_id,posts,allow_inactive=False):
     return product
 
 
-def apply_properties(db,pid,groups,changes):
-    from .main import require,remember_elements,Project
+def pending_properties(db,pid,groups,changes):
+    from .main import require,Project
     require(db,Project,pid);groups=set(groups)
     if not groups:raise HTTPException(422,'Выберите рамку на плане')
     rows=list(db.execute(select(Element,ElementType,Layer).join(ElementType,Element.type_id==ElementType.id).join(Layer,Element.layer_id==Layer.id).where(Element.project_id==pid,Element.parameters['frame_group'].as_string().in_(groups))))
@@ -86,10 +86,17 @@ def apply_properties(db,pid,groups,changes):
             ids=set(line.source_frame_ids)
             if ids&groups and ids-groups and line.quantity_override is not None:
                 raise HTTPException(409,'В КП у рамок задано ручное количество. Снимите галочку «Вручную» перед изменением части рамок.')
+    return pending
+
+
+def apply_properties(db,pid,groups,changes):
+    from .main import remember_elements
+    pending=pending_properties(db,pid,groups,changes)
+    if pending:
         remember_elements(db,pid)
         for item,parameters in pending:item.parameters=parameters
         db.flush()
-    return {'frame_groups':sorted(groups),'changed':len(pending)}
+    return {'frame_groups':sorted(set(groups)),'changed':len(pending)}
 
 
 def draw_frames(sheet,page,rows,db):

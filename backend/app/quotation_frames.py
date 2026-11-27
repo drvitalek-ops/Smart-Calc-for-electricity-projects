@@ -65,9 +65,13 @@ def sync_frames(db,pid,quote,rows):
                     if same_product:line.unit_price=old.unit_price;line.currency=old.currency
                     line.overrides=[field for field in line.overrides if field in ('room','unit_price','currency') and same_product]
                 elif row.get('frame_product_explicit') or old.frame_variant.startswith('product:') or not old.product_id:
+                    explicit=row.get('frame_product_explicit')
                     for field in ('product_id','type_id','name','sku','manufacturer','description','image','ip'):
-                        setattr(line,field,getattr(fresh,field))
-                    line.overrides=[field for field in line.overrides if field in ('room','unit_price','currency')]
+                        if field in ('product_id','type_id') or explicit or field not in line.overrides:
+                            setattr(line,field,getattr(fresh,field))
+                    # Undo of recovered links returns to an inline quotation
+                    # item. Keep its authored photo/SKU/text and agreed terms.
+                    line.overrides=[field for field in line.overrides if not explicit or field in ('room','unit_price','currency')]
             if line.product_id==row['product_id']:
                 if 'name' not in line.overrides:line.name=fresh.name
                 if 'description' not in line.overrides:line.description=fresh.description

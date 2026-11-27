@@ -154,6 +154,8 @@ class QuoteStyle(BaseModel):
 
 
 class QuoteInput(BaseModel):
+    catalog_links_version:int=Field(default=0,ge=0,le=1)
+    catalog_link_issues:dict[str,str]=Field(default_factory=dict,max_length=5000)
     apply_to_plan:bool=Field(default=False,exclude=True)
     _merged_line_ids:dict[str,str]=PrivateAttr(default_factory=dict)
     model_config=ConfigDict(validate_default=True)
@@ -694,7 +696,7 @@ def read_quote(db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
 
 @router.put('/api/quotations/{qid}')
 @router.put('/api/projects/{pid}/quotation')
-def save_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope)):
+def save_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends(quote_scope),_catalogue=Depends(catalogue_write_guard)):
     pid,standalone=scope
     baseline=check_revision(db,pid,body.revision,standalone)
     if standalone: validate_standalone(body)
@@ -706,10 +708,21 @@ def save_quote(body:QuoteInput,db:DbSession=Depends(session),scope:tuple=Depends
             if product is None or product.unit!=line.unit or product_type_id(db,product) is not None and line.type_id!=product.type_id:
                 raise HTTPException(422,'Товар строки не соответствует номенклатуре или единице')
     if not standalone and body.apply_to_plan:
+        from .quotation_catalogue import materialize
+        recovery=materialize(db,pid,body,baseline)
         from .quote_to_plan import apply_quote_changes
-        apply_quote_changes(db,pid,body,baseline)
+        apply_quote_changes(db,pid,body,baseline,force_product_lines=set(recovery['line_ids']))
     persist_quote(db,pid,body,standalone);db.commit()
     return present(body,with_aliases=True)
+
+
+@router.post('/api/projects/{pid}/quotation/recover-products')
+def recover_quote_products(pid:int,body:QuoteRevision,db:DbSession=Depends(session),_catalogue=Depends(catalogue_write_guard)):
+    check_revision(db,pid,body.revision)
+    from .quotation_catalogue import recover_project
+    result=recover_project(db,pid,force=True)
+    db.commit()
+    return {**present(get_quote(db,pid)),'catalog_recovery':result}
 
 
 @router.post('/api/quotations/{qid}/calculate')
@@ -960,6 +973,8 @@ def restore_quote(db,pid,payload,type_map,product_map,element_map):
         if line.source_key.startswith('elements:'):
             line.source_key=source_key({'element_ids':line.source_ids}) if line.source_ids else ''
     persist_quote(db,pid,quote)
+    from .quotation_catalogue import recover_project
+    recover_project(db,pid)
 
 @router.post('/api/quotations/{qid}/import-file')
 @router.post('/api/projects/{pid}/quotation/import-file')

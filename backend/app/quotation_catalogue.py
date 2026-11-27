@@ -78,7 +78,8 @@ def materialize(db,pid,quote,baseline=None,*,force=False):
                 if is_new:
                     maker=resolve_manufacturer(db,line.manufacturer)
                     values=dict(type_id=kind.id,manufacturer_id=maker.id,name=line.name.strip(),sku=line.sku.strip(),unit=line.unit,price=float(line.unit_price),currency=line.currency,active=True)
-                    parameters={key:getattr(line,key) for key in ('image','ip','description') if getattr(line,key)}
+                    parameters={key:getattr(line,key) for key in ('image','ip') if getattr(line,key)}
+                    if line.description and (not line.source_ids or 'description' in line.overrides):parameters['description']=line.description
                     if frame_posts:parameters['frame_posts']=next(iter(frame_posts))
                     product=Product(**values,parameters=parameters);db.add(product);db.flush()
                 if line.source_frame_ids:
@@ -93,7 +94,9 @@ def materialize(db,pid,quote,baseline=None,*,force=False):
             if line.source_frame_ids:line.frame_variant='product:'+str(product.id)
             # Keep the existing PDF and negotiated terms, even when a catalogue
             # match has a different current price, text or photograph.
-            line.overrides=list(dict.fromkeys([*line.overrides,'name','sku','manufacturer','image','description','ip','unit_price','currency']))
+            fields=['name','sku','manufacturer','image','ip','unit_price','currency']
+            if not line.source_ids:fields.append('description')
+            line.overrides=list(dict.fromkeys([*line.overrides,*fields]))
         except HTTPException as error:
             issues[line.id]=str(error.detail)
     quote.catalog_link_issues=issues

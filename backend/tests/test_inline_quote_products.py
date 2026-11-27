@@ -166,3 +166,27 @@ def test_manual_extra_with_optional_nomenclature_reuses_typed_good_without_new_p
     assert saved['lines'][0]['product_id']==product['id'] and saved['lines'][0]['type_id']==typ['id']
     assert len(ok(client.get(f'/api/projects/{pid}'))['elements'])==0
     assert saved['partner']['totals']['RUB']['total']=='3163.50'
+
+
+def test_inline_power_supplies_merge_by_good_without_copying_plan_connections_to_catalogue(client):
+    pid,body=setup(client)
+    strips=[ok(client.post(f'/api/projects/{pid}/elements',json={**body,'x':.2+i*.3})) for i in range(2)]
+    kind=next(t for t in ok(client.get('/api/types')) if t['name']=='Блок питания LED-ленты')
+    points=[]
+    for i,strip in enumerate(strips):
+        points.append(ok(client.post(f'/api/projects/{pid}/elements',json={**body,'type_id':kind['id'],'x':.2+i*.3,'y':.7,'parameters':{'quantity':1,'led_strip_ids':[strip['id']]}})))
+    path=f'/api/projects/{pid}/quotation';quote=ok(client.get(path))
+    from copy import deepcopy
+    from app.quotations import source_key
+    template=next(line for line in quote['lines'] if line['type_id']==kind['id'])
+    quote['lines']=[line for line in quote['lines'] if line['type_id']!=kind['id']]
+    # Older CP layouts can contain separate generated connection descriptions.
+    for i,point in enumerate(points):
+        line=deepcopy(template)
+        line.update(id='supply-'+str(i),source_ids=[point['id']],source_key=source_key({'element_ids':[point['id']]}),quantity='1',calculated_quantity='1',description='Питает ленты: #'+str(strips[i]['id']),name='Блок питания 24 В',sku='PSU-EXAMPLE',manufacturer='Тестовая фабрика',unit_price='100')
+        quote['lines'].append(line)
+    quote['apply_to_plan']=True;saved=ok(client.put(path,json=quote))
+    supplies=[line for line in saved['lines'] if line['type_id']==kind['id']]
+    assert len(supplies)==1 and Decimal(supplies[0]['quantity'])==2,'Identical goods merge despite different attached LED strips'
+    product=next(p for p in ok(client.get('/api/catalog'))['products'] if p['id']==supplies[0]['product_id'])
+    assert 'Питает ленты:' not in product['parameters'].get('description',''),'Project connections must not become shared product characteristics'

@@ -21,11 +21,13 @@ const front=process.env.FRAME_TEST_FRONTEND||'http://127.0.0.1:5174',back=proces
  assert.deepEqual((await editor.locator('[data-quote-group]').allTextContents()).map(t=>t.trim()),['Кухня','Спальня']);
  await actions.getByRole('button',{name:'Объединить помещения',exact:true}).click();await waitUntil(async()=>(await checked(await api.get(base+`/projects/${pid}/quotation`))).room_layout==='combined','Combined quote saved');
  quote=await checked(await api.get(base+`/projects/${pid}/quotation`));rows=quote.lines.filter(l=>l.product_id===product.id);assert.equal(rows.length,1);assert.equal(Number(rows[0].quantity),6);assert.equal(quote.partner.totals.RUB.total,'540.00');
- // Selecting a product on the second identical manual draft first saves/merges
- // those rows. The subsequent binding must target the retained row's identity.
+ // Bind before merging: matching free text must not assign a good to another
+ // draft row. After both rows explicitly choose the same good, they merge.
  await page.getByRole('button',{name:'Все КП',exact:true}).click();await page.getByRole('button',{name:'＋ Создать КП без проекта',exact:true}).click();await editor.waitFor();
  for(let i=1;i<=2;i++){await editor.getByRole('button',{name:'＋ Добавить строку КП',exact:true}).click();await editor.getByLabel('Наименование строки '+i,{exact:true}).fill('Одинаковая ручная позиция');}
  await editor.getByLabel('Свойства строки 2',{exact:true}).click();await editor.getByLabel('Товар строки 2',{exact:true}).click();await page.getByRole('option').filter({hasText:product.name}).click();
- await waitUntil(async()=>await editor.locator('[data-quote-line]').count()===1&&(await editor.getByLabel('Наименование строки 1',{exact:true}).inputValue())===product.name,'Merged draft row receives selected product');assert.equal(Number(await editor.getByLabel('Количество строки 1',{exact:true}).inputValue()),2);assert.equal(Number(await editor.getByLabel('Цена строки 1',{exact:true}).inputValue()),100);
+ await waitUntil(async()=>await editor.locator('[data-quote-line]').count()===2&&(await editor.getByLabel('Наименование строки 2',{exact:true}).inputValue())===product.name,'Only the chosen draft row receives the selected product');assert.equal(await editor.getByLabel('Наименование строки 1',{exact:true}).inputValue(),'Одинаковая ручная позиция');
+ await editor.getByLabel('Наименование строки 1',{exact:true}).fill(product.sku);await editor.getByLabel('Наименование строки 1',{exact:true}).press('Enter');
+ await waitUntil(async()=>await editor.locator('[data-quote-line]').count()===1&&(await editor.getByLabel('Наименование строки 1',{exact:true}).inputValue())===product.name,'Identical chosen goods merge after binding');assert.equal(Number(await editor.getByLabel('Количество строки 1',{exact:true}).inputValue()),2);assert.equal(Number(await editor.getByLabel('Цена строки 1',{exact:true}).inputValue()),100);
  assert.deepEqual(errors,[]);console.log('PASS: six linked identical supplies → one quantity 6 row → one quantity 3 row per room → combined, preserved money and draft product binding after duplicate merge');
 }finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1;});

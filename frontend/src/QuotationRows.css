@@ -21,3 +21,6 @@
 .quotation-room-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}.quotation-room-actions button{font-size:11px;min-height:30px;padding:5px 9px}.quotation-room-actions small{font-size:10px;color:#526874}
 
 .quotation-export-check{margin:8px 0;padding:7px 10px;border:1px solid #edcf8f;border-radius:6px;background:#fff8e8;color:#886224;font-size:11px}.quotation-export-check>summary{cursor:pointer}.quotation-export-check ul{max-height:180px;overflow:auto;margin:8px 0;padding-left:18px}.quotation-export-check li button{border:0;background:transparent;text-align:left;font-size:11px;color:inherit;min-height:25px;padding:4px}.quotation-export-check li button:hover{background:#f9e9c6}
+
+.quote-workspace .quotation-line-name .product-search-input>input{padding-right:57px!important}
+.quote-workspace .quotation-line-name .product-search-input>.search-input-arrow{right:28px;min-height:24px;height:24px;top:50%;transform:translateY(-50%)}

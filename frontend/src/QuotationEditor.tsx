@@ -319,8 +319,10 @@ export default function QuotationEditor({projectId,quotationId,projectName,rooms
   async function saveProductFromQuote(allowDuplicate=false){
     if(!newProduct)return;
     await work(async()=>{
-      const saved=await saveCurrent();let value:Quote;
-      try{value=await api<Quote>(base+'/product','POST',{revision:saved.revision,line_id:saved.merged_line_ids?.[newProduct.lineId]??newProduct.lineId,type_id:newProduct.typeId?Number(newProduct.typeId):null,
+      const current=docRef.current;if(!current)throw Error('КП ещё не загружено');
+      const issue=numberError(current);if(issue){focusError.current=true;throw Error(issue);}
+      const {client,partner,merged_line_ids,...draft}=current;let value:Quote;
+      try{value=await api<Quote>(base+'/product','POST',{revision:current.revision,line_id:newProduct.lineId,draft,type_id:newProduct.typeId?Number(newProduct.typeId):null,
         name:newProduct.name,manufacturer:newProduct.manufacturer,sku:newProduct.sku,unit_price:newProduct.price,currency:newProduct.currency,image:newProduct.image,
         existing_product_id:newProduct.existingId??null,allow_duplicate:allowDuplicate});}
       catch(error){const matches=duplicateProducts(error);if(matches){setProductDuplicates(matches);return;}throw error;}

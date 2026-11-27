@@ -1,6 +1,7 @@
 """Choose an existing good before saving/merging the edited quotation draft."""
 from copy import deepcopy
 from decimal import Decimal
+import pytest
 
 from test_workflow import client, setup
 
@@ -103,3 +104,25 @@ def test_frame_binding_and_clearing_share_draft_transaction_and_undo(client):
     assert all(item['parameters'].get('frame_product_id') is None for item in ok(client.get(path))['elements'])
     assert all(line['product_id'] is None for line in frames(cleared))
     assert len(ok(client.get('/api/catalog'))['products'])==1
+
+
+@pytest.mark.parametrize('standalone',[False,True])
+def test_create_from_filled_dirty_row_does_not_materialize_a_duplicate_first(client,standalone):
+    if standalone:
+        created=ok(client.post('/api/quotations',json={}))
+        path=f'/api/quotations/{created["id"]}';draft=deepcopy(created['quotation'])
+        draft['lines']=[{'id':'new','name':'Новая строка','quantity':'2','unit':'шт','unit_price':'20'}]
+        line=draft['lines'][0];type_id=None
+    else:
+        pid,body=setup(client);ok(client.post(f'/api/projects/{pid}/elements',json=body))
+        path=f'/api/projects/{pid}/quotation';draft=ok(client.get(path));line=draft['lines'][0];type_id=body['type_id']
+    line.update(name='Полная карточка из строки',sku='NEW-DIRECT',manufacturer='Новая фабрика',comment='Черновик сохранён',discount='10')
+    draft['customer']='Клиент из черновика'
+    saved=ok(client.post(path+'/product',json={'revision':draft['revision'],'line_id':line['id'],
+        'name':line['name'],'sku':line['sku'],'manufacturer':line['manufacturer'],'type_id':type_id,
+        'unit_price':'155','draft':draft}))
+    goods=ok(client.get('/api/catalog'))['products']
+    assert len(goods)==1 and goods[0]['sku']=='NEW-DIRECT'
+    selected=saved['lines'][0]
+    assert selected['product_id']==goods[0]['id'] and selected['comment']=='Черновик сохранён' and selected['discount']=='10'
+    assert saved['customer']=='Клиент из черновика' and saved['revision']==draft['revision']+1

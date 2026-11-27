@@ -133,6 +133,7 @@ jobs:
           node frontend/tests/product-sku-search.cjs
           node frontend/tests/frame-products.cjs
           FRAME_TEST_FRONTEND=http://127.0.0.1:5175 node frontend/tests/frame-selection.cjs
+          FRAME_TEST_FRONTEND=http://127.0.0.1:5175 node frontend/tests/device-frame-selection.cjs
           node frontend/tests/photos-categories.cjs
           node frontend/tests/plan-symbols-layers.cjs
           node frontend/tests/quotation-plan-quantities.cjs

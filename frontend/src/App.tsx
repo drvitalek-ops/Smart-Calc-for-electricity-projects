@@ -480,7 +480,7 @@ function SettingsDialog({onClose,onBusyChange,backupBlocked=false,returnFocus}:{
     <section id="settings-rollback" tabIndex={-1} className="settings-backup"><div className="settings-heading"><ActionIcon name="undo"/><div><h3>Откат версии</h3><p>При обновлении предыдущий выпуск сохраняется отдельно. Для возврата к v1.0.64 используйте копию данных до обновления.</p></div></div>
       {info?.rollback_version&&<><p className="hint">На компьютере сохранена версия {info.rollback_version}{info.rollback_has_data?' и копия данных перед обновлением':''}.</p><button type="button" disabled={opening} onClick={()=>void(async()=>{if(!info)return;setOpening(true);setError('');try{await api('/settings/open-rollback-folder','POST',{instance:info.instance});setMessage('Папка предыдущей версии открыта. Закройте приложение и запустите Start-previous-version.cmd.');}catch(error){setError(errorMessage(error,'Не удалось открыть папку'));}finally{setOpening(false);}})()}><ActionIcon name="folder" className="tool-icon"/> Открыть папку предыдущей версии</button></>}
       <p className="hint">Для отката закройте калькулятор и запустите предыдущий EXE либо Start-previous-version.cmd из его папки. Если нужно вернуть данные на момент обновления, сохраните текущую папку data и замените её копией из папки предыдущей версии.</p>
-      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.70" target="_blank" rel="noreferrer">Открыть релиз v1.0.70</a>
+      <a href="https://github.com/drvitalek-ops/Smart-Calc-for-electricity-projects/releases/tag/v1.0.71" target="_blank" rel="noreferrer">Открыть релиз v1.0.71</a>
       {info?.rollback_warning&&<p role="alert" className="catalog-error">Не удалось создать автоматическую копию данных: {info.rollback_warning}. Создайте полную копию ZIP или сохраните папку data вручную.</p>}
     </section>
     <div id="settings-transfer" tabIndex={-1} className="transfer-instructions"><h3>Как перенести всё</h3><ol>
@@ -1906,16 +1906,13 @@ export default function App() {
     if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}
     if(leftTool==="frames"&&!isElectrical(typeMap.get(item.type_id)))return;
     const stored=selected&&project?.elements.find(current=>current.id===selected.id);
-    if(selected&&stored&&selected.id!==item.id&&!sameItem(selected,stored))void run(()=>save({...selected}));
+    if(selected&&stored&&(selected.id!==item.id||additive)&&!sameItem(selected,stored))void run(()=>save({...selected}));
     setLeftPanelVisible(true);
-    setLeftTool(current=>current==="frames"||current==="style"?current:"properties");
+    setLeftTool(current=>current==="frames"&&item.parameters.frame_group&&!additive?"properties":current==="frames"||current==="style"?current:"properties");
     if (additive) {
-      setSelectedIds((ids) =>
-        ids.includes(item.id)
-          ? ids.filter((id) => id !== item.id)
-          : [...ids, item.id],
-      );
-      setSelected(item);
+      const ids=selectedIds.includes(item.id)?selectedIds.filter(id=>id!==item.id):[...selectedIds,item.id];
+      setSelectedIds(ids);
+      setSelected(ids.includes(item.id)?item:elementMap.get(ids.at(-1)??-1)??null);
     } else {
       setSelectedIds([item.id]);
       setSelected(item);
@@ -1979,7 +1976,7 @@ export default function App() {
     if (!previous || previous.id !== item.id || now - previous.time > 450)
       return false;
     lastObjectClick.current = null;
-    if(item.parameters.frame_group)void run(()=>openPhysicalFrame(String(item.parameters.frame_group)));else selectSameType(item);
+    selectSameType(item);
     return true;
   }
   function changeSelectedType(typeId: number) {
@@ -2053,13 +2050,13 @@ export default function App() {
     requestAnimationFrame(()=>{const panel=document.querySelector<HTMLElement>('.objects-panel .tool-panel-content');if(panel)panel.scrollTop=0;});
   }
   const sceneContextMenu=useStableCallback((item:Item,event:React.MouseEvent<SVGGElement>)=>{if(leftTool==='frames'&&!isElectrical(typeMap.get(item.type_id))){event.preventDefault();event.stopPropagation();return;}showObjectMenu(item,event);});
-  const sceneDoubleClick=useStableCallback((item:Item)=>{if(!supplyLinking&&(leftTool!=="frames"||isElectrical(typeMap.get(item.type_id)))){if(item.parameters.frame_group)void run(()=>openPhysicalFrame(String(item.parameters.frame_group)));else selectSameType(item);}});
+  const sceneDoubleClick=useStableCallback((item:Item,event:React.MouseEvent<SVGGElement>)=>{if(event.ctrlKey||event.metaKey)return;if(!supplyLinking&&(leftTool!=="frames"||isElectrical(typeMap.get(item.type_id)))){if(isElectrical(typeMap.get(item.type_id))){choose(item,false);setLeftTool("properties");setLeftExpanded(true);}else selectSameType(item);}});
   const scenePointerDown=useStableCallback((item:Item,event:React.PointerEvent<SVGGElement>)=>{
     if(frameDirty){setError("Сначала сохраните или отмените свойства рамки");return;}
     if(supplyLinking){if(isLedStrip(typeMap.get(item.type_id)))toggleSupplyStrip(item.id);return;}
     if(leftTool==="frames"&&!isElectrical(typeMap.get(item.type_id)))return;
-    if(leftTool==='frames'&&item.parameters.frame_group&&!event.ctrlKey&&!event.metaKey){void run(()=>openPhysicalFrame(String(item.parameters.frame_group)));return;}
-    if(objectDoubleClick(item))return;
+    if(event.ctrlKey||event.metaKey||isElectrical(typeMap.get(item.type_id)))lastObjectClick.current=null;
+    else if(objectDoubleClick(item))return;
     choose(item,event.ctrlKey||event.metaKey);
     if(!item.geometry?.points?.length&&!event.ctrlKey&&!event.metaKey&&!layerMap.get(item.layer_id)?.locked&&!busy){
       event.currentTarget.ownerSVGElement?.setPointerCapture(event.pointerId);
@@ -2555,6 +2552,8 @@ export default function App() {
                   )}
                   {Boolean(selected?.parameters.frame_group)&&selected&&<button type="button" disabled={busy} onClick={()=>void run(()=>openPhysicalFrame(String(selected.parameters.frame_group)))}>Товар и цвет выбранной рамки</button>}
                   </section><section data-tool-section="properties"><PanelHeading title="Свойства объекта" caption="Параметры и оформление" icon="edit"/><ToolButton icon="back" aria-label="Вернуться к плану" onClick={()=>sheetRef.current?.querySelector<SVGSVGElement>('svg')?.focus()}>Вернуться к плану</ToolButton>
+
+                  {selected&&selectedIds.length===1&&Boolean(selected.parameters.frame_group)&&<ToolButton icon="frame" disabled={busy} onClick={()=>void run(()=>openPhysicalFrame(String(selected.parameters.frame_group)))}>Товар и цвет рамки</ToolButton>}
 
                   {/* Keep the captured product draft mounted when visibility refreshes clear selection. */}
                   <PlanProductAssignment key={project.id} projectId={project.id} items={selected&&selectedIds.length===1?[selected]:bulkPlanItems} types={types} catalog={catalog} busy={actionBusy||frameDirty||frameBusy} locked={bulkPlanItems.some(item=>layerMap.get(item.layer_id)?.locked)} onBefore={async()=>{await saveDraftBeforeNavigation();await elementSaveQueue.current;}} onAssigned={async()=>{const next=await refresh(project.id);setSelected(current=>current?next.elements.find(item=>item.id===current.id)??null:null);setError('');}} onRefine={ids=>void run(async()=>{await saveDraftBeforeNavigation();setSelectedIds(ids);setSelected(ids.length?elementMap.get(ids[0])??null:null);})} onError={setError} onDirtyChange={setPlanProductDirty} onBusyChange={setPlanProductBusy}/>
@@ -3435,7 +3434,7 @@ export default function App() {
                           <rect x={frame.x} y={frame.y} width={frame.width} height={frame.height} rx={8*symbolScale} fill="none" stroke={frameContrast(frame.color)} strokeWidth={5} opacity={frame.opacity} vectorEffect="non-scaling-stroke" pointerEvents="none"/>
                           <rect
                             className="frame-group-outline" data-frame-group={frame.group}
-                            style={{stroke:frame.color,fill:frame.color,strokeWidth:selectedIds.some(id=>frame.members.some(item=>item.id===id))?3:1.5,pointerEvents:roomMode||calibrating||placing||supplyLinking?'none':'all'}}
+                            style={{stroke:frame.color,fill:frame.color,strokeWidth:leftTool==='frames'&&frame.members.every(item=>selectionSet.has(item.id))?3:1.5,pointerEvents:roomMode||calibrating||placing||supplyLinking?'none':leftTool==='frames'?'all':'stroke'}}
                             role="button" tabIndex={0} aria-label={"Свойства рамки "+frame.group.slice(0,8)}
                             onPointerDown={event=>event.stopPropagation()}
                             onClick={event=>{event.stopPropagation();if(!busy&&!roomMode&&!calibrating&&!placing&&!supplyLinking)void run(()=>openPhysicalFrame(frame.group));}}
@@ -3450,9 +3449,7 @@ export default function App() {
                             fillOpacity={0.35}
                             stroke="#fb923c"
                             strokeWidth={
-                              selectedIds.some((id) =>
-                                frame.members.some((item) => item.id === id),
-                              )
+                              leftTool==='frames'&&frame.members.every(item=>selectionSet.has(item.id))
                                 ? 5
                                 : 3
                             }
@@ -4014,7 +4011,7 @@ export default function App() {
         </>
       )}
       <footer>
-        <span>SMART HOME CALC / 1.0.71</span>
+        <span>SMART HOME CALC / 1.0.72</span>
         <span>
           {busy ? "Сохранение…" : "Офлайн-режим · данные на этом компьютере"}
         </span>

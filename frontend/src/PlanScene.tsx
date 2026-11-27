@@ -8,14 +8,14 @@ import {isLedStrip,isPowerSupply,isTrack} from './planDomain';
 
 type Handlers={
   onContextMenu:(item:Item,event:React.MouseEvent<SVGGElement>)=>void;
-  onDoubleClick:(item:Item)=>void;
+  onDoubleClick:(item:Item,event:React.MouseEvent<SVGGElement>)=>void;
   onPointerDown:(item:Item,event:React.PointerEvent<SVGGElement>)=>void;
   onNodeDrag:(item:Item,index:number,point:Point,event:React.PointerEvent<SVGElement>)=>void;
 };
 export type PlanPreviewHandle={update:(item:Item)=>void;clear:()=>void};
 type Props=Handlers&{previewRef:RefObject<PlanPreviewHandle|null>;elements:Item[];types:ReadonlyMap<number,Kind>;pages:ReadonlyMap<number,Page>;layers:ReadonlyMap<number,Layer>;
   unframed:ReadonlySet<number>;selection:ReadonlySet<number>;draft:Item|null;scale:number;labels:boolean;linking:boolean;picked:ReadonlySet<number>;busy:boolean;aspect:number;dense:boolean;adaptive:boolean;pixelScale:number;grip:number;labelBounds?:Box};
-type ObjectProps=Handlers&{item:Item;kind?:Kind;page?:Page;unframed:boolean;selected:boolean;locked:boolean;scale:number;labels:boolean;linking:boolean;picked:boolean;busy:boolean;aspect:number;grip:number;simplified:boolean};
+type ObjectProps=Handlers&{item:Item;kind?:Kind;page?:Page;unframed:boolean;selected:boolean;locked:boolean;scale:number;labels:boolean;linking:boolean;picked:boolean;busy:boolean;aspect:number;grip:number;hitRadius:number;simplified:boolean};
 const transformPoint=(point:Point,page?:Page)=>({x:.5+(point.x-.5)*(page?.scale??1)+(page?.offset_x??0),y:.5+(point.y-.5)*(page?.scale??1)+(page?.offset_y??0)});
 function angle(points:Point[],index:number,aspect:number){const a=points[index===points.length-1?index-1:index],b=points[index===points.length-1?index:index+1];return Math.atan2((b.y-a.y)/aspect,b.x-a.x)*180/Math.PI;}
 
@@ -25,14 +25,14 @@ const PlanObjectLabel=memo(function PlanObjectLabel({item,kind,page,selected,sca
  return <text className="object-label" data-label-side={layout.side} x={layout.x} y={layout.y} fontSize={layout.fontSize} fill={String(item.parameters.plan_label_color??'#0f172a')} stroke="white" strokeWidth={3} paintOrder="stroke">{layout.lines.map((line,index)=><tspan key={index} x={layout.x} dy={index?layout.lineHeight:0}>{line}</tspan>)}</text>;
 });
 
-const PlanObject=memo(function PlanObject({item,kind,page,unframed,selected,locked,scale,labels,linking,picked,busy,aspect,grip,simplified,onContextMenu,onDoubleClick,onPointerDown,onNodeDrag}:ObjectProps){
+const PlanObject=memo(function PlanObject({item,kind,page,unframed,selected,locked,scale,labels,linking,picked,busy,aspect,grip,hitRadius,simplified,onContextMenu,onDoubleClick,onPointerDown,onNodeDrag}:ObjectProps){
   const points=item.geometry?.points??[],transformed=points.map(point=>transformPoint(point,page));
   const opacity=selected?1:page?.opacity??1,color=picked?'#2563eb':String(item.parameters.plan_color??kind?.color??'#64748b');
   const target=linking&&isLedStrip(kind);
   const showLabel=labels&&item.parameters.plan_label_visible!==false;
   const label=showLabel&&<PlanObjectLabel item={item} kind={kind} page={page} selected={selected} scale={scale} aspect={aspect}/>;
   const handlers={onContextMenu:(event:React.MouseEvent<SVGGElement>)=>onContextMenu(item,event),
-    onDoubleClick:(event:React.MouseEvent<SVGGElement>)=>{event.preventDefault();event.stopPropagation();onDoubleClick(item);},
+    onDoubleClick:(event:React.MouseEvent<SVGGElement>)=>{event.preventDefault();event.stopPropagation();onDoubleClick(item,event);},
     onPointerDown:(event:React.PointerEvent<SVGGElement>)=>{if(event.button!==0)return;event.preventDefault();event.stopPropagation();onPointerDown(item,event);}};
   const targetClass=target?'supply-strip-target '+(picked?'supply-strip-picked':''):'';
   if(points.length>1){
@@ -55,6 +55,7 @@ const PlanObject=memo(function PlanObject({item,kind,page,unframed,selected,lock
   const marker=transformPoint(item,page);
   return <g data-element-id={item.id} className={(selected?'selected-point-object ':'')+targetClass} opacity={opacity} transform={`translate(${marker.x*1000},${marker.y*1000}) scale(1,${aspect})`} {...handlers}>
     <title>{planLabel(item,kind)}{locked?' · Слой заблокирован':''}</title>
+    <circle className="point-hit-area" r={hitRadius} fill="transparent"/>
     <>{unframed&&<circle className="unframed-halo" r={19*scale} fill="#f59e0b" fillOpacity=".13" stroke="#b45309" strokeWidth="2" strokeDasharray="3 3" vectorEffect="non-scaling-stroke"/>}</><PointMarker details={!simplified} shared kind={kind} parameters={item.parameters} scale={scale} powerSupply={isPowerSupply(kind)} color={color} selected={linking?picked:selected} icon={String(item.parameters.plan_icon??'').trim()}/>
     {label}
   </g>;
@@ -74,7 +75,7 @@ export default memo(function PlanScene({previewRef,elements,types,pages,layers,u
   const labelIds=useMemo(()=>adaptive&&labels?visiblePlanLabels(elements.map(item=>draft?.id===item.id?draft:item),types,pages,selection,scale,aspect,pixelScale,labelBounds):null,[elements,draft,types,pages,selection,scale,aspect,pixelScale,adaptive,labels,labelBounds]);
   return <LabelBounds.Provider value={labelBounds}><GlyphDefinitions/>{elements.map(original=>{const item=draft?.id===original.id?draft:original;
     const props={item,unframed:unframed.has(item.id),kind:types.get(item.type_id),page:pages.get(item.page_id),locked:Boolean(layers.get(item.layer_id)?.locked),selected:selection.has(item.id),scale,
-      labels:labels&&(!dense||selection.has(item.id))&&(!labelIds||labelIds.has(item.id)),grip:selection.has(item.id)?grip:0,
+      labels:labels&&(!dense||selection.has(item.id))&&(!labelIds||labelIds.has(item.id)),grip:selection.has(item.id)?grip:0,hitRadius:Math.max((PLAN_RADIUS*Number(item.parameters.plan_size??1)+3)*scale,grip*.75),
       simplified:!selection.has(item.id)&&(dense||adaptive&&PLAN_RADIUS*scale*Number(item.parameters.plan_size??1)*pixelScale<5),linking,picked:picked.has(item.id),busy:selection.has(item.id)&&busy,aspect,...handlers};
     return item.id===draft?.id?<PreviewObject key={item.id} {...props} previewRef={previewRef}/>:<PlanObject key={item.id} {...props}/>;
   })}</LabelBounds.Provider>;
